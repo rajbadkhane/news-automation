@@ -1318,6 +1318,8 @@ function applyApiCors(req, res, next) {
   return next();
 }
 
+app.use(applyApiCors);
+
 async function enforceApiKey(req, res, next) {
   if (req.path === "/health" || req.path === "/docs" || req.path === "/openapi.json" || req.path === "/swagger") {
     return next();
