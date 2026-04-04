@@ -165,13 +165,21 @@ async function initializeAiRewriteStorage(dbPool) {
     `);
   }
 
-  const alterStatements = [
-    "ALTER TABLE ai_news_rewrites ADD COLUMN publication_status VARCHAR(20) NOT NULL DEFAULT 'draft'",
-    "ALTER TABLE ai_news_rewrites ADD COLUMN published_at TIMESTAMP NULL DEFAULT NULL",
-    "ALTER TABLE ai_news_rewrites ADD COLUMN published_by VARCHAR(150) NULL",
-    "ALTER TABLE ai_news_rewrites ADD COLUMN delivery_slug VARCHAR(191) NULL",
-    "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
-  ];
+  const alterStatements = dbPool.dialect === "postgres"
+    ? [
+        "ALTER TABLE ai_news_rewrites ADD COLUMN publication_status VARCHAR(20) NOT NULL DEFAULT 'draft'",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN published_at TIMESTAMPTZ NULL DEFAULT NULL",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN published_by VARCHAR(150) NULL",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN delivery_slug VARCHAR(191) NULL",
+        "CREATE UNIQUE INDEX unique_delivery_slug ON ai_news_rewrites (delivery_slug)",
+      ]
+    : [
+        "ALTER TABLE ai_news_rewrites ADD COLUMN publication_status VARCHAR(20) NOT NULL DEFAULT 'draft'",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN published_at TIMESTAMP NULL DEFAULT NULL",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN published_by VARCHAR(150) NULL",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN delivery_slug VARCHAR(191) NULL",
+        "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
+      ];
 
   for (const statement of alterStatements) {
     try {
