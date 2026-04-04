@@ -2214,15 +2214,45 @@ function groupRecordsByCategory(records) {
 }
 
 async function getArticleUrlsFromFeed(feedUrl, limit) {
-  const response = await fetch(feedUrl, {
-    headers: {
+  const requestProfiles = [
+    {
       "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+      "Accept-Language": "en-IN,en;q=0.9",
+      Referer: "https://www.google.com/",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
     },
-  });
+    {
+      "User-Agent":
+        "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      Accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      Referer: "https://news.google.com/",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+  ];
 
-  if (!response.ok) {
-    throw new Error(`RSS feed request failed with status ${response.status}`);
+  let response = null;
+  let lastError = null;
+
+  for (const headers of requestProfiles) {
+    try {
+      response = await fetch(feedUrl, { headers });
+      if (response.ok) {
+        break;
+      }
+
+      lastError = new Error(`RSS feed request failed with status ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw lastError || new Error("RSS feed request failed.");
   }
 
   const xml = await response.text();
