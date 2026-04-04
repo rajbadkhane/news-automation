@@ -1,0 +1,29 @@
+{
+  "name": "gautam-news-bot",
+  "version": "1.0.0",
+  "description": "Express.js and Puppeteer service for fetching a news article and its featured image.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "start:prod": "node index.js",
+    "health": "node -e \"fetch('http://127.0.0.1:3000/health').then(async (r) => { console.log(await r.text()); process.exit(r.ok ? 0 : 1); }).catch((err) => { console.error(err.message); process.exit(1); });\""
+  },
+  "keywords": [
+    "express",
+    "puppeteer",
+    "news",
+    "automation"
+  ],
+  "author": "Gautam Tech Studio",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "mysql2": "^3.15.2",
+    "pg": "^8.16.3",
+    "puppeteer": "^24.7.1"
+  }
+}

@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: news-automation-backend
+    runtime: node
+    rootDir: .
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm run start:prod
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20
+      - key: TRUST_PROXY_ENABLED
+        value: true
+      - key: DB_DIALECT
+        value: mysql
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: 3306
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: gautam_news_bot
+      - key: BROWSER_EXECUTABLE_PATH
+        value: /usr/bin/google-chrome
+      - key: SCHEDULER_ENABLED
+        value: true
+      - key: AI_SCHEDULER_ENABLED
+        value: true
+      - key: MASTER_API_KEY
+        sync: false
+      - key: API_CORS_ORIGINS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
