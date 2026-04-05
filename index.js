@@ -179,6 +179,39 @@ const DELIVERY_CATEGORY_ORDER = [
   "education",
   "blogs",
 ];
+const RSS_REQUEST_PROFILES = [
+  {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "en-IN,en;q=0.9",
+    Referer: "https://www.google.com/",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+  },
+  {
+    "User-Agent":
+      "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: "https://news.google.com/",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+  },
+];
+const ZEE_SECTION_FALLBACKS = {
+  india: "https://zeenews.india.com/india",
+  world: "https://zeenews.india.com/world",
+  states: "https://zeenews.india.com/india",
+  asia: "https://zeenews.india.com/world",
+  business: "https://zeenews.india.com/business",
+  sports: "https://zeenews.india.com/sports",
+  science_environment: "https://zeenews.india.com/science",
+  entertainment: "https://zeenews.india.com/entertainment",
+  health: "https://zeenews.india.com/health",
+  blogs: "https://zeenews.india.com/blogs",
+  technology: "https://zeenews.india.com/technology",
+  education: "https://zeenews.india.com/education",
+  top_stories: "https://zeenews.india.com/",
+};
 
 let dbPool;
 const DEFAULT_ARTICLE_LIMIT = 5;
@@ -2237,35 +2270,19 @@ function groupRecordsByCategory(records) {
     }));
 }
 
-async function getArticleUrlsFromFeed(feedUrl, limit) {
-  const requestProfiles = [
-    {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      Accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-      "Accept-Language": "en-IN,en;q=0.9",
-      Referer: "https://www.google.com/",
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-    },
-    {
-      "User-Agent":
-        "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-      Accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-      Referer: "https://news.google.com/",
-      "Cache-Control": "no-cache",
-      Pragma: "no-cache",
-    },
-  ];
-
+async function fetchTextWithProfiles(url, acceptHeader) {
   let response = null;
   let lastError = null;
   let lastStatus = null;
 
-  for (const headers of requestProfiles) {
+  for (const profile of RSS_REQUEST_PROFILES) {
     try {
-      response = await fetch(feedUrl, { headers });
+      response = await fetch(url, {
+        headers: {
+          ...profile,
+          Accept: acceptHeader,
+        },
+      });
       if (response.ok) {
         break;
       }
@@ -2277,11 +2294,156 @@ async function getArticleUrlsFromFeed(feedUrl, limit) {
     }
   }
 
-  if (lastStatus === 403) {
+  return {
+    response,
+    lastError,
+    lastStatus,
+  };
+}
+
+function getFallbackSectionUrl(feedConfig, category) {
+  if (feedConfig.source === "zee") {
+    return ZEE_SECTION_FALLBACKS[category] || "https://zeenews.india.com/";
+  }
+
+  if (feedConfig.source === "news18") {
+    try {
+      const parsed = new URL(feedConfig.url);
+      const slug = parsed.pathname.split("/").pop()?.replace(/\.xml$/i, "").trim();
+      if (slug) {
+        return `https://www.news18.com/${slug}/`;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function extractArticleUrlsFromHtml(html, baseUrl, predicate, limit) {
+  const seen = new Set();
+  const urls = [];
+
+  for (const match of html.matchAll(/href=["']([^"'#]+)["']/gi)) {
+    let candidateUrl = null;
+
+    try {
+      candidateUrl = new URL(match[1], baseUrl).href;
+    } catch {
+      continue;
+    }
+
+    if (!predicate(candidateUrl) || seen.has(candidateUrl)) {
+      continue;
+    }
+
+    seen.add(candidateUrl);
+    urls.push(candidateUrl);
+
+    if (urls.length >= limit) {
+      break;
+    }
+  }
+
+  return urls;
+}
+
+function createSectionUrlPredicate(feedConfig, sectionUrl) {
+  const sectionHref = String(sectionUrl || "").replace(/\/+$/, "");
+
+  if (feedConfig.source === "zee") {
+    return (candidateUrl) => {
+      try {
+        const parsed = new URL(candidateUrl);
+        const hostname = parsed.hostname.toLowerCase();
+        const pathname = parsed.pathname.toLowerCase();
+
+        return (
+          ["zeenews.india.com", "www.zeenews.india.com"].includes(hostname) &&
+          !pathname.startsWith("/rss/") &&
+          pathname !== "/" &&
+          pathname.split("/").filter(Boolean).length >= 2 &&
+          !/\.(xml|jpg|jpeg|png|webp|gif|svg)$/i.test(pathname) &&
+          candidateUrl.replace(/\/+$/, "") !== sectionHref
+        );
+      } catch {
+        return false;
+      }
+    };
+  }
+
+  if (feedConfig.source === "news18") {
+    return (candidateUrl) => {
+      try {
+        const parsed = new URL(candidateUrl);
+        const hostname = parsed.hostname.toLowerCase();
+        const pathname = parsed.pathname.toLowerCase();
+
+        return (
+          ["news18.com", "www.news18.com"].includes(hostname) &&
+          !pathname.startsWith("/commonfeeds/") &&
+          pathname !== "/" &&
+          pathname.split("/").filter(Boolean).length >= 2 &&
+          !/\.(xml|jpg|jpeg|png|webp|gif|svg)$/i.test(pathname) &&
+          candidateUrl.replace(/\/+$/, "") !== sectionHref
+        );
+      } catch {
+        return false;
+      }
+    };
+  }
+
+  return () => false;
+}
+
+async function getArticleUrlsFromSectionFallback(feedConfig, category, limit) {
+  const sectionUrl = getFallbackSectionUrl(feedConfig, category);
+  if (!sectionUrl) {
     return [];
   }
 
+  const { response, lastError, lastStatus } = await fetchTextWithProfiles(
+    sectionUrl,
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  );
+
   if (!response || !response.ok) {
+    if (lastStatus === 403) {
+      return [];
+    }
+
+    throw lastError || new Error("Section fallback request failed.");
+  }
+
+  const html = await response.text();
+  return extractArticleUrlsFromHtml(
+    html,
+    sectionUrl,
+    createSectionUrlPredicate(feedConfig, sectionUrl),
+    limit
+  );
+}
+
+async function getArticleUrlsFromFeed(feedConfig, category, limit) {
+  const { response, lastError, lastStatus } = await fetchTextWithProfiles(
+    feedConfig.url,
+    "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8"
+  );
+
+  if (!response || !response.ok) {
+    const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
+    if (fallbackUrls.length > 0) {
+      console.log(
+        `Using section fallback for ${feedConfig.source} (${category}) after RSS status ${lastStatus || "error"}.`
+      );
+      return fallbackUrls;
+    }
+
+    if (lastStatus === 403) {
+      return [];
+    }
+
     throw lastError || new Error("RSS feed request failed.");
   }
 
@@ -2291,6 +2453,12 @@ async function getArticleUrlsFromFeed(feedUrl, limit) {
   );
 
   if (!itemMatches.length) {
+    const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
+    if (fallbackUrls.length > 0) {
+      console.log(`Using section fallback for ${feedConfig.source} (${category}) because RSS had no items.`);
+      return fallbackUrls;
+    }
+
     throw new Error("No article links found in the RSS feed.");
   }
 
@@ -2313,6 +2481,12 @@ async function getArticleUrlsFromFeed(feedUrl, limit) {
   }
 
   if (!urls.length) {
+    const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
+    if (fallbackUrls.length > 0) {
+      console.log(`Using section fallback for ${feedConfig.source} (${category}) because RSS had no usable URLs.`);
+      return fallbackUrls;
+    }
+
     throw new Error("The RSS feed did not contain usable article URLs.");
   }
 
@@ -2334,7 +2508,7 @@ async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
     feedConfigs.map(async (feedConfig) => ({
       feed_source: feedConfig.source,
       feed_url: feedConfig.url,
-      urls: await getArticleUrlsFromFeed(feedConfig.url, perFeedLimit),
+      urls: await getArticleUrlsFromFeed(feedConfig, options.category || DEFAULT_CATEGORY, perFeedLimit),
     }))
   );
 
@@ -2552,6 +2726,7 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
   }
 
   const articleEntries = await getArticleUrlsFromFeeds(feedConfigs, candidateLimit, {
+    category,
     startIndex: options.startIndex || 0,
   });
   console.log(`Found ${articleEntries.length} article link(s) from RSS feeds for ${category}.`);
