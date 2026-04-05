@@ -2349,6 +2349,68 @@ function extractArticleUrlsFromHtml(html, baseUrl, predicate, limit) {
   return urls;
 }
 
+function isLikelyArticleUrl(feedConfig, candidateUrl) {
+  try {
+    const parsed = new URL(candidateUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+
+    if (feedConfig.source === "news18") {
+      return (
+        ["news18.com", "www.news18.com"].includes(hostname) &&
+        pathname.endsWith(".html") &&
+        !pathname.startsWith("/amp/") &&
+        !pathname.includes("/page-") &&
+        !pathname.startsWith("/commonfeeds/")
+      );
+    }
+
+    if (feedConfig.source === "zee") {
+      return (
+        ["zeenews.india.com", "www.zeenews.india.com"].includes(hostname) &&
+        pathname.endsWith(".html") &&
+        /\-\d+\.html$/i.test(pathname) &&
+        !pathname.startsWith("/tags/") &&
+        !pathname.startsWith("/photos/") &&
+        !pathname.startsWith("/video/")
+      );
+    }
+
+    return candidateUrl.startsWith("http");
+  } catch {
+    return false;
+  }
+}
+
+function getNews18SectionKeywords(feedConfig) {
+  try {
+    const parsed = new URL(feedConfig.url);
+    const slug = parsed.pathname.split("/").pop()?.replace(/\.xml$/i, "").trim().toLowerCase();
+    const aliases = {
+      "education-career": ["education-career", "education-and-career"],
+      entertainment: ["entertainment"],
+      movies: ["movies", "bollywood"],
+      viral: ["viral"],
+      sports: ["sports"],
+      cricket: ["cricket"],
+      football: ["football"],
+      tech: ["tech"],
+      explainers: ["explainers", "explainer"],
+      business: ["business", "markets"],
+      lifestyle: ["lifestyle"],
+      opinion: ["opinion"],
+      auto: ["auto"],
+      politics: ["politics"],
+      india: ["india"],
+      world: ["world"],
+    };
+
+    return aliases[slug] || (slug ? [slug] : []);
+  } catch {
+    return [];
+  }
+}
+
 function createSectionUrlPredicate(feedConfig, sectionUrl) {
   const sectionHref = String(sectionUrl || "").replace(/\/+$/, "");
 
@@ -2365,6 +2427,7 @@ function createSectionUrlPredicate(feedConfig, sectionUrl) {
           pathname !== "/" &&
           pathname.split("/").filter(Boolean).length >= 2 &&
           !/\.(xml|jpg|jpeg|png|webp|gif|svg)$/i.test(pathname) &&
+          isLikelyArticleUrl(feedConfig, candidateUrl) &&
           candidateUrl.replace(/\/+$/, "") !== sectionHref
         );
       } catch {
@@ -2374,11 +2437,15 @@ function createSectionUrlPredicate(feedConfig, sectionUrl) {
   }
 
   if (feedConfig.source === "news18") {
+    const sectionKeywords = getNews18SectionKeywords(feedConfig);
     return (candidateUrl) => {
       try {
         const parsed = new URL(candidateUrl);
         const hostname = parsed.hostname.toLowerCase();
         const pathname = parsed.pathname.toLowerCase();
+        const matchesSection = sectionKeywords.some((keyword) => {
+          return pathname.includes(`/${keyword}/`) || pathname.includes(`/photogallery/${keyword}/`);
+        });
 
         return (
           ["news18.com", "www.news18.com"].includes(hostname) &&
@@ -2386,6 +2453,8 @@ function createSectionUrlPredicate(feedConfig, sectionUrl) {
           pathname !== "/" &&
           pathname.split("/").filter(Boolean).length >= 2 &&
           !/\.(xml|jpg|jpeg|png|webp|gif|svg)$/i.test(pathname) &&
+          matchesSection &&
+          isLikelyArticleUrl(feedConfig, candidateUrl) &&
           candidateUrl.replace(/\/+$/, "") !== sectionHref
         );
       } catch {
