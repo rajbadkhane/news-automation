@@ -43,6 +43,9 @@ function prettifyFeedSource(value) {
   if (normalized === "zee") {
     return "Zee News";
   }
+  if (normalized === "news18") {
+    return "News18";
+  }
   if (normalized === "dd") {
     return "DD News";
   }

@@ -72,55 +72,79 @@ const AVAILABLE_API_SCOPES = [
 ];
 const DEFAULT_CATEGORY = "india";
 const INDIA_TIMEZONE = "Asia/Kolkata";
+const NEWS18_RSS_BASE = "https://www.news18.com/commonfeeds/v1/eng/rss";
 const RSS_FEEDS = {
   india: [
     { source: "zee", url: "https://zeenews.india.com/rss/india-national-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/india.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/national/feed/" },
     { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
   ],
   world: [
     { source: "zee", url: "https://zeenews.india.com/rss/world-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/world.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/international/feed/" },
   ],
   states: [
     { source: "zee", url: "https://zeenews.india.com/rss/india-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/politics.xml` },
     { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
   ],
   asia: [
     { source: "zee", url: "https://zeenews.india.com/rss/asia-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/world.xml` },
   ],
   business: [
     { source: "zee", url: "https://zeenews.india.com/rss/business.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/business.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/business-economy/feed/" },
   ],
   sports: [
     { source: "zee", url: "https://zeenews.india.com/rss/sports-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/sports.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/cricket.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/football.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/sports/feed/" },
   ],
   science_environment: [
     { source: "zee", url: "https://zeenews.india.com/rss/science-environment-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/tech.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/explainers.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/science-tech/feed/" },
     { source: "dd", url: "https://ddnews.gov.in/en/category/environment/feed/" },
   ],
   entertainment: [
     { source: "zee", url: "https://zeenews.india.com/rss/entertainment-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/entertainment.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/movies.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/viral.xml` },
   ],
   health: [
     { source: "zee", url: "https://zeenews.india.com/rss/health-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/lifestyle.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/health/feed/" },
   ],
   blogs: [
     { source: "zee", url: "https://zeenews.india.com/rss/blog-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/opinion.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/explainers.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/opinion/feed/" },
   ],
   technology: [
     { source: "zee", url: "https://zeenews.india.com/rss/technology-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/tech.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/auto.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/science-tech/feed/" },
   ],
   education: [
+    { source: "zee", url: "https://zeenews.india.com/rss/education-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/education-career.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/education/feed/" },
   ],
   top_stories: [
+    { source: "zee", url: "https://zeenews.india.com/rss/india-national-news.xml" },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/india.xml` },
+    { source: "news18", url: `${NEWS18_RSS_BASE}/politics.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/top-stories/feed/" },
     { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
   ],
@@ -2237,6 +2261,7 @@ async function getArticleUrlsFromFeed(feedUrl, limit) {
 
   let response = null;
   let lastError = null;
+  let lastStatus = null;
 
   for (const headers of requestProfiles) {
     try {
@@ -2245,10 +2270,15 @@ async function getArticleUrlsFromFeed(feedUrl, limit) {
         break;
       }
 
+      lastStatus = response.status;
       lastError = new Error(`RSS feed request failed with status ${response.status}`);
     } catch (error) {
       lastError = error;
     }
+  }
+
+  if (lastStatus === 403) {
+    return [];
   }
 
   if (!response || !response.ok) {
@@ -2312,6 +2342,10 @@ async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
     .map((result, index) => ({ result, feedConfig: feedConfigs[index] }))
     .flatMap(({ result, feedConfig }) => {
       if (result.status === "fulfilled") {
+        if (!Array.isArray(result.value.urls) || result.value.urls.length === 0) {
+          return [];
+        }
+
         return [result.value];
       }
 
