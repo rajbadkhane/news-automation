@@ -397,6 +397,13 @@ async function extractArticleTextFromPage(page, articleUrl) {
 
   return page.evaluate(() => {
     const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const removePatternMatches = (value, patterns) => {
+      let output = String(value || "");
+      for (const pattern of patterns) {
+        output = output.replace(pattern, " ");
+      }
+      return normalize(output);
+    };
     const articleHost = (() => {
       try {
         return window.location.hostname.toLowerCase();
@@ -409,6 +416,22 @@ async function extractArticleTextFromPage(page, articleUrl) {
       /all rights reserved|beta version|designed and maintained|site version/i,
       /directory|judiciary|collector|commissioner|district news|minister|cabinet/i,
       /facebook|twitter|instagram|youtube|whatsapp|telegram/i,
+      /©\s*2006-20\d{2}[\s\S]*$/i,
+      /जनसम्पर्क विभाग[\s\S]*$/i,
+      /जिले के समाचार[\s\S]*$/i,
+      /मंत्रिपरिषद[\s\S]*$/i,
+      /डायरेक्टरी[\s\S]*$/i,
+      /e-संदेश[\s\S]*$/i,
+      /स्पेशल[\s\S]*$/i,
+      /भोपाल.*462003[\s\S]*$/i,
+    ];
+    const ddNoisePatterns = [
+      /tweets by ddnewslive/i,
+      /your browser does not support javascript/i,
+      /\b\d+\s*(mins?|minutes?|hours?|days?) ago\b/i,
+      /ministry of [a-z &-]+/i,
+      /government sources have clarified[\s\S]*$/i,
+      /shared responsibility, stronger outcomes[\s\S]*$/i,
     ];
     const mpInfoNoisePatterns = [
       /© 2006-20\d{2}/i,
@@ -420,9 +443,12 @@ async function extractArticleTextFromPage(page, articleUrl) {
       /भोपालराजगढ़|ग्वालियरग्वालियर|उज्जैननीमच|जबलपुरकटनी/i,
       /e-संदेश|स्पेशल/i,
     ];
-    const activeNoisePatterns = articleHost.includes("mpinfo.org")
-      ? [...siteNoisePatterns, ...mpInfoNoisePatterns]
-      : siteNoisePatterns;
+    const sourceSpecificNoisePatterns = articleHost.includes("mpinfo.org")
+      ? mpInfoNoisePatterns
+      : articleHost.includes("ddnews.gov.in")
+        ? ddNoisePatterns
+        : [];
+    const activeNoisePatterns = [...siteNoisePatterns, ...sourceSpecificNoisePatterns];
 
     const title =
       document.querySelector('meta[property="og:title"]')?.content ||
@@ -435,7 +461,39 @@ async function extractArticleTextFromPage(page, articleUrl) {
       document.querySelector('meta[property="og:description"]')?.content ||
       "";
 
+    for (const selector of [
+      "header",
+      "footer",
+      "nav",
+      "aside",
+      ".sidebar",
+      ".widget",
+      ".social-share",
+      ".share-tools",
+      ".related-posts",
+      ".recommended",
+      ".newsletter",
+      ".comment-form",
+      ".comments",
+      ".breadcrumb",
+      ".advertisement",
+      ".ads",
+      ".twitter-timeline",
+      ".instagram-media",
+      ".elementor-widget-sidebar",
+    ]) {
+      document.querySelectorAll(selector).forEach((node) => node.remove());
+    }
+
+    document.querySelectorAll("script, style, noscript, iframe").forEach((node) => node.remove());
+
     const candidateRoots = [
+      document.querySelector("article .entry-content"),
+      document.querySelector(".entry-content"),
+      document.querySelector(".post-content"),
+      document.querySelector(".article-content"),
+      document.querySelector(".story-content"),
+      document.querySelector("[itemprop='articleBody']"),
       document.querySelector("article"),
       document.querySelector("main"),
       document.querySelector("[role='main']"),
@@ -448,7 +506,7 @@ async function extractArticleTextFromPage(page, articleUrl) {
     for (const root of candidateRoots) {
       const nodes = Array.from(root.querySelectorAll("p, li"));
       for (const node of nodes) {
-        const text = normalize(node.textContent);
+        const text = removePatternMatches(node.textContent, sourceSpecificNoisePatterns);
         if (!text || text.length < 40) {
           continue;
         }
@@ -474,11 +532,13 @@ async function extractArticleTextFromPage(page, articleUrl) {
       }
     }
 
-    const combinedText = [title, metaDescription, ...paragraphs].filter(Boolean).join("\n\n");
+    const cleanedTitle = removePatternMatches(title, sourceSpecificNoisePatterns);
+    const cleanedMetaDescription = removePatternMatches(metaDescription, sourceSpecificNoisePatterns);
+    const combinedText = [cleanedTitle, cleanedMetaDescription, ...paragraphs].filter(Boolean).join("\n\n");
 
     return {
-      title: normalize(title),
-      metaDescription: normalize(metaDescription),
+      title: cleanedTitle,
+      metaDescription: cleanedMetaDescription,
       paragraphs,
       combinedText: normalize(combinedText),
     };

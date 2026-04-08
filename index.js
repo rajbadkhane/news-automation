@@ -3221,13 +3221,64 @@ function isLikelyDecorativeImageUrl(value) {
     || normalized.includes("facebook")
     || normalized.includes("twitter")
     || normalized.includes("instagram")
+    || normalized.includes("insta-feed")
+    || normalized.includes("social")
+    || normalized.includes("share")
+    || normalized.includes("follow-us")
+    || normalized.includes("feed")
+    || normalized.includes("placeholder")
+    || normalized.includes("default-image")
     || normalized.includes("whatsapp")
     || normalized.endsWith(".svg")
   );
 }
 
+function scoreImageCandidate({ src, altText = "", className = "", width = 0, height = 0, inArticle = false }) {
+  const normalizedSrc = String(src || "").toLowerCase();
+  const normalizedAlt = String(altText || "").toLowerCase();
+  const normalizedClass = String(className || "").toLowerCase();
+
+  if (!normalizedSrc || isLikelyDecorativeImageUrl(normalizedSrc)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  if (
+    /logo|icon|share|social|avatar|author|profile|button|emoji|thumbnail/.test(normalizedAlt)
+    || /logo|icon|share|social|avatar|author|profile|button|widget|thumb|thumbnail|gallery/.test(normalizedClass)
+  ) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  if ((width > 0 && width < 240) || (height > 0 && height < 160)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 0;
+  score += Math.min(width, 2200) * 0.02;
+  score += Math.min(height, 1600) * 0.02;
+
+  if (inArticle) {
+    score += 250;
+  }
+
+  if (/feature|featured|hero|lead|story|article|post|news/.test(normalizedSrc)) {
+    score += 120;
+  }
+
+  if (/wp-content\/uploads|\/uploads\//.test(normalizedSrc)) {
+    score += 80;
+  }
+
+  if (/insta|social|share|feed|icon|logo|author|avatar|thumb|thumbnail|youtube/.test(normalizedSrc)) {
+    score -= 240;
+  }
+
+  return score;
+}
+
 function extractImageFromHtml(html, articleUrl) {
   const imageTags = String(html || "").match(/<img\b[^>]*>/gi) || [];
+  let bestCandidate = null;
 
   for (const tag of imageTags) {
     const attributes = extractAttributesFromTag(tag);
@@ -3241,25 +3292,30 @@ function extractImageFromHtml(html, articleUrl) {
     const className = String(attributes.class || "").toLowerCase();
     const width = Number.parseInt(attributes.width, 10) || 0;
     const height = Number.parseInt(attributes.height, 10) || 0;
+    const score = scoreImageCandidate({
+      src: lowered,
+      altText,
+      className,
+      width,
+      height,
+      inArticle: /article|story|post|content|featured|hero/.test(className),
+    });
 
-    if (
-      isLikelyDecorativeImageUrl(lowered)
-      || /logo|icon|share|social|button|avatar/.test(altText)
-      || /logo|icon|share|social|avatar/.test(className)
-      || (width > 0 && width < 180)
-      || (height > 0 && height < 180)
-    ) {
+    if (!Number.isFinite(score)) {
       continue;
     }
 
     try {
-      return new URL(rawSrc, articleUrl).href;
+      const absoluteUrl = new URL(rawSrc, articleUrl).href;
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = { href: absoluteUrl, score };
+      }
     } catch {
       continue;
     }
   }
 
-  return null;
+  return bestCandidate?.href || null;
 }
 
 async function extractArticleMetadataFromHtml(articleUrl) {
@@ -3376,31 +3432,48 @@ async function extractBestImageFromArticle(page, articleUrl) {
           area,
           inArticle,
           loading,
+          altText: img.getAttribute("alt") || "",
+          className: img.getAttribute("class") || "",
         };
       })
-      .filter((img) => {
-        if (!img.src || !img.src.startsWith("http")) {
-          return false;
-        }
+      .map((img) => ({
+        ...img,
+        score: (() => {
+          const normalizedSrc = String(img.src || "").toLowerCase();
+          const normalizedAlt = String(img.altText || "").toLowerCase();
+          const normalizedClass = String(img.className || "").toLowerCase();
 
-        const lowered = img.src.toLowerCase();
-        if (
-          lowered.includes("logo") ||
-          lowered.includes("icon") ||
-          lowered.includes("sprite") ||
-          lowered.includes("avatar")
-        ) {
-          return false;
-        }
+          if (
+            !normalizedSrc ||
+            !normalizedSrc.startsWith("http") ||
+            /logo|icon|sprite|avatar|youtube|insta|social|share|feed|placeholder|default-image/.test(normalizedSrc) ||
+            /logo|icon|share|social|avatar|author|profile|button|thumbnail/.test(normalizedAlt) ||
+            /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery/.test(normalizedClass) ||
+            img.width < 240 ||
+            img.height < 160
+          ) {
+            return Number.NEGATIVE_INFINITY;
+          }
 
-        return img.width >= 200 && img.height >= 120;
-      })
+          let score = img.area;
+          if (img.inArticle) {
+            score += 500000;
+          }
+          if (/feature|featured|hero|lead|story|article|post|news/.test(normalizedSrc)) {
+            score += 250000;
+          }
+          if (/wp-content\/uploads|\/uploads\//.test(normalizedSrc)) {
+            score += 120000;
+          }
+          if (img.loading === "eager") {
+            score += 50000;
+          }
+          return score;
+        })(),
+      }))
+      .filter((img) => Number.isFinite(img.score))
       .sort((left, right) => {
-        if (left.inArticle !== right.inArticle) {
-          return left.inArticle ? -1 : 1;
-        }
-
-        return right.area - left.area;
+        return right.score - left.score;
       });
 
     return {
