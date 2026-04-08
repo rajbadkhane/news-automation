@@ -3192,6 +3192,26 @@ function extractTitleFromHtml(html) {
   return titleMatch ? decodeHtmlEntities(titleMatch[1]).replace(/\s+/g, " ").trim() : null;
 }
 
+function isLikelyDecorativeImageUrl(value) {
+  const normalized = String(value || "").toLowerCase();
+  return (
+    !normalized
+    || normalized.includes("logo")
+    || normalized.includes("icon")
+    || normalized.includes("sprite")
+    || normalized.includes("avatar")
+    || normalized.includes("banner")
+    || normalized.includes("ads")
+    || normalized.includes("advert")
+    || normalized.includes("youtube.svg")
+    || normalized.includes("facebook")
+    || normalized.includes("twitter")
+    || normalized.includes("instagram")
+    || normalized.includes("whatsapp")
+    || normalized.endsWith(".svg")
+  );
+}
+
 function extractImageFromHtml(html, articleUrl) {
   const imageTags = String(html || "").match(/<img\b[^>]*>/gi) || [];
 
@@ -3203,7 +3223,18 @@ function extractImageFromHtml(html, articleUrl) {
     }
 
     const lowered = rawSrc.toLowerCase();
-    if (lowered.includes("logo") || lowered.includes("icon") || lowered.includes("sprite")) {
+    const altText = String(attributes.alt || "").toLowerCase();
+    const className = String(attributes.class || "").toLowerCase();
+    const width = Number.parseInt(attributes.width, 10) || 0;
+    const height = Number.parseInt(attributes.height, 10) || 0;
+
+    if (
+      isLikelyDecorativeImageUrl(lowered)
+      || /logo|icon|share|social|button|avatar/.test(altText)
+      || /logo|icon|share|social|avatar/.test(className)
+      || (width > 0 && width < 180)
+      || (height > 0 && height < 180)
+    ) {
       continue;
     }
 
@@ -3238,7 +3269,7 @@ async function extractArticleMetadataFromHtml(articleUrl) {
     || extractImageFromHtml(html, articleUrl);
 
   let featuredImage = null;
-  if (featuredImageRaw) {
+  if (featuredImageRaw && !isLikelyDecorativeImageUrl(featuredImageRaw)) {
     try {
       featuredImage = new URL(featuredImageRaw, articleUrl).href;
     } catch {

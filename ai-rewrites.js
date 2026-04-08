@@ -392,11 +392,37 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
 }
 
 async function extractArticleTextFromPage(page, articleUrl) {
-  await page.goto(articleUrl, { waitUntil: "networkidle2", timeout: 45000 });
-  await page.waitForSelector("body", { timeout: 15000 });
+  await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForSelector("body", { timeout: 10000 });
 
   return page.evaluate(() => {
     const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const articleHost = (() => {
+      try {
+        return window.location.hostname.toLowerCase();
+      } catch {
+        return "";
+      }
+    })();
+    const siteNoisePatterns = [
+      /cookie|subscribe|newsletter|follow us|advertisement|read more|click here|download app/i,
+      /all rights reserved|beta version|designed and maintained|site version/i,
+      /directory|judiciary|collector|commissioner|district news|minister|cabinet/i,
+      /facebook|twitter|instagram|youtube|whatsapp|telegram/i,
+    ];
+    const mpInfoNoisePatterns = [
+      /© 2006-20\d{2}/i,
+      /जनसम्पर्क विभाग/i,
+      /साईट का संस्करण/i,
+      /जिले के समाचार/i,
+      /मंत्रिपरिषद/i,
+      /डायरेक्टरी/i,
+      /भोपालराजगढ़|ग्वालियरग्वालियर|उज्जैननीमच|जबलपुरकटनी/i,
+      /e-संदेश|स्पेशल/i,
+    ];
+    const activeNoisePatterns = articleHost.includes("mpinfo.org")
+      ? [...siteNoisePatterns, ...mpInfoNoisePatterns]
+      : siteNoisePatterns;
 
     const title =
       document.querySelector('meta[property="og:title"]')?.content ||
@@ -427,9 +453,7 @@ async function extractArticleTextFromPage(page, articleUrl) {
           continue;
         }
 
-        if (
-          /cookie|subscribe|newsletter|follow us|advertisement|read more|click here|download app/i.test(text)
-        ) {
+        if (activeNoisePatterns.some((pattern) => pattern.test(text))) {
           continue;
         }
 
@@ -459,6 +483,39 @@ async function extractArticleTextFromPage(page, articleUrl) {
       combinedText: normalize(combinedText),
     };
   });
+}
+
+function isTransientBrowserError(error) {
+  const message = String(error?.message || "");
+  return [
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_NETWORK_CHANGED",
+    "ERR_TIMED_OUT",
+    "Navigation timeout",
+    "Timeout",
+    "Target closed",
+    "Session closed",
+  ].some((fragment) => message.includes(fragment));
+}
+
+async function withTransientRetry(task, { retries = 2, delayMs = 1200 } = {}) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await task(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !isTransientBrowserError(error)) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+    }
+  }
+
+  throw lastError;
 }
 
 async function generateAiRewrite(articleRecord, articleText) {
@@ -594,7 +651,9 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
   const { browser, page } = await createBrowserPage();
 
   try {
-    const articleText = await extractArticleTextFromPage(page, articleRecord.source_url);
+    const articleText = await withTransientRetry(
+      async () => extractArticleTextFromPage(page, articleRecord.source_url)
+    );
     if (!articleText.combinedText || articleText.combinedText.length < 120) {
       throw new Error("Could not extract enough article text for AI rewriting.");
     }
