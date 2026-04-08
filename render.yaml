@@ -4,7 +4,7 @@ services:
     runtime: node
     rootDir: .
     plan: starter
-    buildCommand: npm ci
+    buildCommand: npm run render:build
     startCommand: npm run start:prod
     healthCheckPath: /api/v1/health
     envVars:
@@ -31,7 +31,9 @@ services:
       - key: DB_SSL_MODE
         value: require
       - key: BROWSER_EXECUTABLE_PATH
-        value: /usr/bin/google-chrome
+        value: ""
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/src/.puppeteer-cache
       - key: SCHEDULER_ENABLED
         value: true
       - key: AI_SCHEDULER_ENABLED
