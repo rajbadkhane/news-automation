@@ -461,21 +461,6 @@ async function incrementCounter({
   };
 }
 
-async function deleteKeysByPattern(client, pattern) {
-  let cursor = "0";
-
-  do {
-    const reply = await client.scan(cursor, {
-      MATCH: pattern,
-      COUNT: 100,
-    });
-    cursor = reply.cursor;
-    if (reply.keys.length > 0) {
-      await client.del(reply.keys);
-    }
-  } while (cursor !== "0");
-}
-
 async function invalidateCachePrefixes(prefixes = []) {
   if (!prefixes.length) {
     return;
@@ -486,19 +471,6 @@ async function invalidateCachePrefixes(prefixes = []) {
       if (key.startsWith(prefix)) {
         memoryCache.delete(key);
       }
-    }
-  }
-
-  const client = await getRedisClient();
-  if (!client) {
-    return;
-  }
-
-  for (const prefix of prefixes) {
-    try {
-      await deleteKeysByPattern(client, `${prefix}*`);
-    } catch (error) {
-      console.error(`Redis cache invalidation failed for ${prefix}:`, error.message);
     }
   }
 }
