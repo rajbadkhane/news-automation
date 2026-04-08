@@ -730,7 +730,10 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
       rawResponse: aiResult.raw_response,
     });
 
-    return savedRewrite;
+    return setAiRewritePublicationStatus(dbPool, savedRewrite.id, {
+      status: "published",
+      publishedBy: "ai-system",
+    });
   } finally {
     await browser.close();
   }
