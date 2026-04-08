@@ -2252,21 +2252,23 @@ async function createApiClient({ name, allowedOrigins = [], allowedScopes = [], 
 
   const normalizedQuotaLimit = Number.isFinite(Number(quotaLimit)) ? Number(quotaLimit) : null;
   const normalizedQuotaWindow = normalizeQuotaWindow(quotaWindow);
+  const initialActiveValue = dbPool.dialect === "postgres" ? true : 1;
 
   const [result] = await dbPool.execute(
     dbPool.dialect === "postgres"
       ? `
           INSERT INTO api_clients (name, key_hash, is_active, allowed_origins_json, allowed_scopes_json, quota_limit, quota_window, notes)
-          VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           RETURNING id
         `
       : `
           INSERT INTO api_clients (name, key_hash, is_active, allowed_origins_json, allowed_scopes_json, quota_limit, quota_window, notes)
-          VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `,
     [
       String(name || "").trim(),
       keyHash,
+      initialActiveValue,
       JSON.stringify(normalizedOrigins),
       JSON.stringify(normalizedScopes),
       normalizedQuotaLimit,
@@ -2303,7 +2305,9 @@ async function updateApiClient(clientId, payload) {
   }
 
   const nextName = payload.name !== undefined ? String(payload.name || "").trim() : existing.name;
-  const nextActive = payload.is_active !== undefined ? (payload.is_active ? 1 : 0) : existing.is_active;
+  const nextActive = payload.is_active !== undefined
+    ? (dbPool.dialect === "postgres" ? Boolean(payload.is_active) : (payload.is_active ? 1 : 0))
+    : existing.is_active;
   const nextOrigins = payload.allowed_origins !== undefined
     ? JSON.stringify(normalizeOriginsList(payload.allowed_origins))
     : existing.allowed_origins_json;
