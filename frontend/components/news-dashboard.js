@@ -3,6 +3,8 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 
+const REFRESH_INTERVAL_MS = 30000;
+
 function formatTimestamp(value) {
   if (!value) {
     return "No timestamp";
@@ -110,18 +112,23 @@ function splitAiParagraphs(value) {
     .filter(Boolean);
 }
 
-function getDisplayImageUrl(apiBaseUrl, imageUrl) {
+function getDisplayImageUrl(imageUrl) {
   if (!imageUrl) {
     return null;
   }
 
   try {
-    const proxyUrl = new URL(`${apiBaseUrl}/image-proxy`);
+    const proxyUrl = new URL(getDashboardProxyPath("/image-proxy"), window.location.origin);
     proxyUrl.searchParams.set("url", imageUrl);
     return proxyUrl.toString();
   } catch {
     return imageUrl;
   }
+}
+
+function getDashboardProxyPath(path) {
+  const normalized = String(path || "").startsWith("/") ? path : `/${path}`;
+  return `/api/dashboard${normalized}`;
 }
 
 function flattenGroups(groups) {
@@ -171,7 +178,6 @@ export default function NewsDashboard({
   initialPayload,
   cronPayload,
   initialSchedulerLogPayload,
-  apiBaseUrl,
 }) {
   const shellRef = useRef(null);
   const [livePayload, setLivePayload] = useState(initialPayload);
@@ -195,44 +201,23 @@ export default function NewsDashboard({
     activeLanguage: "english",
     article: null,
   });
+  const dashboardNewsPath = getDashboardProxyPath("/news/grouped?limit=500");
+  const dashboardCronPath = getDashboardProxyPath("/cron/status");
+  const dashboardLogsPath = getDashboardProxyPath("/scheduler/logs?limit=20");
 
   async function triggerSync(endpoint, successMessage) {
-    try {
-      setSyncState({
-        loading: true,
-        message: "Sync in progress...",
-      });
-
-      const response = await fetch(endpoint, {
-        method: "GET",
-      });
-      const payload = await response.json();
-
-      if (!response.ok || payload.status === "Error") {
-        throw new Error(payload.message || "Sync failed.");
-      }
-
-      setSyncState({
-        loading: false,
-        message: successMessage,
-      });
-      startTransition(() => {
-        void refreshDashboard();
-      });
-    } catch (error) {
-      setSyncState({
-        loading: false,
-        message: error.message,
-      });
-    }
+    setSyncState({
+      loading: false,
+      message: "Sync actions are now restricted to the protected admin panel.",
+    });
   }
 
   async function refreshDashboard() {
     try {
       const [newsResponse, cronResponse, schedulerLogsResponse] = await Promise.all([
-        fetch(`${apiBaseUrl}/news/grouped?limit=500`, { cache: "no-store" }),
-        fetch(`${apiBaseUrl}/cron/status`, { cache: "no-store" }),
-        fetch(`${apiBaseUrl}/scheduler/logs?limit=20`, { cache: "no-store" }),
+        fetch(dashboardNewsPath, { cache: "no-store" }),
+        fetch(dashboardCronPath, { cache: "no-store" }),
+        fetch(dashboardLogsPath, { cache: "no-store" }),
       ]);
 
       const [newsPayload, cronPayloadNext, schedulerLogPayloadNext] = await Promise.all([
@@ -261,43 +246,12 @@ export default function NewsDashboard({
   }
 
   async function openAiRewrite(item) {
-    try {
-      setAiState((current) => ({
-        ...current,
-        loading: true,
-        message: `Preparing AI rewrite for story #${item.id}...`,
-        selectedNewsId: item.id,
-      }));
-
-      let response = await fetch(`${apiBaseUrl}/ai/rewrite/${item.id}`, {
-        method: "GET",
-      });
-
-      if (response.status === 404) {
-        response = await fetch(`${apiBaseUrl}/ai/rewrite/${item.id}`, {
-          method: "POST",
-        });
-      }
-
-      const payload = await response.json();
-      if (!response.ok || payload.status === "Error") {
-        throw new Error(payload.message || "AI rewrite failed.");
-      }
-
-      setAiState({
-        loading: false,
-        message: payload.message || "AI rewrite loaded.",
-        selectedNewsId: item.id,
-        activeLanguage: "english",
-        article: payload,
-      });
-    } catch (error) {
-      setAiState((current) => ({
-        ...current,
-        loading: false,
-        message: error.message,
-      }));
-    }
+    setAiState((current) => ({
+      ...current,
+      loading: false,
+      selectedNewsId: item.id,
+      message: "AI rewrite generation is now restricted to the protected admin panel.",
+    }));
   }
 
   const aiRewrite = aiState.article?.rewrite || null;
@@ -340,14 +294,27 @@ export default function NewsDashboard({
   }, []);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
+    function refreshIfVisible() {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
       startTransition(() => {
         void refreshDashboard();
       });
-    }, 10000);
+    }
 
-    return () => window.clearInterval(interval);
-  }, [apiBaseUrl]);
+    const interval = window.setInterval(() => {
+      refreshIfVisible();
+    }, REFRESH_INTERVAL_MS);
+
+    document.addEventListener("visibilitychange", refreshIfVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [dashboardCronPath, dashboardLogsPath, dashboardNewsPath]);
 
   return (
     <main
@@ -375,14 +342,14 @@ export default function NewsDashboard({
           <div className="grid grid-cols-2 gap-3 md:min-w-[320px]">
             <button
               type="button"
-              onClick={() => triggerSync(`${apiBaseUrl}/fetch-rss-news/all?limit=5`, "RSS categories synced. Reloading dashboard...")}
+              onClick={() => triggerSync(getDashboardProxyPath("/fetch-rss-news/all?limit=5"), "RSS categories synced. Reloading dashboard...")}
               disabled={syncState.loading}
               className="rounded-2xl bg-amber-400 px-4 py-3 text-center text-sm font-semibold text-slate-950 transition hover:-translate-y-0.5 hover:bg-amber-300"
             >
               {syncState.loading ? "Syncing..." : "Sync All Categories"}
             </button>
             <a
-              href={`${apiBaseUrl}/news/grouped?limit=500`}
+              href={dashboardNewsPath}
               target="_blank"
               rel="noreferrer"
               className="rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-center text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/15"
@@ -470,7 +437,7 @@ export default function NewsDashboard({
                 <div className="relative aspect-[16/9] overflow-hidden">
                   {leadStory.image_link ? (
                     <img
-                      src={getDisplayImageUrl(apiBaseUrl, leadStory.image_link)}
+                      src={getDisplayImageUrl(leadStory.image_link)}
                       alt={leadStory.title}
                       className="h-full w-full object-cover"
                       loading="lazy"
@@ -593,7 +560,7 @@ export default function NewsDashboard({
                 <div className="mt-4 grid gap-3">
                   <button
                     type="button"
-                    onClick={() => triggerSync(`${apiBaseUrl}/fetch-rss-news/all?limit=5`, "Fetched 5 stories per category from RSS feeds. Reloading dashboard...")}
+                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-rss-news/all?limit=5"), "Fetched 5 stories per category from RSS feeds. Reloading dashboard...")}
                     disabled={syncState.loading}
                     className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-white transition hover:bg-white/15"
                   >
@@ -601,7 +568,7 @@ export default function NewsDashboard({
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerSync(`${apiBaseUrl}/fetch-rss-news?category=technology&limit=5`, "Technology feed synced. Reloading dashboard...")}
+                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-rss-news?category=technology&limit=5"), "Technology feed synced. Reloading dashboard...")}
                     disabled={syncState.loading}
                     className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-white transition hover:bg-white/15"
                   >
@@ -609,7 +576,7 @@ export default function NewsDashboard({
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerSync(`${apiBaseUrl}/fetch-mpinfo-news?category=states&limit=5`, "MP Info test fetch completed. Reloading dashboard...")}
+                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-mpinfo-news?category=states&limit=5"), "MP Info test fetch completed. Reloading dashboard...")}
                     disabled={syncState.loading}
                     className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-white transition hover:bg-white/15"
                   >
@@ -780,7 +747,7 @@ export default function NewsDashboard({
                   <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                     {item.image_link ? (
                       <img
-                        src={getDisplayImageUrl(apiBaseUrl, item.image_link)}
+                        src={getDisplayImageUrl(item.image_link)}
                         alt={item.title || "MP Info image"}
                         className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
                         loading="lazy"
@@ -861,7 +828,7 @@ export default function NewsDashboard({
                         {group.count} saved
                       </span>
                       <a
-                        href={`${apiBaseUrl}/news?category=${group.category}&limit=50`}
+                        href={getDashboardProxyPath(`/news?category=${group.category}&limit=50`)}
                         target="_blank"
                         rel="noreferrer"
                         className="rounded-full border border-amber-300/30 bg-amber-300/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-amber-100 transition hover:bg-amber-300/20"
@@ -872,7 +839,7 @@ export default function NewsDashboard({
                         type="button"
                         onClick={() =>
                           triggerSync(
-                            `${apiBaseUrl}/fetch-rss-news?category=${group.category}&limit=5`,
+                            getDashboardProxyPath(`/fetch-rss-news?category=${group.category}&limit=5`),
                             `${prettifyCategory(group.category)} synced. Reloading dashboard...`
                           )
                         }
@@ -893,7 +860,7 @@ export default function NewsDashboard({
                         <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                           {item.image_link ? (
                             <img
-                              src={getDisplayImageUrl(apiBaseUrl, item.image_link)}
+                              src={getDisplayImageUrl(item.image_link)}
                               alt={item.title || "News image"}
                               className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
                               loading="lazy"
@@ -979,7 +946,7 @@ export default function NewsDashboard({
                   <div className="relative aspect-[16/11] overflow-hidden bg-slate-900">
                     {aiState.article?.news?.image_link ? (
                       <img
-                        src={getDisplayImageUrl(apiBaseUrl, aiState.article.news.image_link)}
+                        src={getDisplayImageUrl(aiState.article.news.image_link)}
                         alt={aiState.article?.news?.title || "AI article image"}
                         className="h-full w-full object-cover"
                         loading="lazy"

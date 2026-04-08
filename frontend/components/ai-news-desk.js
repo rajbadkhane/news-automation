@@ -3,6 +3,8 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 
+const REFRESH_INTERVAL_MS = 30000;
+
 function formatTimestamp(value) {
   if (!value) {
     return "No timestamp";
@@ -26,13 +28,18 @@ function prettifyCategory(value) {
     .join(" ");
 }
 
-function getDisplayImageUrl(apiBaseUrl, imageUrl) {
+function getDashboardProxyPath(path) {
+  const normalized = String(path || "").startsWith("/") ? path : `/${path}`;
+  return `/api/dashboard${normalized}`;
+}
+
+function getDisplayImageUrl(imageUrl) {
   if (!imageUrl) {
     return null;
   }
 
   try {
-    const proxyUrl = new URL(`${apiBaseUrl}/image-proxy`);
+    const proxyUrl = new URL(getDashboardProxyPath("/image-proxy"), window.location.origin);
     proxyUrl.searchParams.set("url", imageUrl);
     return proxyUrl.toString();
   } catch {
@@ -84,7 +91,7 @@ function buildCardFeed(groups) {
   );
 }
 
-export default function AiNewsDesk({ aiPayload, aiCronPayload, apiBaseUrl }) {
+export default function AiNewsDesk({ aiPayload, aiCronPayload }) {
   const shellRef = useRef(null);
   const articlePanelRef = useRef(null);
   const [liveAiPayload, setLiveAiPayload] = useState(aiPayload);
@@ -170,8 +177,8 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload, apiBaseUrl }) {
   async function refreshAiDesk() {
     try {
       const [newsResponse, cronResponse] = await Promise.all([
-        fetch(`${apiBaseUrl}/ai/news/grouped?limit=100`, { cache: "no-store" }),
-        fetch(`${apiBaseUrl}/ai/cron/status`, { cache: "no-store" }),
+        fetch(getDashboardProxyPath("/ai/news/grouped?limit=100"), { cache: "no-store" }),
+        fetch(getDashboardProxyPath("/ai/cron/status"), { cache: "no-store" }),
       ]);
 
       const [newsPayload, cronPayloadNext] = await Promise.all([
@@ -192,14 +199,27 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload, apiBaseUrl }) {
   }
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
+    function refreshIfVisible() {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
       startTransition(() => {
         void refreshAiDesk();
       });
-    }, 10000);
+    }
 
-    return () => window.clearInterval(interval);
-  }, [apiBaseUrl]);
+    const interval = window.setInterval(() => {
+      refreshIfVisible();
+    }, REFRESH_INTERVAL_MS);
+
+    document.addEventListener("visibilitychange", refreshIfVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, []);
 
   return (
     <main
@@ -231,7 +251,7 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload, apiBaseUrl }) {
               Open Main Desk
             </a>
             <a
-              href={`${apiBaseUrl}/ai/news/grouped?limit=100`}
+              href={getDashboardProxyPath("/ai/news/grouped?limit=100")}
               target="_blank"
               rel="noreferrer"
               className="rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-center text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/15"
@@ -304,7 +324,7 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload, apiBaseUrl }) {
                   <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                     {item.news?.image_link ? (
                       <img
-                        src={getDisplayImageUrl(apiBaseUrl, item.news.image_link)}
+                        src={getDisplayImageUrl(item.news.image_link)}
                         alt={cardLanguage.headline || item.news?.title}
                         className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]"
                         loading="lazy"
@@ -382,7 +402,7 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload, apiBaseUrl }) {
                 <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                   {selectedStory.news?.image_link ? (
                     <img
-                      src={getDisplayImageUrl(apiBaseUrl, selectedStory.news.image_link)}
+                      src={getDisplayImageUrl(selectedStory.news.image_link)}
                       alt={englishBlock?.headline || selectedStory.news?.title}
                       className="h-full w-full object-cover"
                       loading="lazy"

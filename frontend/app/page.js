@@ -1,21 +1,74 @@
 import NewsDashboard from "@/components/news-dashboard";
-import { getPublicApiBaseUrl } from "@/lib/runtime-env";
+import { getAdminMasterApiKey, getPublicApiBaseUrl } from "@/lib/runtime-env";
 
 export const dynamic = "force-dynamic";
 
 const API_BASE_URL = getPublicApiBaseUrl();
+const ADMIN_MASTER_API_KEY = getAdminMasterApiKey();
+
+function normalizeDashboardListPayload(payload) {
+  if (payload?.success) {
+    return {
+      status: "Success",
+      count: payload.meta?.count || 0,
+      category_count: payload.meta?.category_count || 0,
+      grouped_records: payload.data || [],
+    };
+  }
+
+  return {
+    status: "Error",
+    count: 0,
+    grouped_records: [],
+    message: payload?.error?.message || "Backend response was invalid.",
+  };
+}
+
+function normalizeSchedulerPayload(payload) {
+  if (payload?.success) {
+    return {
+      status: "Success",
+      scheduler: payload.data || null,
+    };
+  }
+
+  return {
+    status: "Error",
+    scheduler: null,
+    message: payload?.error?.message || "Backend response was invalid.",
+  };
+}
+
+function normalizeSchedulerLogsPayload(payload) {
+  if (payload?.success) {
+    return {
+      status: "Success",
+      records: payload.data || [],
+      count: payload.meta?.count || 0,
+    };
+  }
+
+  return {
+    status: "Error",
+    records: [],
+    message: payload?.error?.message || "Backend response was invalid.",
+  };
+}
 
 async function getNewsFeed() {
   try {
-    const response = await fetch(`${API_BASE_URL}/news/grouped?limit=500`, {
+    const response = await fetch(`${API_BASE_URL}/api/v1/news/grouped?limit=500`, {
       cache: "no-store",
+      headers: {
+        "x-api-key": ADMIN_MASTER_API_KEY,
+      },
     });
 
     if (!response.ok) {
       throw new Error(`Backend responded with ${response.status}`);
     }
 
-    return await response.json();
+    return normalizeDashboardListPayload(await response.json());
   } catch (error) {
     return {
       status: "Error",
@@ -28,15 +81,18 @@ async function getNewsFeed() {
 
 async function getCronStatus() {
   try {
-    const response = await fetch(`${API_BASE_URL}/cron/status`, {
+    const response = await fetch(`${API_BASE_URL}/api/v1/cron/status`, {
       cache: "no-store",
+      headers: {
+        "x-api-key": ADMIN_MASTER_API_KEY,
+      },
     });
 
     if (!response.ok) {
       throw new Error(`Cron API responded with ${response.status}`);
     }
 
-    return await response.json();
+    return normalizeSchedulerPayload(await response.json());
   } catch (error) {
     return {
       status: "Error",
@@ -48,15 +104,18 @@ async function getCronStatus() {
 
 async function getSchedulerLogs() {
   try {
-    const response = await fetch(`${API_BASE_URL}/scheduler/logs?limit=20`, {
+    const response = await fetch(`${API_BASE_URL}/api/v1/scheduler/logs?limit=20`, {
       cache: "no-store",
+      headers: {
+        "x-api-key": ADMIN_MASTER_API_KEY,
+      },
     });
 
     if (!response.ok) {
       throw new Error(`Scheduler logs API responded with ${response.status}`);
     }
 
-    return await response.json();
+    return normalizeSchedulerLogsPayload(await response.json());
   } catch (error) {
     return {
       status: "Error",
@@ -78,7 +137,6 @@ export default async function HomePage() {
       initialPayload={payload}
       cronPayload={cronPayload}
       initialSchedulerLogPayload={schedulerLogPayload}
-      apiBaseUrl={API_BASE_URL}
     />
   );
 }

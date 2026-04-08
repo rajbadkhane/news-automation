@@ -4,6 +4,7 @@ const express = require("express");
 const crypto = require("crypto");
 const fs = require("fs");
 const puppeteer = require("puppeteer");
+const sharp = require("sharp");
 const {
   createDatabasePool,
   detectDialect,
@@ -30,6 +31,9 @@ if (TRUST_PROXY_ENABLED) {
   app.set("trust proxy", true);
 }
 const PORT = process.env.PORT || 3000;
+const IMAGE_PROXY_MAX_WIDTH = Math.max(320, Number.parseInt(process.env.IMAGE_PROXY_MAX_WIDTH || "1280", 10) || 1280);
+const IMAGE_PROXY_WEBP_QUALITY = Math.max(40, Math.min(Number.parseInt(process.env.IMAGE_PROXY_WEBP_QUALITY || "72", 10) || 72, 90));
+const IMAGE_PROXY_JPEG_QUALITY = Math.max(40, Math.min(Number.parseInt(process.env.IMAGE_PROXY_JPEG_QUALITY || "74", 10) || 74, 90));
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = process.env.DB_USER || "root";
@@ -43,6 +47,9 @@ const SCHEDULER_ENABLED = !["false", "0", "no"].includes(
 const AI_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
   String(process.env.AI_SCHEDULER_ENABLED || "true").toLowerCase()
 );
+const LEGACY_PUBLIC_ROUTES_ENABLED = ["true", "1", "yes"].includes(
+  String(process.env.LEGACY_PUBLIC_ROUTES_ENABLED || "").toLowerCase()
+);
 const API_VERSION = "v1";
 const API_BASE_PATH = `/api/${API_VERSION}`;
 const API_KEYS = String(process.env.API_KEYS || "local-dev-key")
@@ -54,6 +61,19 @@ const API_CORS_ORIGINS = String(process.env.API_CORS_ORIGINS || "*")
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
+const REDIS_URL = String(
+  process.env.REDIS_URL
+  || process.env.UPSTASH_REDIS_REST_URL
+  || process.env.UPSTASH_REDIS_URL
+  || ""
+).trim();
+const DASHBOARD_CACHE_TTL_SECONDS = Math.max(5, Number.parseInt(process.env.DASHBOARD_CACHE_TTL_SECONDS, 10) || 30);
+const STATUS_CACHE_TTL_SECONDS = Math.max(5, Number.parseInt(process.env.STATUS_CACHE_TTL_SECONDS, 10) || 10);
+const RSS_FEED_CACHE_TTL_SECONDS = Math.max(30, Number.parseInt(process.env.RSS_FEED_CACHE_TTL_SECONDS, 10) || 300);
+const ARTICLE_CANDIDATE_MULTIPLIER = Math.max(2, Number.parseInt(process.env.ARTICLE_CANDIDATE_MULTIPLIER, 10) || 4);
+const ARTICLE_CANDIDATE_CAP = Math.max(8, Number.parseInt(process.env.ARTICLE_CANDIDATE_CAP, 10) || 24);
+const FEED_QUEUE_MULTIPLIER = Math.max(2, Number.parseInt(process.env.FEED_QUEUE_MULTIPLIER, 10) || 2);
+const FEED_QUEUE_CAP = Math.max(6, Number.parseInt(process.env.FEED_QUEUE_CAP, 10) || 18);
 const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60_000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const MAIN_SCHEDULER_LOCK_NAME = `${DB_NAME}:main-scheduler`;
@@ -226,12 +246,15 @@ const SCHEDULER_HEALTH_THRESHOLD_MS = 2 * SCHEDULER_TICK_MS + 15 * 1000;
 const AI_SCHEDULER_HEALTH_THRESHOLD_MS = 2 * AI_SCHEDULER_TICK_MS + 15 * 1000;
 const WATCHDOG_TICK_MS = 60 * 1000;
 const apiRateLimitStore = new Map();
+const quotaStore = new Map();
 
 let schedulerInterval = null;
 let schedulerRunning = false;
 let aiSchedulerInterval = null;
 let aiSchedulerRunning = false;
 let schedulerWatchdogInterval = null;
+let schedulerHeartbeatInterval = null;
+let aiSchedulerHeartbeatInterval = null;
 let serverInstance = null;
 const schedulerState = {
   enabled: SCHEDULER_ENABLED,
@@ -267,6 +290,222 @@ const processState = {
   lastUncaughtException: null,
   lastUnhandledRejection: null,
 };
+const memoryCache = new Map();
+let redisClientPromise = null;
+
+function getCachePrefixes() {
+  return [
+    "cache:news:",
+    "cache:scheduler:",
+    "cache:cron:",
+    "cache:rss-feeds",
+  ];
+}
+
+async function getRedisClient() {
+  if (!REDIS_URL) {
+    return null;
+  }
+
+  if (!redisClientPromise) {
+    redisClientPromise = (async () => {
+      try {
+        const { createClient } = require("redis");
+        const client = createClient({ url: REDIS_URL });
+        client.on("error", (error) => {
+          console.error("Redis cache error:", error.message);
+        });
+        await client.connect();
+        console.log("Redis cache connected.");
+        return client;
+      } catch (error) {
+        console.error("Redis cache initialization failed:", error.message);
+        return null;
+      }
+    })();
+  }
+
+  return redisClientPromise;
+}
+
+function getMemoryCacheValue(key) {
+  const entry = memoryCache.get(key);
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    memoryCache.delete(key);
+    return null;
+  }
+
+  return entry.value;
+}
+
+function setMemoryCacheValue(key, value, ttlSeconds) {
+  memoryCache.set(key, {
+    value,
+    expiresAt: Date.now() + (ttlSeconds * 1000),
+  });
+}
+
+async function cacheGetJson(key) {
+  const memoryValue = getMemoryCacheValue(key);
+  if (memoryValue !== null) {
+    return memoryValue;
+  }
+
+  const client = await getRedisClient();
+  if (!client) {
+    return null;
+  }
+
+  try {
+    const raw = await client.get(key);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw);
+    setMemoryCacheValue(key, parsed, 5);
+    return parsed;
+  } catch (error) {
+    console.error("Redis cache read failed:", error.message);
+    return null;
+  }
+}
+
+async function cacheSetJson(key, value, ttlSeconds) {
+  setMemoryCacheValue(key, value, ttlSeconds);
+
+  const client = await getRedisClient();
+  if (!client) {
+    return;
+  }
+
+  try {
+    await client.set(key, JSON.stringify(value), {
+      EX: ttlSeconds,
+    });
+  } catch (error) {
+    console.error("Redis cache write failed:", error.message);
+  }
+}
+
+async function withJsonCache(key, ttlSeconds, loader) {
+  const cached = await cacheGetJson(key);
+  if (cached !== null) {
+    return cached;
+  }
+
+  const value = await loader();
+  await cacheSetJson(key, value, ttlSeconds);
+  return value;
+}
+
+function getMemoryCounterValue(store, key) {
+  const entry = store.get(key);
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    store.delete(key);
+    return null;
+  }
+
+  return entry;
+}
+
+function setMemoryCounterValue(store, key, value, ttlMs) {
+  store.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+}
+
+async function incrementCounter({
+  key,
+  windowMs,
+  memoryStore,
+}) {
+  const client = await getRedisClient();
+  if (client) {
+    const count = await client.incr(key);
+    let ttlMs = await client.pTTL(key);
+
+    if (ttlMs < 0) {
+      await client.pExpire(key, windowMs);
+      ttlMs = windowMs;
+    }
+
+    return {
+      count,
+      resetAt: Date.now() + ttlMs,
+    };
+  }
+
+  const current = getMemoryCounterValue(memoryStore, key);
+  if (!current) {
+    setMemoryCounterValue(memoryStore, key, 1, windowMs);
+    return {
+      count: 1,
+      resetAt: Date.now() + windowMs,
+    };
+  }
+
+  current.value += 1;
+  return {
+    count: current.value,
+    resetAt: current.expiresAt,
+  };
+}
+
+async function deleteKeysByPattern(client, pattern) {
+  let cursor = "0";
+
+  do {
+    const reply = await client.scan(cursor, {
+      MATCH: pattern,
+      COUNT: 100,
+    });
+    cursor = reply.cursor;
+    if (reply.keys.length > 0) {
+      await client.del(reply.keys);
+    }
+  } while (cursor !== "0");
+}
+
+async function invalidateCachePrefixes(prefixes = []) {
+  if (!prefixes.length) {
+    return;
+  }
+
+  for (const prefix of prefixes) {
+    for (const key of Array.from(memoryCache.keys())) {
+      if (key.startsWith(prefix)) {
+        memoryCache.delete(key);
+      }
+    }
+  }
+
+  const client = await getRedisClient();
+  if (!client) {
+    return;
+  }
+
+  for (const prefix of prefixes) {
+    try {
+      await deleteKeysByPattern(client, `${prefix}*`);
+    } catch (error) {
+      console.error(`Redis cache invalidation failed for ${prefix}:`, error.message);
+    }
+  }
+}
+
+async function invalidateDashboardCaches() {
+  await invalidateCachePrefixes(getCachePrefixes());
+}
 
 async function initializeDatabase() {
   dbPool = await createDatabasePool();
@@ -538,7 +777,12 @@ async function saveNewsRecord({
       : [category, feedSource, feedUrl, query, title, articleUrl, imageLink, imageSource, articleUrl]
   );
 
-  return result.affectedRows > 0 ? result.insertId : null;
+  if (result.affectedRows > 0) {
+    await invalidateDashboardCaches();
+    return result.insertId;
+  }
+
+  return null;
 }
 
 async function findNewsRecordByUrl(articleUrl) {
@@ -574,13 +818,22 @@ async function createSchedulerRunLog({
   }
 
   const [result] = await dbPool.execute(
-    `
-      INSERT INTO scheduler_runs (
-        scheduler_name, run_type, trigger_source, status, category, window_key,
-        requested_limit, title, message
-      )
-      VALUES (?, ?, ?, 'Running', ?, ?, ?, ?, ?)
-    `,
+    dbPool.dialect === "postgres"
+      ? `
+          INSERT INTO scheduler_runs (
+            scheduler_name, run_type, trigger_source, status, category, window_key,
+            requested_limit, title, message
+          )
+          VALUES (?, ?, ?, 'Running', ?, ?, ?, ?, ?)
+          RETURNING id
+        `
+      : `
+          INSERT INTO scheduler_runs (
+            scheduler_name, run_type, trigger_source, status, category, window_key,
+            requested_limit, title, message
+          )
+          VALUES (?, ?, ?, 'Running', ?, ?, ?, ?, ?)
+        `,
     [schedulerName, runType, triggerSource, category, windowKey, requestedLimit, title, message]
   );
 
@@ -632,6 +885,8 @@ async function finalizeSchedulerRunLog(
       logId,
     ]
   );
+
+  await invalidateDashboardCaches();
 }
 
 async function listSchedulerRuns({ schedulerName = null, limit = 50 } = {}) {
@@ -665,6 +920,83 @@ async function listSchedulerRuns({ schedulerName = null, limit = 50 } = {}) {
     ...row,
     details: row.details_json ? JSON.parse(row.details_json) : null,
   }));
+}
+
+async function getCachedRssFeedsPayload() {
+  return withJsonCache("cache:rss-feeds", RSS_FEED_CACHE_TTL_SECONDS, async () => ({
+    status: "Success",
+    source: "Configured RSS feeds",
+    count: Object.keys(RSS_FEEDS).length,
+    feeds: RSS_FEEDS,
+    category_feed_pools: Object.fromEntries(
+      Object.keys(RSS_FEEDS).map((category) => [
+        category,
+        {
+          direct_feeds: RSS_FEEDS[category],
+          related_categories: CATEGORY_FEED_GROUPS[category] || [],
+          combined_feed_pool: getCategoryFeedPool(category),
+        },
+      ])
+    ),
+  }));
+}
+
+async function getCachedGroupedNewsPayload(limit = 500) {
+  return withJsonCache(`cache:news:grouped:${limit}`, DASHBOARD_CACHE_TTL_SECONDS, async () => {
+    const rows = await listNewsRecords({ limit });
+    const grouped = groupRecordsByCategory(rows);
+
+    return {
+      status: "Success",
+      database: DB_NAME,
+      count: rows.length,
+      category_count: grouped.length,
+      categories: grouped.map((item) => item.category),
+      message:
+        rows.length === 0
+          ? "No category records saved yet. Run the category fetch endpoints first."
+          : "Saved news records loaded category-wise.",
+      grouped_records: grouped,
+    };
+  });
+}
+
+async function getCachedCronStatusPayload() {
+  return withJsonCache("cache:cron:status", STATUS_CACHE_TTL_SECONDS, async () => ({
+    status: "Success",
+    scheduler: {
+      enabled: schedulerState.enabled,
+      timezone: INDIA_TIMEZONE,
+      tick_ms: SCHEDULER_TICK_MS,
+      quiet_hours: schedulerState.quietHours,
+      last_tick_at: schedulerState.lastTickAt,
+      last_run_at: schedulerState.lastRunAt,
+      last_window_key: schedulerState.lastWindowKey,
+      manual_run: schedulerState.manualRun,
+      categories: schedulerState.categories,
+      schedule: schedulerState.schedule || getCategorySchedule(),
+    },
+  }));
+}
+
+async function getCachedSchedulerLogsPayload({ schedulerName = null, limit = 20 } = {}) {
+  return withJsonCache(
+    `cache:scheduler:${schedulerName || "all"}:${limit}`,
+    STATUS_CACHE_TTL_SECONDS,
+    async () => {
+      const logs = await listSchedulerRuns({
+        schedulerName,
+        limit,
+      });
+
+      return {
+        status: "Success",
+        count: logs.length,
+        scheduler: schedulerName,
+        records: logs,
+      };
+    }
+  );
 }
 
 function buildApiDocs() {
@@ -1426,30 +1758,31 @@ function enforceApiRateLimit(req, res, next) {
     return next();
   }
 
-  const bucketKey = req.apiKey || req.ip || "anonymous";
-  const now = Date.now();
-  const current = apiRateLimitStore.get(bucketKey);
+  const bucketKey = `rate:${req.apiKey || req.ip || "anonymous"}`;
 
-  if (!current || now > current.resetAt) {
-    apiRateLimitStore.set(bucketKey, {
-      count: 1,
-      resetAt: now + API_RATE_LIMIT_WINDOW_MS,
-    });
-    return next();
-  }
+  return incrementCounter({
+    key: bucketKey,
+    windowMs: API_RATE_LIMIT_WINDOW_MS,
+    memoryStore: apiRateLimitStore,
+  })
+    .then((current) => {
+      res.setHeader("X-RateLimit-Limit", API_RATE_LIMIT_MAX);
+      res.setHeader("X-RateLimit-Remaining", Math.max(0, API_RATE_LIMIT_MAX - current.count));
+      res.setHeader("X-RateLimit-Reset", current.resetAt);
 
-  if (current.count >= API_RATE_LIMIT_MAX) {
-    return sendApiError(
-      res,
-      "RATE_LIMITED",
-      "Rate limit exceeded. Please retry later.",
-      429,
-      { retry_after_ms: current.resetAt - now }
-    );
-  }
+      if (current.count > API_RATE_LIMIT_MAX) {
+        return sendApiError(
+          res,
+          "RATE_LIMITED",
+          "Rate limit exceeded. Please retry later.",
+          429,
+          { retry_after_ms: Math.max(0, current.resetAt - Date.now()) }
+        );
+      }
 
-  current.count += 1;
-  return next();
+      return next();
+    })
+    .catch((error) => sendApiError(res, "RATE_LIMIT_FAILED", error.message, 500));
 }
 
 function requireApiScope(scope) {
@@ -1492,8 +1825,8 @@ async function enforceClientQuota(req, res, next) {
   }
 
   try {
-    const used = await countApiUsageForClient(auth.client.id, quotaWindow);
-    if (used >= quotaLimit) {
+    const usage = await incrementClientQuotaUsage(auth.client.id, quotaWindow);
+    if (usage.count > quotaLimit) {
       return sendApiError(
         res,
         "QUOTA_EXCEEDED",
@@ -1502,16 +1835,20 @@ async function enforceClientQuota(req, res, next) {
         {
           quota_limit: quotaLimit,
           quota_window: quotaWindow,
-          used,
+          used: usage.count,
         }
       );
     }
 
+    res.setHeader("X-Quota-Limit", quotaLimit);
+    res.setHeader("X-Quota-Remaining", Math.max(0, quotaLimit - usage.count));
+    res.setHeader("X-Quota-Window", quotaWindow);
+
     req.apiQuota = {
       limit: quotaLimit,
       window: quotaWindow,
-      used,
-      remaining: Math.max(0, quotaLimit - used),
+      used: usage.count,
+      remaining: Math.max(0, quotaLimit - usage.count),
     };
     return next();
   } catch (error) {
@@ -1752,6 +2089,33 @@ function getQuotaWindowStart(windowName) {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
 }
 
+function getQuotaWindowEnd(windowName) {
+  const now = new Date();
+  if (windowName === "month") {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0));
+  }
+
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+}
+
+function buildQuotaCounterKey(clientId, quotaWindow) {
+  const windowStart = getQuotaWindowStart(quotaWindow);
+  const windowToken = quotaWindow === "month"
+    ? windowStart.toISOString().slice(0, 7)
+    : windowStart.toISOString().slice(0, 10);
+
+  return `quota:${clientId}:${quotaWindow}:${windowToken}`;
+}
+
+async function incrementClientQuotaUsage(clientId, quotaWindow) {
+  const ttlMs = Math.max(1_000, getQuotaWindowEnd(quotaWindow).getTime() - Date.now());
+  return incrementCounter({
+    key: buildQuotaCounterKey(clientId, quotaWindow),
+    windowMs: ttlMs,
+    memoryStore: quotaStore,
+  });
+}
+
 async function countApiUsageForClient(clientId, quotaWindow) {
   if (!dbPool || !clientId || !quotaWindow) {
     return 0;
@@ -1902,10 +2266,16 @@ async function createApiClient({ name, allowedOrigins = [], allowedScopes = [], 
   const normalizedQuotaWindow = normalizeQuotaWindow(quotaWindow);
 
   const [result] = await dbPool.execute(
-    `
-      INSERT INTO api_clients (name, key_hash, is_active, allowed_origins_json, allowed_scopes_json, quota_limit, quota_window, notes)
-      VALUES (?, ?, 1, ?, ?, ?, ?, ?)
-    `,
+    dbPool.dialect === "postgres"
+      ? `
+          INSERT INTO api_clients (name, key_hash, is_active, allowed_origins_json, allowed_scopes_json, quota_limit, quota_window, notes)
+          VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+          RETURNING id
+        `
+      : `
+          INSERT INTO api_clients (name, key_hash, is_active, allowed_origins_json, allowed_scopes_json, quota_limit, quota_window, notes)
+          VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+        `,
     [
       String(name || "").trim(),
       keyHash,
@@ -1917,7 +2287,14 @@ async function createApiClient({ name, allowedOrigins = [], allowedScopes = [], 
     ]
   );
 
-  const [rows] = await dbPool.execute("SELECT * FROM api_clients WHERE id = ? LIMIT 1", [result.insertId]);
+  const clientId = result.insertId;
+  let rows = [];
+
+  if (clientId) {
+    [rows] = await dbPool.execute("SELECT * FROM api_clients WHERE id = ? LIMIT 1", [clientId]);
+  } else {
+    [rows] = await dbPool.execute("SELECT * FROM api_clients WHERE key_hash = ? LIMIT 1", [keyHash]);
+  }
 
   return {
     client: formatApiClientRecord(rows[0]),
@@ -2066,6 +2443,14 @@ function validateProductionConfig() {
     throw new Error("Production requires explicit API_CORS_ORIGINS values. Do not use '*'.");
   }
 
+  if (LEGACY_PUBLIC_ROUTES_ENABLED) {
+    throw new Error("Production must keep LEGACY_PUBLIC_ROUTES_ENABLED disabled. Use only /api/v1/* endpoints.");
+  }
+
+  if (!REDIS_URL) {
+    console.warn("Production is running without REDIS_URL. Rate limiting and quota control will fall back to per-instance memory.");
+  }
+
   if (AI_SCHEDULER_ENABLED && !String(process.env.GEMINI_API_KEY || "").trim()) {
     throw new Error("AI_SCHEDULER_ENABLED is true, but GEMINI_API_KEY is missing.");
   }
@@ -2206,6 +2591,28 @@ function isTimestampStale(timestamp, thresholdMs) {
   return Date.now() - value > thresholdMs;
 }
 
+function updateSchedulerHeartbeat() {
+  schedulerState.lastTickAt = new Date().toISOString();
+}
+
+function updateAiSchedulerHeartbeat() {
+  aiSchedulerState.lastTickAt = new Date().toISOString();
+}
+
+function startHeartbeat(intervalRef, updateHeartbeat, intervalMs) {
+  stopHeartbeat(intervalRef);
+  updateHeartbeat();
+  return setInterval(() => {
+    updateHeartbeat();
+  }, intervalMs);
+}
+
+function stopHeartbeat(intervalRef) {
+  if (intervalRef) {
+    clearInterval(intervalRef);
+  }
+}
+
 function clearSchedulerIntervals() {
   if (schedulerInterval) {
     clearInterval(schedulerInterval);
@@ -2216,6 +2623,11 @@ function clearSchedulerIntervals() {
     clearInterval(aiSchedulerInterval);
     aiSchedulerInterval = null;
   }
+
+  stopHeartbeat(schedulerHeartbeatInterval);
+  schedulerHeartbeatInterval = null;
+  stopHeartbeat(aiSchedulerHeartbeatInterval);
+  aiSchedulerHeartbeatInterval = null;
 
   if (schedulerWatchdogInterval) {
     clearInterval(schedulerWatchdogInterval);
@@ -2570,7 +2982,10 @@ async function getArticleUrlsFromFeed(feedConfig, category, limit) {
 
 async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
   const startIndex = Number.isInteger(options.startIndex) ? options.startIndex : 0;
-  const perFeedLimit = Math.max(limit * 3, 5);
+  const perFeedLimit = Math.min(
+    Math.max(limit * FEED_QUEUE_MULTIPLIER, 5),
+    FEED_QUEUE_CAP
+  );
   const seen = new Set();
   const results = [];
   const feedQueueResults = await Promise.allSettled(
@@ -2687,9 +3102,187 @@ function isAllowedImageHost(value) {
   }
 }
 
+function shouldBypassImageCompression(contentType) {
+  const normalized = String(contentType || "").toLowerCase();
+  return normalized.includes("image/gif") || normalized.includes("image/svg");
+}
+
+async function optimizeImageBuffer(buffer, contentType, acceptHeader) {
+  if (shouldBypassImageCompression(contentType)) {
+    return {
+      buffer,
+      contentType,
+    };
+  }
+
+  const transformer = sharp(buffer, { failOn: "none" })
+    .rotate()
+    .resize({
+      width: IMAGE_PROXY_MAX_WIDTH,
+      withoutEnlargement: true,
+      fit: "inside",
+    });
+
+  const normalizedType = String(contentType || "").toLowerCase();
+  const acceptsWebp = String(acceptHeader || "").toLowerCase().includes("image/webp");
+
+  if (acceptsWebp) {
+    return {
+      buffer: await transformer.webp({
+        quality: IMAGE_PROXY_WEBP_QUALITY,
+        effort: 4,
+      }).toBuffer(),
+      contentType: "image/webp",
+    };
+  }
+
+  if (normalizedType.includes("image/png")) {
+    return {
+      buffer: await transformer.png({
+        compressionLevel: 9,
+        palette: true,
+        effort: 7,
+      }).toBuffer(),
+      contentType: "image/png",
+    };
+  }
+
+  return {
+    buffer: await transformer.jpeg({
+      quality: IMAGE_PROXY_JPEG_QUALITY,
+      mozjpeg: true,
+      progressive: true,
+    }).toBuffer(),
+    contentType: "image/jpeg",
+  };
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function extractAttributesFromTag(tag) {
+  const attributes = {};
+  const attributePattern = /([a-zA-Z_:][\w:.-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  let match;
+
+  while ((match = attributePattern.exec(String(tag || "")))) {
+    const key = match[1].toLowerCase();
+    const value = match[3] || match[4] || match[5] || "";
+    attributes[key] = decodeHtmlEntities(value.trim());
+  }
+
+  return attributes;
+}
+
+function extractMetaContentFromHtml(html, metaKey) {
+  const metaTags = String(html || "").match(/<meta\b[^>]*>/gi) || [];
+  const normalizedKey = String(metaKey || "").toLowerCase();
+
+  for (const tag of metaTags) {
+    const attributes = extractAttributesFromTag(tag);
+    const property = String(attributes.property || "").toLowerCase();
+    const name = String(attributes.name || "").toLowerCase();
+    const content = attributes.content || "";
+
+    if (content && (property === normalizedKey || name === normalizedKey)) {
+      return content;
+    }
+  }
+
+  return null;
+}
+
+function extractTitleFromHtml(html) {
+  const titleMatch = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return titleMatch ? decodeHtmlEntities(titleMatch[1]).replace(/\s+/g, " ").trim() : null;
+}
+
+function extractImageFromHtml(html, articleUrl) {
+  const imageTags = String(html || "").match(/<img\b[^>]*>/gi) || [];
+
+  for (const tag of imageTags) {
+    const attributes = extractAttributesFromTag(tag);
+    const rawSrc = attributes.src || attributes["data-src"] || attributes["data-lazy-src"];
+    if (!rawSrc) {
+      continue;
+    }
+
+    const lowered = rawSrc.toLowerCase();
+    if (lowered.includes("logo") || lowered.includes("icon") || lowered.includes("sprite")) {
+      continue;
+    }
+
+    try {
+      return new URL(rawSrc, articleUrl).href;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function extractArticleMetadataFromHtml(articleUrl) {
+  const { response } = await fetchTextWithProfiles(
+    articleUrl,
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  );
+
+  if (!response || !response.ok) {
+    return null;
+  }
+
+  const html = await response.text();
+  const title =
+    extractMetaContentFromHtml(html, "og:title")
+    || extractMetaContentFromHtml(html, "twitter:title")
+    || extractTitleFromHtml(html);
+  const featuredImageRaw =
+    extractMetaContentFromHtml(html, "og:image")
+    || extractMetaContentFromHtml(html, "twitter:image")
+    || extractImageFromHtml(html, articleUrl);
+
+  let featuredImage = null;
+  if (featuredImageRaw) {
+    try {
+      featuredImage = new URL(featuredImageRaw, articleUrl).href;
+    } catch {
+      featuredImage = featuredImageRaw;
+    }
+  }
+
+  return {
+    title,
+    featuredImage,
+    imageSource: featuredImage
+      ? (extractMetaContentFromHtml(html, "og:image")
+        ? "og:image"
+        : extractMetaContentFromHtml(html, "twitter:image")
+          ? "twitter:image"
+          : "html-image")
+      : null,
+  };
+}
+
 async function extractBestImageFromArticle(page, articleUrl) {
-  await page.goto(articleUrl, { waitUntil: "networkidle2", timeout: 45000 });
-  await page.waitForSelector("body", { timeout: 15000 });
+  try {
+    const htmlMetadata = await extractArticleMetadataFromHtml(articleUrl);
+    if (htmlMetadata?.featuredImage) {
+      return htmlMetadata;
+    }
+  } catch (error) {
+    console.warn(`HTML-first extraction failed for ${articleUrl}: ${error.message}`);
+  }
+
+  await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
+  await page.waitForSelector("body", { timeout: 8000 });
 
   return page.evaluate(() => {
     const makeAbsolute = (value) => {
@@ -2786,7 +3379,10 @@ async function extractBestImageFromArticle(page, articleUrl) {
 }
 
 async function fetchArticlesForCategory(page, category, limit, options = {}) {
-  const candidateLimit = Math.max(limit * 10, limit);
+  const candidateLimit = Math.min(
+    Math.max(limit * ARTICLE_CANDIDATE_MULTIPLIER, limit),
+    ARTICLE_CANDIDATE_CAP
+  );
   const feedConfigs = getCategoryFeedPool(category);
   if (!feedConfigs?.length) {
     throw new Error(
@@ -2883,6 +3479,12 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
         source: articleUrl,
         message: articleError.message,
       });
+    } finally {
+      try {
+        await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5000 });
+      } catch {
+        // Ignore page reset failures while continuing the batch.
+      }
     }
   }
 
@@ -2956,14 +3558,39 @@ async function createBrowserPage() {
   const executablePath = resolveBrowserExecutablePath();
   const browser = await puppeteer.launch({
     headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--metrics-recording-only",
+      "--mute-audio",
+      "--no-first-run",
+      "--no-zygote",
+    ],
     ...(executablePath ? { executablePath } : {}),
   });
 
   const page = await browser.newPage();
+  await page.setCacheEnabled(false);
+  await page.setDefaultNavigationTimeout(25_000);
+  await page.setDefaultTimeout(10_000);
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   );
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    const resourceType = request.resourceType();
+    if (["font", "media", "stylesheet", "manifest", "other"].includes(resourceType)) {
+      return request.abort();
+    }
+
+    return request.continue();
+  });
 
   return { browser, page };
 }
@@ -3181,7 +3808,11 @@ async function schedulerTick() {
   }
 
   schedulerRunning = true;
-  schedulerState.lastTickAt = new Date().toISOString();
+  schedulerHeartbeatInterval = startHeartbeat(
+    schedulerHeartbeatInterval,
+    updateSchedulerHeartbeat,
+    SCHEDULER_TICK_MS
+  );
 
   try {
     const locked = await withDatabaseLock(MAIN_SCHEDULER_LOCK_NAME, async () => {
@@ -3221,6 +3852,9 @@ async function schedulerTick() {
   } catch (error) {
     console.error("Scheduler tick failed:", error.message);
   } finally {
+    stopHeartbeat(schedulerHeartbeatInterval);
+    schedulerHeartbeatInterval = null;
+    updateSchedulerHeartbeat();
     schedulerRunning = false;
   }
 }
@@ -3263,7 +3897,11 @@ function startAiScheduler() {
     }
 
     aiSchedulerRunning = true;
-    aiSchedulerState.lastTickAt = new Date().toISOString();
+    aiSchedulerHeartbeatInterval = startHeartbeat(
+      aiSchedulerHeartbeatInterval,
+      updateAiSchedulerHeartbeat,
+      AI_SCHEDULER_TICK_MS
+    );
 
     try {
       const windowKey = buildAiWindowKey();
@@ -3278,6 +3916,9 @@ function startAiScheduler() {
     } catch (error) {
       console.error("AI scheduler tick failed:", error.message);
     } finally {
+      stopHeartbeat(aiSchedulerHeartbeatInterval);
+      aiSchedulerHeartbeatInterval = null;
+      updateAiSchedulerHeartbeat();
       aiSchedulerRunning = false;
     }
   };
@@ -3318,7 +3959,11 @@ function startSchedulerWatchdog() {
         }
 
         aiSchedulerRunning = true;
-        aiSchedulerState.lastTickAt = new Date().toISOString();
+        aiSchedulerHeartbeatInterval = startHeartbeat(
+          aiSchedulerHeartbeatInterval,
+          updateAiSchedulerHeartbeat,
+          AI_SCHEDULER_TICK_MS
+        );
         void runAiScheduledCycleWithLock("watchdog")
           .then((locked) => {
             if (locked?.acquired) {
@@ -3329,6 +3974,9 @@ function startSchedulerWatchdog() {
             console.error("AI scheduler watchdog recovery failed:", error.message);
           })
           .finally(() => {
+            stopHeartbeat(aiSchedulerHeartbeatInterval);
+            aiSchedulerHeartbeatInterval = null;
+            updateAiSchedulerHeartbeat();
             aiSchedulerRunning = false;
           });
       }
@@ -3364,110 +4012,112 @@ async function shutdown(signal) {
   process.exit(0);
 }
 
-app.get("/fetch-news", async (req, res) => {
-  const query = normalizeCategory(req.query.q || DEFAULT_CATEGORY);
-  const limit = normalizeArticleLimit(req.query.limit);
-  console.log(`Searching query: ${query} | limit: ${limit}`);
+if (LEGACY_PUBLIC_ROUTES_ENABLED) {
+  app.get("/fetch-news", async (req, res) => {
+    const query = normalizeCategory(req.query.q || DEFAULT_CATEGORY);
+    const limit = normalizeArticleLimit(req.query.limit);
+    console.log(`Searching query: ${query} | limit: ${limit}`);
 
-  const { browser, page } = await createBrowserPage();
+    const { browser, page } = await createBrowserPage();
 
-  try {
-    const categoryResult = await fetchArticlesForCategory(page, query, limit);
+    try {
+      const categoryResult = await fetchArticlesForCategory(page, query, limit);
 
-    res.json({
-      status: categoryResult.saved_count > 0 ? "Success" : "Error",
-      database: DB_NAME,
-      query,
-      requested_limit: limit,
-      fetched_count: categoryResult.fetched_count,
-      saved_count: categoryResult.saved_count,
-      failed_count: categoryResult.failed_count,
-      instructions:
-        "Each successful item contains the direct image URL extracted from the original article page and saved in MySQL.",
-      results: categoryResult.results,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  } finally {
-    await browser.close();
-  }
-});
+      res.json({
+        status: categoryResult.saved_count > 0 ? "Success" : "Error",
+        database: DB_NAME,
+        query,
+        requested_limit: limit,
+        fetched_count: categoryResult.fetched_count,
+        saved_count: categoryResult.saved_count,
+        failed_count: categoryResult.failed_count,
+        instructions:
+          "Each successful item contains the direct image URL extracted from the original article page and saved in MySQL.",
+        results: categoryResult.results,
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
+      });
+    } finally {
+      await browser.close();
+    }
+  });
 
-app.get("/fetch-news/category/:category", async (req, res) => {
-  const category = normalizeCategory(req.params.category);
-  const limit = normalizeArticleLimit(req.query.limit);
-  console.log(`Searching category URL: ${category} | limit: ${limit}`);
+  app.get("/fetch-news/category/:category", async (req, res) => {
+    const category = normalizeCategory(req.params.category);
+    const limit = normalizeArticleLimit(req.query.limit);
+    console.log(`Searching category URL: ${category} | limit: ${limit}`);
 
-  const { browser, page } = await createBrowserPage();
+    const { browser, page } = await createBrowserPage();
 
-  try {
-    const categoryResult = await fetchArticlesForCategory(page, category, limit);
+    try {
+      const categoryResult = await fetchArticlesForCategory(page, category, limit);
 
-    res.json({
-      status: categoryResult.saved_count > 0 ? "Success" : "Error",
-      database: DB_NAME,
-      category,
-      requested_limit: limit,
-      fetched_count: categoryResult.fetched_count,
-      saved_count: categoryResult.saved_count,
-      failed_count: categoryResult.failed_count,
-      instructions:
-        "Each successful item contains the direct image URL extracted from the original article page and saved in MySQL.",
-      results: categoryResult.results,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  } finally {
-    await browser.close();
-  }
-});
+      res.json({
+        status: categoryResult.saved_count > 0 ? "Success" : "Error",
+        database: DB_NAME,
+        category,
+        requested_limit: limit,
+        fetched_count: categoryResult.fetched_count,
+        saved_count: categoryResult.saved_count,
+        failed_count: categoryResult.failed_count,
+        instructions:
+          "Each successful item contains the direct image URL extracted from the original article page and saved in MySQL.",
+        results: categoryResult.results,
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
+      });
+    } finally {
+      await browser.close();
+    }
+  });
 
-app.get("/fetch-news/all", async (req, res) => {
-  const total = req.query.total ? normalizeTotalLimit(req.query.total) : null;
-  const limit = normalizeArticleLimit(req.query.limit || 5);
-  console.log(
-    total
-      ? `Fetching all categories | total distributed stories: ${total}`
-      : `Fetching all categories | limit per category: ${limit}`
-  );
+  app.get("/fetch-news/all", async (req, res) => {
+    const total = req.query.total ? normalizeTotalLimit(req.query.total) : null;
+    const limit = normalizeArticleLimit(req.query.limit || 5);
+    console.log(
+      total
+        ? `Fetching all categories | total distributed stories: ${total}`
+        : `Fetching all categories | limit per category: ${limit}`
+    );
 
-  const { browser, page } = await createBrowserPage();
+    const { browser, page } = await createBrowserPage();
 
-  try {
-    const payload = total
-      ? await fetchAllCategoriesByTotal(page, total)
-      : await fetchAllCategories(page, limit);
+    try {
+      const payload = total
+        ? await fetchAllCategoriesByTotal(page, total)
+        : await fetchAllCategories(page, limit);
 
-    res.json({
-      status: payload.saved_count > 0 ? "Success" : "Error",
-      database: DB_NAME,
-      category_count: payload.categories.length,
-      categories: payload.categories,
-      requested_limit_per_category: total ? null : limit,
-      requested_total: total,
-      allocation: payload.allocation || null,
-      fetched_count: payload.fetched_count,
-      saved_count: payload.saved_count,
-      failed_count: payload.failed_count,
-      instructions:
-        "Each category contains up to the requested number of stories, and each successful item is saved in MySQL.",
-      results: payload.results,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  } finally {
-    await browser.close();
-  }
-});
+      res.json({
+        status: payload.saved_count > 0 ? "Success" : "Error",
+        database: DB_NAME,
+        category_count: payload.categories.length,
+        categories: payload.categories,
+        requested_limit_per_category: total ? null : limit,
+        requested_total: total,
+        allocation: payload.allocation || null,
+        fetched_count: payload.fetched_count,
+        saved_count: payload.saved_count,
+        failed_count: payload.failed_count,
+        instructions:
+          "Each category contains up to the requested number of stories, and each successful item is saved in MySQL.",
+        results: payload.results,
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
+      });
+    } finally {
+      await browser.close();
+    }
+  });
+}
 
 async function handleFetchRssNews(req, res) {
   const category = normalizeCategory(req.query.category || DEFAULT_CATEGORY);
@@ -3541,6 +4191,7 @@ async function handleFetchRssNewsAll(req, res) {
   }
 }
 
+if (LEGACY_PUBLIC_ROUTES_ENABLED) {
 app.get("/fetch-mpinfo-news", async (req, res) => {
   const category = normalizeCategory(req.query.category || "states");
   const limit = normalizeArticleLimit(req.query.limit || 5);
@@ -3629,42 +4280,21 @@ app.get("/fetch-zee-news", handleFetchRssNews);
 app.get("/fetch-zee-news/all", handleFetchRssNewsAll);
 
 app.get("/rss-feeds", (req, res) => {
-  const categoryPools = Object.fromEntries(
-    Object.keys(RSS_FEEDS).map((category) => [
-      category,
-      {
-        direct_feeds: RSS_FEEDS[category],
-        related_categories: CATEGORY_FEED_GROUPS[category] || [],
-        combined_feed_pool: getCategoryFeedPool(category),
-      },
-    ])
-  );
-
-  res.json({
-    status: "Success",
-    source: "Configured RSS feeds",
-    count: Object.keys(RSS_FEEDS).length,
-    feeds: RSS_FEEDS,
-    category_feed_pools: categoryPools,
-  });
+  void getCachedRssFeedsPayload()
+    .then((payload) => res.json(payload))
+    .catch((error) => res.status(500).json({
+      status: "Error",
+      message: error.message,
+    }));
 });
 
 app.get("/cron/status", (req, res) => {
-  res.json({
-    status: "Success",
-    scheduler: {
-      enabled: schedulerState.enabled,
-      timezone: INDIA_TIMEZONE,
-      tick_ms: SCHEDULER_TICK_MS,
-      quiet_hours: schedulerState.quietHours,
-      last_tick_at: schedulerState.lastTickAt,
-      last_run_at: schedulerState.lastRunAt,
-      last_window_key: schedulerState.lastWindowKey,
-      manual_run: schedulerState.manualRun,
-      categories: schedulerState.categories,
-      schedule: schedulerState.schedule || getCategorySchedule(),
-    },
-  });
+  void getCachedCronStatusPayload()
+    .then((payload) => res.json(payload))
+    .catch((error) => res.status(500).json({
+      status: "Error",
+      message: error.message,
+    }));
 });
 
 app.get("/ai/cron/status", (req, res) => {
@@ -3677,17 +4307,12 @@ app.get("/ai/cron/status", (req, res) => {
 app.get("/scheduler/logs", async (req, res) => {
   try {
     const schedulerName = typeof req.query.scheduler === "string" ? req.query.scheduler : null;
-    const logs = await listSchedulerRuns({
+    const payload = await getCachedSchedulerLogsPayload({
       schedulerName,
       limit: req.query.limit,
     });
 
-    return res.json({
-      status: "Success",
-      count: logs.length,
-      scheduler: schedulerName,
-      records: logs,
-    });
+    return res.json(payload);
   } catch (error) {
     return res.status(500).json({
       status: "Error",
@@ -3695,6 +4320,7 @@ app.get("/scheduler/logs", async (req, res) => {
     });
   }
 });
+}
 
 app.get("/health", async (req, res) => {
   const mainSchedulerHealthy = !schedulerState.enabled
@@ -3996,22 +4622,13 @@ apiV1.use(enforceClientQuota);
 apiV1.use(attachApiUsageLogger);
 
 apiV1.get("/rss-feeds", requireApiScope("feeds:read"), (req, res) => {
-  const categoryPools = Object.fromEntries(
-    Object.keys(RSS_FEEDS).map((category) => [
-      category,
-      {
-        direct_feeds: RSS_FEEDS[category],
-        related_categories: CATEGORY_FEED_GROUPS[category] || [],
-        combined_feed_pool: getCategoryFeedPool(category),
-      },
-    ])
-  );
-
-  return sendApiSuccess(res, {
-    count: Object.keys(RSS_FEEDS).length,
-    feeds: RSS_FEEDS,
-    category_feed_pools: categoryPools,
-  });
+  return getCachedRssFeedsPayload()
+    .then((payload) => sendApiSuccess(res, {
+      count: payload.count,
+      feeds: payload.feeds,
+      category_feed_pools: payload.category_feed_pools,
+    }))
+    .catch((error) => sendApiError(res, "RSS_FEEDS_FAILED", error.message, 500));
 });
 
 apiV1.get("/news", requireApiScope("news:read"), async (req, res) => {
@@ -4028,10 +4645,10 @@ apiV1.get("/news", requireApiScope("news:read"), async (req, res) => {
 apiV1.get("/news/grouped", requireApiScope("news:read"), async (req, res) => {
   try {
     const limit = normalizeApiLimit(req.query.limit, 500, 1000);
-    const grouped = await listGroupedNewsRecords(limit);
-    return sendApiSuccess(res, grouped, {
-      category_count: grouped.length,
-      count: grouped.reduce((sum, group) => sum + group.count, 0),
+    const payload = await getCachedGroupedNewsPayload(limit);
+    return sendApiSuccess(res, payload.grouped_records, {
+      category_count: payload.category_count,
+      count: payload.count,
       limit,
     });
   } catch (error) {
@@ -4142,18 +4759,9 @@ apiV1.get("/ai/news/grouped", requireApiScope("ai:read"), async (req, res) => {
 });
 
 apiV1.get("/cron/status", requireApiScope("cron:read"), (req, res) => {
-  return sendApiSuccess(res, {
-    enabled: schedulerState.enabled,
-    timezone: INDIA_TIMEZONE,
-    tick_ms: SCHEDULER_TICK_MS,
-    quiet_hours: schedulerState.quietHours,
-    last_tick_at: schedulerState.lastTickAt,
-    last_run_at: schedulerState.lastRunAt,
-    last_window_key: schedulerState.lastWindowKey,
-    manual_run: schedulerState.manualRun,
-    categories: schedulerState.categories,
-    schedule: schedulerState.schedule || getCategorySchedule(),
-  });
+  return getCachedCronStatusPayload()
+    .then((payload) => sendApiSuccess(res, payload.scheduler))
+    .catch((error) => sendApiError(res, "CRON_STATUS_FAILED", error.message, 500));
 });
 
 apiV1.post("/cron/run-now", requireApiScope("cron:write"), async (req, res) => {
@@ -4192,8 +4800,8 @@ apiV1.post("/ai/cron/run-now", requireApiScope("ai:write"), async (req, res) => 
 apiV1.get("/scheduler/logs", requireApiScope("logs:read"), async (req, res) => {
   try {
     const schedulerName = typeof req.query.scheduler === "string" ? req.query.scheduler : null;
-    const records = await listSchedulerRuns({ schedulerName, limit: req.query.limit });
-    return sendApiSuccess(res, records, { count: records.length, scheduler: schedulerName });
+    const payload = await getCachedSchedulerLogsPayload({ schedulerName, limit: req.query.limit });
+    return sendApiSuccess(res, payload.records, { count: payload.count, scheduler: schedulerName });
   } catch (error) {
     return sendApiError(res, "SCHEDULER_LOGS_FAILED", error.message, 500);
   }
@@ -4488,138 +5096,119 @@ apiV1.get("/admin/audit-logs", requireMasterApiKey, async (req, res) => {
 
 app.use(API_BASE_PATH, apiV1);
 
-app.post("/cron/run-now", async (req, res) => {
-  const limit = normalizeArticleLimit(req.query.limit || 1);
-  const waitForCompletion = String(req.query.wait || "").toLowerCase() === "true";
+if (LEGACY_PUBLIC_ROUTES_ENABLED) {
+  app.post("/cron/run-now", async (req, res) => {
+    const limit = normalizeArticleLimit(req.query.limit || 1);
+    const waitForCompletion = String(req.query.wait || "").toLowerCase() === "true";
 
-  try {
-    const result = await triggerManualSchedulerRun(limit, waitForCompletion);
-    return res.status(result.statusCode).json(result.payload);
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  }
-});
-
-app.post("/ai/cron/run-now", async (req, res) => {
-  try {
-    const locked = await runAiScheduledCycleWithLock("manual");
-    if (!locked.acquired) {
-      return res.status(409).json({
-        status: "Busy",
-        message: "Another backend instance is already running the AI scheduler cycle.",
+    try {
+      const result = await triggerManualSchedulerRun(limit, waitForCompletion);
+      return res.status(result.statusCode).json(result.payload);
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
       });
     }
+  });
 
-    const results = locked.result;
-    res.json({
-      status: "Success",
-      message: "AI rewrite scheduler cycle executed immediately.",
-      success_count: results.filter((item) => item.status === "Success").length,
-      skipped_count: results.filter((item) => item.status === "Skipped").length,
-      failed_count: results.filter((item) => item.status === "Error").length,
-      results,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  }
-});
+  app.post("/ai/cron/run-now", async (req, res) => {
+    try {
+      const locked = await runAiScheduledCycleWithLock("manual");
+      if (!locked.acquired) {
+        return res.status(409).json({
+          status: "Busy",
+          message: "Another backend instance is already running the AI scheduler cycle.",
+        });
+      }
 
-registerAiRewriteRoutes(app, {
-  getDbPool: () => dbPool,
-  createBrowserPage,
-  normalizeCategory,
-});
+      const results = locked.result;
+      res.json({
+        status: "Success",
+        message: "AI rewrite scheduler cycle executed immediately.",
+        success_count: results.filter((item) => item.status === "Success").length,
+        skipped_count: results.filter((item) => item.status === "Skipped").length,
+        failed_count: results.filter((item) => item.status === "Error").length,
+        results,
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
+      });
+    }
+  });
 
-app.get("/zee-feeds", (req, res) => {
-  res.redirect(302, "/rss-feeds");
-});
+  registerAiRewriteRoutes(app, {
+    getDbPool: () => dbPool,
+    createBrowserPage,
+    normalizeCategory,
+  });
 
-app.get("/news", async (req, res) => {
-  try {
-    const category = req.query.category ? normalizeCategory(req.query.category) : null;
-    const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 100, 500));
-    const queryText = category
-      ? `
-        SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
-        , feed_source, feed_url
-        FROM fetched_news
-        WHERE category = ?
-        ORDER BY id DESC
-        LIMIT ?
-      `
-      : `
-        SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
-        , feed_source, feed_url
-        FROM fetched_news
-        ORDER BY id DESC
-        LIMIT ?
-      `;
+  app.get("/zee-feeds", (req, res) => {
+    res.redirect(302, "/rss-feeds");
+  });
 
-    const [rows] = await dbPool.query(
-      queryText,
-      category ? [category, limit] : [limit]
-    );
+  app.get("/news", async (req, res) => {
+    try {
+      const category = req.query.category ? normalizeCategory(req.query.category) : null;
+      const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 100, 500));
+      const queryText = category
+        ? `
+          SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
+          , feed_source, feed_url
+          FROM fetched_news
+          WHERE category = ?
+          ORDER BY id DESC
+          LIMIT ?
+        `
+        : `
+          SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
+          , feed_source, feed_url
+          FROM fetched_news
+          ORDER BY id DESC
+          LIMIT ?
+        `;
 
-    res.json({
-      status: "Success",
-      database: DB_NAME,
-      category,
-      count: rows.length,
-      message:
-        rows.length === 0
-          ? "No records saved yet. Call /fetch-news first, and a row will be inserted only when a direct image URL is successfully extracted."
-          : "Saved news records loaded successfully.",
-      records: rows,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  }
-});
+      const [rows] = await dbPool.query(
+        queryText,
+        category ? [category, limit] : [limit]
+      );
 
-app.get("/news/grouped", async (req, res) => {
-  try {
-    const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 500, 1000));
-    const [rows] = await dbPool.query(
-      `
-        SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
-        , feed_source, feed_url
-        FROM fetched_news
-        ORDER BY category ASC, id DESC
-        LIMIT ?
-      `,
-      [limit]
-    );
+      res.json({
+        status: "Success",
+        database: DB_NAME,
+        category,
+        count: rows.length,
+        message:
+          rows.length === 0
+            ? "No records saved yet. Call /fetch-news first, and a row will be inserted only when a direct image URL is successfully extracted."
+            : "Saved news records loaded successfully.",
+        records: rows,
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
+      });
+    }
+  });
 
-    const grouped = groupRecordsByCategory(rows);
-
-    res.json({
-      status: "Success",
-      database: DB_NAME,
-      count: rows.length,
-      category_count: grouped.length,
-      categories: grouped.map((item) => item.category),
-      message:
-        rows.length === 0
-          ? "No category records saved yet. Run the category fetch endpoints first."
-          : "Saved news records loaded category-wise.",
-      grouped_records: grouped,
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "Error",
-      message: error.message,
-    });
-  }
-});
+  app.get("/news/grouped", async (req, res) => {
+    try {
+      const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 500, 1000));
+      const payload = await getCachedGroupedNewsPayload(limit);
+      res.json(payload);
+    } catch (error) {
+      res.status(500).json({
+        status: "Error",
+        message: error.message,
+      });
+    }
+  });
+} else {
+  console.log("Legacy public routes are disabled. Use only /api/v1/* endpoints.");
+}
 
 app.get("/image-proxy", async (req, res) => {
   const imageUrl = typeof req.query.url === "string" ? req.query.url : "";
@@ -4656,10 +5245,15 @@ app.get("/image-proxy", async (req, res) => {
 
     const arrayBuffer = await upstream.arrayBuffer();
     const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    const optimizedImage = await optimizeImageBuffer(
+      Buffer.from(arrayBuffer),
+      contentType,
+      req.headers.accept
+    );
 
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", "public, max-age=1800");
-    return res.send(Buffer.from(arrayBuffer));
+    res.setHeader("Content-Type", optimizedImage.contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+    return res.send(optimizedImage.buffer);
   } catch (error) {
     return res.status(500).json({
       status: "Error",
