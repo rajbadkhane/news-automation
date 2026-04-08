@@ -2563,7 +2563,21 @@ function resolveBrowserExecutablePath() {
     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
   ].filter(Boolean);
 
-  return candidatePaths.find((candidatePath) => fs.existsSync(candidatePath)) || null;
+  const explicitPath = candidatePaths.find((candidatePath) => fs.existsSync(candidatePath));
+  if (explicitPath) {
+    return explicitPath;
+  }
+
+  try {
+    const bundledPath = puppeteer.executablePath();
+    if (bundledPath && fs.existsSync(bundledPath)) {
+      return bundledPath;
+    }
+  } catch (error) {
+    console.warn(`Puppeteer bundled browser path resolution failed: ${error.message}`);
+  }
+
+  return null;
 }
 
 function isTimestampStale(timestamp, thresholdMs) {
