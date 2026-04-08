@@ -858,21 +858,37 @@ async function finalizeSchedulerRunLog(
   }
 
   await dbPool.execute(
-    `
-      UPDATE scheduler_runs
-      SET
-        status = ?,
-        saved_count = ?,
-        skipped_count = ?,
-        failed_count = ?,
-        title = COALESCE(?, title),
-        message = ?,
-        error_message = ?,
-        details_json = ?,
-        completed_at = CURRENT_TIMESTAMP,
-        duration_ms = TIMESTAMPDIFF(SECOND, started_at, CURRENT_TIMESTAMP) * 1000
-      WHERE id = ?
-    `,
+    dbPool.dialect === "postgres"
+      ? `
+          UPDATE scheduler_runs
+          SET
+            status = ?,
+            saved_count = ?,
+            skipped_count = ?,
+            failed_count = ?,
+            title = COALESCE(?, title),
+            message = ?,
+            error_message = ?,
+            details_json = ?,
+            completed_at = CURRENT_TIMESTAMP,
+            duration_ms = FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000)
+          WHERE id = ?
+        `
+      : `
+          UPDATE scheduler_runs
+          SET
+            status = ?,
+            saved_count = ?,
+            skipped_count = ?,
+            failed_count = ?,
+            title = COALESCE(?, title),
+            message = ?,
+            error_message = ?,
+            details_json = ?,
+            completed_at = CURRENT_TIMESTAMP,
+            duration_ms = TIMESTAMPDIFF(SECOND, started_at, CURRENT_TIMESTAMP) * 1000
+          WHERE id = ?
+        `,
     [
       status,
       savedCount,
