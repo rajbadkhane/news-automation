@@ -3,16 +3,18 @@ const { Pool } = require("pg");
 
 function detectDialect() {
   const explicit = String(process.env.DB_DIALECT || process.env.DB_CLIENT || "").trim().toLowerCase();
+  const databaseUrl = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || "").trim();
+
+  if (databaseUrl) {
+    return "postgres";
+  }
+
   if (explicit === "postgresql") {
     return "postgres";
   }
 
   if (["mysql", "postgres"].includes(explicit)) {
     return explicit;
-  }
-
-  if (String(process.env.DATABASE_URL || "").trim()) {
-    return "postgres";
   }
 
   return "mysql";
@@ -58,28 +60,75 @@ function createMysqlPool() {
   });
 }
 
-function createPostgresPool() {
-  const connectionString = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || "").trim();
-  if (!connectionString) {
-    throw new Error("Postgres mode requires DATABASE_URL or SUPABASE_DB_URL.");
+function resolvePostgresConnectionString(rawConnectionString, databasePassword) {
+  let connectionString = rawConnectionString;
+
+  if (databasePassword) {
+    if (connectionString.includes("[YOUR-PASSWORD]")) {
+      connectionString = connectionString.replace("[YOUR-PASSWORD]", encodeURIComponent(databasePassword));
+    } else if (connectionString.includes("<YOUR-PASSWORD>")) {
+      connectionString = connectionString.replace("<YOUR-PASSWORD>", encodeURIComponent(databasePassword));
+    } else {
+      try {
+        const connectionUrl = new URL(connectionString);
+        if (!connectionUrl.password) {
+          connectionUrl.password = databasePassword;
+          connectionString = connectionUrl.toString();
+        }
+      } catch {
+        connectionString = rawConnectionString;
+      }
+    }
   }
 
-  const sslMode = String(process.env.DB_SSL_MODE || "require").trim().toLowerCase();
-  const ssl =
-    sslMode === "disable"
-      ? false
-      : {
-          rejectUnauthorized: false,
-        };
+  return connectionString;
+}
 
-  const pool = new Pool({
-    connectionString,
-    ssl,
-    max: 10,
-  });
+function buildPostgresConnectionCandidates(rawConnectionString, databasePassword) {
+  const configuredConnectionString = resolvePostgresConnectionString(rawConnectionString, databasePassword);
+  const candidates = [
+    {
+      name: "configured",
+      connectionString: configuredConnectionString,
+    },
+  ];
 
+  try {
+    const configuredUrl = new URL(configuredConnectionString);
+    const hostname = configuredUrl.hostname.toLowerCase();
+    const isSupabasePooler = hostname.includes("pooler.supabase.com");
+    const inferredProjectRef = String(configuredUrl.username || "").startsWith("postgres.")
+      ? String(configuredUrl.username).slice("postgres.".length)
+      : "";
+
+    if (isSupabasePooler && inferredProjectRef) {
+      const directUrl = new URL(configuredConnectionString);
+      directUrl.hostname = `db.${inferredProjectRef}.supabase.co`;
+      directUrl.port = "5432";
+      directUrl.username = "postgres";
+      if (databasePassword) {
+        directUrl.password = databasePassword;
+      }
+
+      const directConnectionString = directUrl.toString();
+      if (directConnectionString !== configuredConnectionString) {
+        candidates.push({
+          name: "supabase-direct",
+          connectionString: directConnectionString,
+        });
+      }
+    }
+  } catch {
+    // Ignore URL parsing failures and keep the configured candidate only.
+  }
+
+  return candidates;
+}
+
+function createPostgresPoolWrapper(pool, sourceName) {
   return {
     dialect: "postgres",
+    sourceName,
     async query(sql, params = []) {
       const text = convertPlaceholders(sql);
       const result = await pool.query(text, params);
@@ -103,6 +152,49 @@ function createPostgresPool() {
       await pool.end();
     },
   };
+}
+
+async function createPostgresPool() {
+  const rawConnectionString = String(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || "").trim();
+  if (!rawConnectionString) {
+    throw new Error("Postgres mode requires DATABASE_URL or SUPABASE_DB_URL.");
+  }
+
+  const databasePassword = String(process.env.DB_PASSWORD || process.env.SUPABASE_DB_PASSWORD || "").trim();
+  const needsPasswordPlaceholder = rawConnectionString.includes("[YOUR-PASSWORD]") || rawConnectionString.includes("<YOUR-PASSWORD>");
+  if (!databasePassword && needsPasswordPlaceholder) {
+    throw new Error("Postgres mode requires DB_PASSWORD or SUPABASE_DB_PASSWORD when DATABASE_URL contains a password placeholder.");
+  }
+
+  const sslMode = String(process.env.DB_SSL_MODE || "require").trim().toLowerCase();
+  const ssl =
+    sslMode === "disable"
+      ? false
+      : {
+          rejectUnauthorized: false,
+        };
+
+  const candidates = buildPostgresConnectionCandidates(rawConnectionString, databasePassword);
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    const pool = new Pool({
+      connectionString: candidate.connectionString,
+      ssl,
+      max: 10,
+    });
+
+    try {
+      await pool.query("SELECT 1 AS ok");
+      return createPostgresPoolWrapper(pool, candidate.name);
+    } catch (error) {
+      lastError = error;
+      await pool.end().catch(() => {});
+    }
+  }
+
+  const lastErrorMessage = lastError && lastError.message ? lastError.message : "Unknown connection error";
+  throw new Error(`Unable to connect to Postgres using the configured Supabase connection string. Last error: ${lastErrorMessage}`);
 }
 
 async function createDatabasePool() {

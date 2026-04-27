@@ -707,7 +707,7 @@ function formatAiRewriteWithNewsRecord(record) {
   };
 }
 
-async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage) {
+async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage, afterSave = null) {
   const { browser, page } = await createBrowserPage();
 
   try {
@@ -730,10 +730,20 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
       rawResponse: aiResult.raw_response,
     });
 
-    return setAiRewritePublicationStatus(dbPool, savedRewrite.id, {
+    const publishedRewrite = await setAiRewritePublicationStatus(dbPool, savedRewrite.id, {
       status: "published",
       publishedBy: "ai-system",
     });
+
+    if (typeof afterSave === "function") {
+      try {
+        await afterSave(publishedRewrite);
+      } catch (error) {
+        console.warn(`Retention cleanup trigger after AI save failed: ${error.message}`);
+      }
+    }
+
+    return publishedRewrite;
   } finally {
     await browser.close();
   }
@@ -937,7 +947,7 @@ async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publis
   return formatAiRewriteWithNewsRecord(rows[0]);
 }
 
-async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowserPage }) {
+async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowserPage, afterRewriteSaved = null }) {
   const results = [];
 
   for (const category of categories) {
@@ -954,7 +964,12 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
         continue;
       }
 
-      const savedRewrite = await createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage);
+      const savedRewrite = await createOrUpdateRewriteForRecord(
+        dbPool,
+        articleRecord,
+        createBrowserPage,
+        afterRewriteSaved
+      );
       results.push({
         status: "Success",
         category,

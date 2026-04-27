@@ -10,6 +10,7 @@ function normalizeDashboardListPayload(payload) {
   if (payload?.success) {
     return {
       status: "Success",
+      database: payload.database || payload.meta?.database || null,
       count: payload.meta?.count || 0,
       category_count: payload.meta?.category_count || 0,
       grouped_records: payload.data || [],
@@ -18,6 +19,7 @@ function normalizeDashboardListPayload(payload) {
 
   return {
     status: "Error",
+    database: null,
     count: 0,
     grouped_records: [],
     message: payload?.error?.message || "Backend response was invalid.",

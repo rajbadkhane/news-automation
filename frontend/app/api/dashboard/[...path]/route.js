@@ -75,6 +75,7 @@ function normalizeDashboardJson(pathname, payload, status) {
     if (normalized === "/news/grouped") {
       return {
         status: "Success",
+        database: payload.database || payload.meta?.database || null,
         grouped_records: payload.data || [],
         count: payload.meta?.count || 0,
         category_count: payload.meta?.category_count || 0,
@@ -84,6 +85,7 @@ function normalizeDashboardJson(pathname, payload, status) {
     if (normalized === "/news") {
       return {
         status: "Success",
+        database: payload.database || payload.meta?.database || null,
         records: payload.data || [],
         count: payload.meta?.count || 0,
         category: payload.meta?.category || null,
@@ -108,6 +110,7 @@ function normalizeDashboardJson(pathname, payload, status) {
     if (normalized === "/ai/news/grouped") {
       return {
         status: "Success",
+        database: payload.database || payload.meta?.database || null,
         grouped_records: payload.data || [],
         count: payload.meta?.count || 0,
         category_count: payload.meta?.category_count || 0,

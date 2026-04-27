@@ -523,7 +523,7 @@ export default function NewsDashboard({
                 },
                 {
                   title: "Database",
-                  value: livePayload?.database || "Unavailable",
+                  value: livePayload?.database || livePayload?.meta?.database || "Unavailable",
                 },
                 {
                   title: "Categories Loaded",

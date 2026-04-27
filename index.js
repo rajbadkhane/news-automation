@@ -19,6 +19,10 @@ const {
   runAiRewriteCycleForCategories,
   setAiRewritePublicationStatus,
 } = require("./ai-rewrites");
+const {
+  loadRetentionConfig,
+  runDatabaseRetentionCleanup,
+} = require("./retention");
 
 const app = express();
 app.disable("x-powered-by");
@@ -78,6 +82,7 @@ const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const MAIN_SCHEDULER_LOCK_NAME = `${DB_NAME}:main-scheduler`;
 const AI_SCHEDULER_LOCK_NAME = `${DB_NAME}:ai-scheduler`;
+const RETENTION_CLEANUP_LOCK_NAME = `${DB_NAME}:retention-cleanup`;
 const AVAILABLE_API_SCOPES = [
   "news:read",
   "delivery:read",
@@ -255,7 +260,19 @@ let aiSchedulerRunning = false;
 let schedulerWatchdogInterval = null;
 let schedulerHeartbeatInterval = null;
 let aiSchedulerHeartbeatInterval = null;
+let retentionCleanupInterval = null;
+let retentionCleanupRunning = false;
 let serverInstance = null;
+const RETENTION_CONFIG = loadRetentionConfig();
+const retentionState = {
+  enabled: RETENTION_CONFIG.enabled,
+  intervalMs: RETENTION_CONFIG.intervalMs,
+  lastTickAt: null,
+  lastRunAt: null,
+  lastStatus: "Waiting",
+  lastError: null,
+  lastResult: null,
+};
 const schedulerState = {
   enabled: SCHEDULER_ENABLED,
   lastTickAt: null,
@@ -963,6 +980,7 @@ async function getCachedCronStatusPayload() {
       manual_run: schedulerState.manualRun,
       categories: schedulerState.categories,
       schedule: schedulerState.schedule || getCategorySchedule(),
+      retention_cleanup: getRetentionCleanupHealthSnapshot(),
     },
   }));
 }
@@ -1885,6 +1903,7 @@ function getSchedulerHealthSnapshot() {
       last_window_key: aiSchedulerState.lastWindowKey,
       frequency_minutes: aiSchedulerState.frequency_minutes,
     },
+    retention: getRetentionCleanupHealthSnapshot(),
   };
 }
 
@@ -2630,6 +2649,11 @@ function clearSchedulerIntervals() {
     aiSchedulerInterval = null;
   }
 
+  if (retentionCleanupInterval) {
+    clearInterval(retentionCleanupInterval);
+    retentionCleanupInterval = null;
+  }
+
   stopHeartbeat(schedulerHeartbeatInterval);
   schedulerHeartbeatInterval = null;
   stopHeartbeat(aiSchedulerHeartbeatInterval);
@@ -2639,6 +2663,88 @@ function clearSchedulerIntervals() {
     clearInterval(schedulerWatchdogInterval);
     schedulerWatchdogInterval = null;
   }
+}
+
+function updateRetentionCleanupHeartbeat() {
+  retentionState.lastTickAt = new Date().toISOString();
+}
+
+function getRetentionCleanupHealthSnapshot() {
+  return {
+    enabled: retentionState.enabled,
+    healthy: !retentionState.enabled
+      || !isTimestampStale(retentionState.lastTickAt, (retentionState.intervalMs * 2) + 15_000),
+    tick_ms: retentionState.intervalMs,
+    last_tick_at: retentionState.lastTickAt,
+    last_run_at: retentionState.lastRunAt,
+    last_status: retentionState.lastStatus,
+    last_error: retentionState.lastError,
+    last_result: retentionState.lastResult,
+  };
+}
+
+async function runRetentionCleanupCycle(triggerSource = "schedule") {
+  if (!retentionState.enabled || retentionCleanupRunning || !dbPool) {
+    return {
+      skipped: true,
+      status: "Skipped",
+      message: "Retention cleanup is disabled or already running.",
+    };
+  }
+
+  retentionCleanupRunning = true;
+  updateRetentionCleanupHeartbeat();
+
+  try {
+    const locked = await withDatabaseLock(RETENTION_CLEANUP_LOCK_NAME, async () => (
+      runDatabaseRetentionCleanup(dbPool, RETENTION_CONFIG)
+    ));
+
+    if (!locked.acquired) {
+      retentionState.lastStatus = "Busy";
+      retentionState.lastError = null;
+      return {
+        skipped: true,
+        status: "Busy",
+        message: "Another backend instance is already running retention cleanup.",
+      };
+    }
+
+    const result = locked.result;
+    retentionState.lastRunAt = new Date().toISOString();
+    retentionState.lastStatus = result.deleted_total > 0 ? "Success" : "Idle";
+    retentionState.lastError = null;
+    retentionState.lastResult = {
+      ...result,
+      trigger_source: triggerSource,
+    };
+
+    return result;
+  } catch (error) {
+    retentionState.lastStatus = "Error";
+    retentionState.lastError = error.message;
+    console.error("Retention cleanup failed:", error.message);
+    throw error;
+  } finally {
+    retentionCleanupRunning = false;
+    updateRetentionCleanupHeartbeat();
+  }
+}
+
+function startRetentionCleanupScheduler() {
+  if (!retentionState.enabled || retentionCleanupInterval) {
+    return;
+  }
+
+  retentionCleanupInterval = setInterval(() => {
+    void runRetentionCleanupCycle("schedule").catch((error) => {
+      console.error("Retention cleanup tick failed:", error.message);
+    });
+  }, retentionState.intervalMs);
+
+  void runRetentionCleanupCycle("startup").catch((error) => {
+    console.error("Retention cleanup startup run failed:", error.message);
+  });
 }
 
 function getCategorySchedule() {
@@ -3092,17 +3198,26 @@ function isAllowedImageHost(value) {
     const parsed = new URL(value);
     const hostname = parsed.hostname.toLowerCase();
 
-    return [
+    const exactHosts = [
       "ddnews.gov.in",
       "www.ddnews.gov.in",
       "zeenews.india.com",
       "www.zeenews.india.com",
       "english.cdn.zeenews.com",
+      "cdn.zeenews.com",
       "mpinfo.org",
       "www.mpinfo.org",
       "mpinfonew.org",
       "www.mpinfonew.org",
-    ].includes(hostname);
+      "news18.com",
+      "www.news18.com",
+    ];
+
+    if (exactHosts.includes(hostname)) {
+      return true;
+    }
+
+    return hostname.endsWith(".news18.com") || hostname.endsWith(".zeenews.com");
   } catch {
     return false;
   }
@@ -3205,6 +3320,63 @@ function extractMetaContentFromHtml(html, metaKey) {
   return null;
 }
 
+function extractLinkHrefFromHtml(html, relValue) {
+  const linkTags = String(html || "").match(/<link\b[^>]*>/gi) || [];
+  const normalizedRelValue = String(relValue || "").toLowerCase();
+
+  for (const tag of linkTags) {
+    const attributes = extractAttributesFromTag(tag);
+    const relTokens = String(attributes.rel || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (relTokens.includes(normalizedRelValue) && attributes.href) {
+      return attributes.href;
+    }
+  }
+
+  return null;
+}
+
+function pickBestSrcsetCandidate(srcset, articleUrl) {
+  const candidates = String(srcset || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const pieces = part.split(/\s+/).filter(Boolean);
+      const rawUrl = pieces.shift();
+      const descriptor = pieces[0] || "";
+      let score = 0;
+
+      if (descriptor.endsWith("w")) {
+        score = Number.parseInt(descriptor, 10) || 0;
+      } else if (descriptor.endsWith("x")) {
+        score = Math.round((Number.parseFloat(descriptor) || 0) * 1000);
+      }
+
+      return { rawUrl, score };
+    })
+    .filter((item) => item.rawUrl);
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort((left, right) => right.score - left.score);
+
+  for (const candidate of candidates) {
+    try {
+      return new URL(candidate.rawUrl, articleUrl).href;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 function extractTitleFromHtml(html) {
   const titleMatch = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return titleMatch ? decodeHtmlEntities(titleMatch[1]).replace(/\s+/g, " ").trim() : null;
@@ -3286,7 +3458,21 @@ function extractImageFromHtml(html, articleUrl) {
 
   for (const tag of imageTags) {
     const attributes = extractAttributesFromTag(tag);
-    const rawSrc = attributes.src || attributes["data-src"] || attributes["data-lazy-src"];
+    const srcsetCandidate = pickBestSrcsetCandidate(
+      attributes.srcset
+        || attributes["data-srcset"]
+        || attributes["data-original-set"]
+        || attributes["data-lazy-srcset"]
+        || "",
+      articleUrl
+    );
+
+    const rawSrc = attributes.src
+      || attributes["data-src"]
+      || attributes["data-lazy-src"]
+      || attributes["data-original"]
+      || attributes["data-img-url"]
+      || srcsetCandidate;
     if (!rawSrc) {
       continue;
     }
@@ -3339,7 +3525,11 @@ async function extractArticleMetadataFromHtml(articleUrl) {
     || extractTitleFromHtml(html);
   const featuredImageRaw =
     extractMetaContentFromHtml(html, "og:image")
+    || extractMetaContentFromHtml(html, "og:image:secure_url")
+    || extractMetaContentFromHtml(html, "og:image:url")
     || extractMetaContentFromHtml(html, "twitter:image")
+    || extractMetaContentFromHtml(html, "twitter:image:src")
+    || extractLinkHrefFromHtml(html, "image_src")
     || extractImageFromHtml(html, articleUrl);
 
   let featuredImage = null;
@@ -3365,9 +3555,11 @@ async function extractArticleMetadataFromHtml(articleUrl) {
 }
 
 async function extractBestImageFromArticle(page, articleUrl) {
+  let htmlMetadata = null;
+
   try {
-    const htmlMetadata = await extractArticleMetadataFromHtml(articleUrl);
-    if (htmlMetadata?.featuredImage) {
+    htmlMetadata = await extractArticleMetadataFromHtml(articleUrl);
+    if (htmlMetadata?.featuredImage && htmlMetadata.imageSource !== "html-image") {
       return htmlMetadata;
     }
   } catch (error) {
@@ -3375,9 +3567,9 @@ async function extractBestImageFromArticle(page, articleUrl) {
   }
 
   await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
-  await page.waitForSelector("body", { timeout: 8000 });
+  await page.waitForSelector("body", { timeout: 8008 });
 
-  return page.evaluate(() => {
+  const pageMetadata = await page.evaluate(() => {
     const makeAbsolute = (value) => {
       if (!value) {
         return null;
@@ -3397,7 +3589,7 @@ async function extractBestImageFromArticle(page, articleUrl) {
       null;
 
     const ogImage = makeAbsolute(
-      document.querySelector('meta[property="og:image"]')?.content
+      document.querySelector('meta[property="og:image"], meta[property="og:image:secure_url"], meta[property="og:image:url"]')?.content
     );
     if (ogImage) {
       return {
@@ -3408,13 +3600,24 @@ async function extractBestImageFromArticle(page, articleUrl) {
     }
 
     const twitterImage = makeAbsolute(
-      document.querySelector('meta[name="twitter:image"]')?.content
+      document.querySelector('meta[name="twitter:image"], meta[name="twitter:image:src"]')?.content
     );
     if (twitterImage) {
       return {
         title,
         featuredImage: twitterImage,
         imageSource: "twitter:image",
+      };
+    }
+
+    const linkImage = makeAbsolute(
+      document.querySelector('link[rel="image_src"]')?.href || document.querySelector('link[rel="image_src"]')?.getAttribute("href")
+    );
+    if (linkImage) {
+      return {
+        title,
+        featuredImage: linkImage,
+        imageSource: "link[rel=image_src]",
       };
     }
 
@@ -3486,6 +3689,12 @@ async function extractBestImageFromArticle(page, articleUrl) {
       imageSource: imageCandidates[0] ? "article-image" : null,
     };
   });
+
+  if (pageMetadata?.featuredImage) {
+    return pageMetadata;
+  }
+
+  return htmlMetadata || pageMetadata;
 }
 
 async function fetchArticlesForCategory(page, category, limit, options = {}) {
@@ -3942,16 +4151,47 @@ async function schedulerTick() {
         const alreadyHandled = categoryState.windowKey === windowKey;
         const isDue = windowSecond >= slot.offsetSeconds && windowSecond < slot.offsetSeconds + 30;
 
-        if (!alreadyHandled && isDue) {
-          schedulerState.categories[slot.category] = {
-            ...categoryState,
-            windowKey,
-            scheduledOffsetSeconds: slot.offsetSeconds,
-          };
-          await runScheduledCategoryFetch(slot.category, {
+        if (alreadyHandled || !isDue) {
+          continue;
+        }
+
+        schedulerState.categories[slot.category] = {
+          ...categoryState,
+          windowKey,
+          scheduledOffsetSeconds: slot.offsetSeconds,
+          lastRunAt: new Date().toISOString(),
+          lastStatus: "Running",
+          lastError: null,
+        };
+
+        try {
+          const result = await runScheduledCategoryFetch(slot.category, {
             triggerSource: "schedule",
             windowKey,
           });
+          const feedCount = RSS_FEEDS[slot.category]?.length || 1;
+
+          schedulerState.categories[slot.category] = {
+            ...schedulerState.categories[slot.category],
+            lastRunAt: new Date().toISOString(),
+            lastStatus:
+              result.saved_count > 0 ? "Success" : result.skipped_count > 0 ? "Skipped" : "Idle",
+            savedCount: result.saved_count,
+            skippedCount: result.skipped_count,
+            failedCount: result.failed_count,
+            lastHeadline: result.results.find((item) => item.status === "Success")?.title || null,
+            lastError: null,
+            sourceCursor: ((categoryState.sourceCursor || 0) + 1) % feedCount,
+          };
+        } catch (error) {
+          schedulerState.categories[slot.category] = {
+            ...schedulerState.categories[slot.category],
+            lastRunAt: new Date().toISOString(),
+            lastStatus: "Error",
+            failedCount: (categoryState.failedCount || 0) + 1,
+            lastError: error.message,
+          };
+          console.error(`Scheduler category ${slot.category} failed:`, error.message);
         }
       }
     });
@@ -3985,6 +4225,7 @@ function startScheduler() {
       skippedCount: 0,
       failedCount: 0,
       lastHeadline: null,
+      lastError: null,
       sourceCursor: 0,
     };
   }
@@ -4019,11 +4260,15 @@ function startAiScheduler() {
         return;
       }
 
+      aiSchedulerState.lastWindowKey = windowKey;
+
       const locked = await runAiScheduledCycleWithLock("schedule");
-      if (locked.acquired) {
-        aiSchedulerState.lastWindowKey = windowKey;
+      if (!locked?.acquired) {
+        aiSchedulerState.lastStatus = "Skipped";
       }
     } catch (error) {
+      aiSchedulerState.lastStatus = "Error";
+      aiSchedulerState.lastError = error.message;
       console.error("AI scheduler tick failed:", error.message);
     } finally {
       stopHeartbeat(aiSchedulerHeartbeatInterval);
@@ -4746,7 +4991,7 @@ apiV1.get("/news", requireApiScope("news:read"), async (req, res) => {
     const category = req.query.category ? normalizeCategory(req.query.category) : null;
     const limit = normalizeApiLimit(req.query.limit, 100, 500);
     const records = await listNewsRecords({ category, limit });
-    return sendApiSuccess(res, records, { count: records.length, category, limit });
+    return sendApiSuccess(res, records, { database: DB_NAME, count: records.length, category, limit });
   } catch (error) {
     return sendApiError(res, "NEWS_LIST_FAILED", error.message, 500);
   }
@@ -4757,6 +5002,7 @@ apiV1.get("/news/grouped", requireApiScope("news:read"), async (req, res) => {
     const limit = normalizeApiLimit(req.query.limit, 500, 1000);
     const payload = await getCachedGroupedNewsPayload(limit);
     return sendApiSuccess(res, payload.grouped_records, {
+      database: payload.database || DB_NAME,
       category_count: payload.category_count,
       count: payload.count,
       limit,
@@ -4859,6 +5105,7 @@ apiV1.get("/ai/news/grouped", requireApiScope("ai:read"), async (req, res) => {
     }));
 
     return sendApiSuccess(res, grouped, {
+      database: DB_NAME,
       category_count: grouped.length,
       count: rewrites.length,
       limit,
@@ -5378,6 +5625,7 @@ initializeDatabase()
   .then(() => {
     startScheduler();
     startAiScheduler();
+    startRetentionCleanupScheduler();
     startSchedulerWatchdog();
     serverInstance = app.listen(PORT, () => {
       console.log(`Gautam Tech Studio Bot running at http://localhost:${PORT}`);

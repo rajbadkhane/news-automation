@@ -15,19 +15,13 @@ services:
       - key: TRUST_PROXY_ENABLED
         value: true
       - key: DB_DIALECT
-        value: mysql
+        value: postgres
       - key: DATABASE_URL
         sync: false
-      - key: DB_HOST
-        sync: false
-      - key: DB_PORT
-        value: 3306
-      - key: DB_USER
+      - key: SUPABASE_DB_URL
         sync: false
       - key: DB_PASSWORD
         sync: false
-      - key: DB_NAME
-        value: gautam_news_bot
       - key: DB_SSL_MODE
         value: require
       - key: BROWSER_EXECUTABLE_PATH
