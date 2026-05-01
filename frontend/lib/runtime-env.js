@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 const PLACEHOLDER_PATTERNS = [
   "replace-with",
   "change-this",
@@ -6,6 +9,37 @@ const PLACEHOLDER_PATTERNS = [
   "127.0.0.1",
   "localhost",
 ];
+
+let parentEnvCache = null;
+
+function getParentEnv() {
+  if (parentEnvCache) {
+    return parentEnvCache;
+  }
+
+  parentEnvCache = {};
+  const envPath = path.resolve(process.cwd(), "..", ".env");
+  try {
+    const content = fs.readFileSync(envPath, "utf8");
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+        continue;
+      }
+
+      const [key, ...valueParts] = trimmed.split("=");
+      parentEnvCache[key.trim()] = valueParts.join("=").trim().replace(/^["']|["']$/g, "");
+    }
+  } catch {
+    // The frontend can still run with explicit env vars or local development defaults.
+  }
+
+  return parentEnvCache;
+}
+
+function getEnvValue(name) {
+  return process.env[name] ?? getParentEnv()[name];
+}
 
 function isProduction() {
   return process.env.NODE_ENV === "production";
@@ -21,7 +55,7 @@ function looksLikePlaceholder(value) {
 }
 
 function requireEnv(name, { defaultValue = "", minLength = 1, allowPlaceholder = false } = {}) {
-  const rawValue = process.env[name];
+  const rawValue = getEnvValue(name);
   const value = String(rawValue ?? defaultValue).trim();
 
   if (!value) {
@@ -64,8 +98,11 @@ export function getPublicApiBaseUrl() {
 }
 
 export function getAdminMasterApiKey() {
-  const fallback = isStrictProductionEnv() ? "" : "local-dev-key-for-development-only";
-  return requireEnv("ADMIN_PANEL_MASTER_API_KEY", { defaultValue: fallback, minLength: 16 });
+  const fallback = isStrictProductionEnv() ? "" : getEnvValue("MASTER_API_KEY") || "local-dev-key";
+  return requireEnv("ADMIN_PANEL_MASTER_API_KEY", {
+    defaultValue: fallback,
+    minLength: isStrictProductionEnv() ? 16 : 1,
+  });
 }
 
 export function getAdminPanelPassword() {

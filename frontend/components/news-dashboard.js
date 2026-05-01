@@ -112,18 +112,19 @@ function splitAiParagraphs(value) {
     .filter(Boolean);
 }
 
+function splitUiStoryParagraphs(value) {
+  return cleanAiText(value)
+    .split(/\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
 function getDisplayImageUrl(imageUrl) {
   if (!imageUrl) {
     return null;
   }
 
-  try {
-    const proxyUrl = new URL(getDashboardProxyPath("/image-proxy"), window.location.origin);
-    proxyUrl.searchParams.set("url", imageUrl);
-    return proxyUrl.toString();
-  } catch {
-    return imageUrl;
-  }
+  return `${getDashboardProxyPath("/image-proxy")}?url=${encodeURIComponent(imageUrl)}`;
 }
 
 function getDashboardProxyPath(path) {
@@ -201,7 +202,8 @@ export default function NewsDashboard({
     activeLanguage: "english",
     article: null,
   });
-  const dashboardNewsPath = getDashboardProxyPath("/news/grouped?limit=500");
+  const [readerStory, setReaderStory] = useState(null);
+  const dashboardNewsPath = getDashboardProxyPath("/delivery/news/grouped?language=hindi&limit=500");
   const dashboardCronPath = getDashboardProxyPath("/cron/status");
   const dashboardLogsPath = getDashboardProxyPath("/scheduler/logs?limit=20");
 
@@ -246,12 +248,35 @@ export default function NewsDashboard({
   }
 
   async function openAiRewrite(item) {
+    if (item?.ui_hindi) {
+      setReaderStory(item);
+      setAiState((current) => ({
+        ...current,
+        loading: false,
+        selectedNewsId: item.id,
+        message: "",
+      }));
+      window.requestAnimationFrame(() => {
+        document.getElementById("article-reader")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      return;
+    }
+
+    setReaderStory(null);
     setAiState((current) => ({
       ...current,
       loading: false,
       selectedNewsId: item.id,
       message: "AI rewrite generation is now restricted to the protected admin panel.",
     }));
+  }
+
+  function handleCardClick(item, event) {
+    if (event.target?.closest?.("a,button")) {
+      return;
+    }
+
+    openAiRewrite(item);
   }
 
   const aiRewrite = aiState.article?.rewrite || null;
@@ -433,7 +458,19 @@ export default function NewsDashboard({
             </div>
 
             {leadStory ? (
-              <div className="mt-6 overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/30">
+              <div
+                role="button"
+                tabIndex={0}
+                onMouseDownCapture={(event) => handleCardClick(leadStory, event)}
+                onClickCapture={(event) => handleCardClick(leadStory, event)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openAiRewrite(leadStory);
+                  }
+                }}
+                className="mt-6 cursor-pointer overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/30 transition hover:-translate-y-1 hover:border-white/25 focus:outline-none focus:ring-2 focus:ring-amber-300/70"
+              >
                 <div className="relative aspect-[16/9] overflow-hidden">
                   {leadStory.image_link ? (
                     <img
@@ -479,16 +516,20 @@ export default function NewsDashboard({
                     <div className="flex flex-wrap gap-3">
                       <button
                         type="button"
-                        onClick={() => openAiRewrite(leadStory)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openAiRewrite(leadStory);
+                        }}
                         disabled={aiState.loading}
                         className="inline-flex rounded-full border border-amber-300/30 bg-amber-300/10 px-4 py-2 text-sm font-semibold text-amber-50 transition hover:bg-amber-300/20 disabled:opacity-60"
                       >
-                        {aiState.loading && aiState.selectedNewsId === leadStory.id ? "Generating AI..." : "AI Rewrite"}
+                        Read Article
                       </button>
                       <a
                         href={leadStory.source_url}
                         target="_blank"
                         rel="noreferrer"
+                        onClick={(event) => event.stopPropagation()}
                         className="inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-200"
                       >
                         Read Original Story
@@ -742,7 +783,18 @@ export default function NewsDashboard({
                 <article
                   key={`mpinfo-${item.id}`}
                   data-card
-                  className="group overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/35 transition hover:-translate-y-1 hover:border-white/20"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openAiRewrite(item)}
+                  onMouseDownCapture={(event) => handleCardClick(item, event)}
+                  onClickCapture={(event) => handleCardClick(item, event)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openAiRewrite(item);
+                    }
+                  }}
+                  className="group cursor-pointer overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/35 transition hover:-translate-y-1 hover:border-white/20 focus:outline-none focus:ring-2 focus:ring-amber-300/70"
                 >
                   <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                     {item.image_link ? (
@@ -781,11 +833,14 @@ export default function NewsDashboard({
                       <div className="flex flex-wrap justify-end gap-3">
                         <button
                           type="button"
-                          onClick={() => openAiRewrite(item)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openAiRewrite(item);
+                          }}
                           disabled={aiState.loading}
                           className="rounded-full border border-amber-300/30 bg-amber-300/10 px-4 py-2 text-sm font-medium text-amber-50 transition hover:bg-amber-300/20 disabled:opacity-60"
                         >
-                          {aiState.loading && aiState.selectedNewsId === item.id ? "Generating AI..." : "AI Rewrite"}
+                          Read Article
                         </button>
                       </div>
                     </div>
@@ -855,7 +910,18 @@ export default function NewsDashboard({
                     {group.records.map((item) => (
                       <article
                         key={item.id}
-                        className="group overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/35 transition hover:-translate-y-1 hover:border-white/20"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openAiRewrite(item)}
+                        onMouseDownCapture={(event) => handleCardClick(item, event)}
+                        onClickCapture={(event) => handleCardClick(item, event)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openAiRewrite(item);
+                          }
+                        }}
+                        className="group cursor-pointer overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/35 transition hover:-translate-y-1 hover:border-white/20 focus:outline-none focus:ring-2 focus:ring-amber-300/70"
                       >
                         <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                           {item.image_link ? (
@@ -897,11 +963,14 @@ export default function NewsDashboard({
                             <div className="flex flex-wrap justify-end gap-3">
                               <button
                                 type="button"
-                                onClick={() => openAiRewrite(item)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openAiRewrite(item);
+                                }}
                                 disabled={aiState.loading}
                                 className="rounded-full border border-amber-300/30 bg-amber-300/10 px-4 py-2 text-sm font-medium text-amber-50 transition hover:bg-amber-300/20 disabled:opacity-60"
                               >
-                                {aiState.loading && aiState.selectedNewsId === item.id ? "Generating AI..." : "AI Rewrite"}
+                                Read Article
                               </button>
                             </div>
                           </div>
@@ -918,6 +987,130 @@ export default function NewsDashboard({
             )}
           </div>
         </section>
+
+        {readerStory?.ui_hindi ? (
+          <section
+            id="article-reader"
+            className="mt-8 overflow-hidden rounded-[32px] border border-amber-300/20 bg-slate-950/55 backdrop-blur-xl"
+          >
+            <div className="grid gap-0 lg:grid-cols-[380px_minmax(0,1fr)]">
+              <aside className="border-b border-white/10 bg-slate-950/50 lg:border-b-0 lg:border-r lg:border-white/10">
+                <div className="relative aspect-[16/10] overflow-hidden bg-slate-900 lg:aspect-auto lg:h-full lg:min-h-[520px]">
+                  {readerStory.image_link ? (
+                    <img
+                      src={getDisplayImageUrl(readerStory.image_link)}
+                      alt={readerStory.ui_hindi.title || readerStory.title}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                      Image unavailable
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/35 to-transparent" />
+                  <div className="absolute bottom-0 left-0 right-0 p-6">
+                    <div className="flex flex-wrap gap-2">
+                      <span className="rounded-full bg-amber-400/20 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-amber-100">
+                        {readerStory.ui_hindi.state || prettifyCategory(readerStory.category)}
+                      </span>
+                      <span className="rounded-full bg-white/12 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-white">
+                        {readerStory.ui_hindi.category || prettifyCategory(readerStory.category)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </aside>
+
+              <article className="px-6 py-8 md:px-8 md:py-10">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-amber-100/80">
+                      Published Hindi Article
+                    </p>
+                    <h2 className="mt-4 font-[family-name:var(--font-display)] text-4xl leading-tight text-white md:text-5xl">
+                      {readerStory.ui_hindi.title || readerStory.title}
+                    </h2>
+                    <p className="mt-4 text-sm text-slate-400">
+                      {prettifyFeedSource(readerStory.feed_source)} · {formatTimestamp(readerStory.fetched_at)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReaderStory(null)}
+                    className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/15"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="mt-8 grid gap-4 md:grid-cols-3">
+                  <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Source</p>
+                    <p className="mt-2 text-sm text-slate-100">{readerStory.ui_hindi.source || readerStory.feed_source}</p>
+                  </div>
+                  <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-400">State</p>
+                    <p className="mt-2 text-sm text-slate-100">{readerStory.ui_hindi.state || "राष्ट्रीय"}</p>
+                  </div>
+                  <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Image</p>
+                    <p className="mt-2 text-sm text-slate-100">{readerStory.image_link ? "Ready" : "Missing"}</p>
+                  </div>
+                </div>
+
+                <div className="mt-8 space-y-8">
+                  <section>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">100 Words</h3>
+                    <p className="mt-3 text-base leading-8 text-slate-100">{readerStory.ui_hindi.short_100}</p>
+                  </section>
+                  <section>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">300 Words</h3>
+                    <div className="mt-3 space-y-4">
+                      {splitUiStoryParagraphs(readerStory.ui_hindi.medium_300).map((paragraph, index) => (
+                        <p key={`medium-${index}-${paragraph.slice(0, 20)}`} className="text-base leading-8 text-slate-100">
+                          {paragraph}
+                        </p>
+                      ))}
+                    </div>
+                  </section>
+                  <section>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">600 Words</h3>
+                    <div className="mt-3 space-y-4">
+                      {splitUiStoryParagraphs(readerStory.ui_hindi.long_500).map((paragraph, index) => (
+                        <p key={`long-${index}-${paragraph.slice(0, 20)}`} className="text-base leading-8 text-slate-100">
+                          {paragraph}
+                        </p>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+
+                <div className="mt-8 flex flex-col gap-4 border-t border-white/10 pt-6 md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-wrap gap-2">
+                    {(readerStory.ui_hindi.keywords || []).map((keyword) => (
+                      <span
+                        key={keyword}
+                        className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs text-slate-100"
+                      >
+                        {keyword}
+                      </span>
+                    ))}
+                  </div>
+                  <a
+                    href={readerStory.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex justify-center rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-200"
+                  >
+                    Open Original
+                  </a>
+                </div>
+              </article>
+            </div>
+          </section>
+        ) : null}
 
         {aiRewrite ? (
           <section className="mt-8 overflow-hidden rounded-[32px] border border-amber-300/20 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] backdrop-blur-xl">

@@ -38,13 +38,7 @@ function getDisplayImageUrl(imageUrl) {
     return null;
   }
 
-  try {
-    const proxyUrl = new URL(getDashboardProxyPath("/image-proxy"), window.location.origin);
-    proxyUrl.searchParams.set("url", imageUrl);
-    return proxyUrl.toString();
-  } catch {
-    return imageUrl;
-  }
+  return `${getDashboardProxyPath("/image-proxy")}?url=${encodeURIComponent(imageUrl)}`;
 }
 
 function cleanAiText(value) {

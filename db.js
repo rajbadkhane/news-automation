@@ -20,6 +20,16 @@ function detectDialect() {
   return "mysql";
 }
 
+function getDatabasePassword() {
+  return String(
+    process.env.DB_PASSWORD ||
+      process.env.SUPABASE_DB_PASSWORD ||
+      process.env.POSTGRES_PASSWORD ||
+      process.env.PGPASSWORD ||
+      ""
+  ).trim();
+}
+
 function convertPlaceholders(sql) {
   let index = 0;
   return String(sql).replace(/\?/g, () => `$${++index}`);
@@ -86,20 +96,32 @@ function resolvePostgresConnectionString(rawConnectionString, databasePassword) 
 
 function buildPostgresConnectionCandidates(rawConnectionString, databasePassword) {
   const configuredConnectionString = resolvePostgresConnectionString(rawConnectionString, databasePassword);
-  const candidates = [
-    {
-      name: "configured",
-      connectionString: configuredConnectionString,
-    },
-  ];
+  const candidates = [];
+  const addCandidate = (name, connectionString) => {
+    if (!candidates.some((candidate) => candidate.connectionString === connectionString)) {
+      candidates.push({ name, connectionString });
+    }
+  };
 
   try {
     const configuredUrl = new URL(configuredConnectionString);
     const hostname = configuredUrl.hostname.toLowerCase();
     const isSupabasePooler = hostname.includes("pooler.supabase.com");
+    const directHostMatch = hostname.match(/^db\.([a-z0-9-]+)\.supabase\.co$/);
     const inferredProjectRef = String(configuredUrl.username || "").startsWith("postgres.")
       ? String(configuredUrl.username).slice("postgres.".length)
       : "";
+
+    if (directHostMatch && inferredProjectRef && directHostMatch[1] === inferredProjectRef) {
+      const directUrl = new URL(configuredConnectionString);
+      directUrl.username = "postgres";
+      directUrl.port = directUrl.port || "5432";
+      if (databasePassword) {
+        directUrl.password = databasePassword;
+      }
+
+      addCandidate("supabase-direct-normalized", directUrl.toString());
+    }
 
     if (isSupabasePooler && inferredProjectRef) {
       const directUrl = new URL(configuredConnectionString);
@@ -111,17 +133,13 @@ function buildPostgresConnectionCandidates(rawConnectionString, databasePassword
       }
 
       const directConnectionString = directUrl.toString();
-      if (directConnectionString !== configuredConnectionString) {
-        candidates.push({
-          name: "supabase-direct",
-          connectionString: directConnectionString,
-        });
-      }
+      addCandidate("supabase-direct", directConnectionString);
     }
   } catch {
     // Ignore URL parsing failures and keep the configured candidate only.
   }
 
+  addCandidate("configured", configuredConnectionString);
   return candidates;
 }
 
@@ -160,7 +178,7 @@ async function createPostgresPool() {
     throw new Error("Postgres mode requires DATABASE_URL or SUPABASE_DB_URL.");
   }
 
-  const databasePassword = String(process.env.DB_PASSWORD || process.env.SUPABASE_DB_PASSWORD || "").trim();
+  const databasePassword = getDatabasePassword();
   const needsPasswordPlaceholder = rawConnectionString.includes("[YOUR-PASSWORD]") || rawConnectionString.includes("<YOUR-PASSWORD>");
   if (!databasePassword && needsPasswordPlaceholder) {
     throw new Error("Postgres mode requires DB_PASSWORD or SUPABASE_DB_PASSWORD when DATABASE_URL contains a password placeholder.");

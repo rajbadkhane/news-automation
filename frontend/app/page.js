@@ -8,12 +8,33 @@ const ADMIN_MASTER_API_KEY = getAdminMasterApiKey();
 
 function normalizeDashboardListPayload(payload) {
   if (payload?.success) {
+    const groups = Array.isArray(payload.data) ? payload.data : [];
+    const groupedRecords = groups.map((group) => ({
+      category: group.category,
+      count: group.records?.length || group.published_count || group.count || 0,
+      records: (group.records || []).map((item) => ({
+        id: item.news_id || item.id,
+        rewrite_id: item.id,
+        category: item.category || group.category,
+        title: item.ui_hindi?.title || item.article?.headline || item.source?.title || "Untitled story",
+        source_url: item.link || item.source?.url || "",
+        image_link: item.ui_hindi?.image_url || item.media?.image_link || "",
+        image_source: item.media?.image_source || "article-image",
+        fetched_at: item.source?.fetched_at || item.published_at || item.updated_at,
+        feed_source: item.source?.feed_source || item.source?.title || "published",
+        feed_url: item.source?.feed_url || "",
+        ui_hindi: item.ui_hindi || null,
+        raw_articles: item.raw_articles || null,
+        article: item.article || null,
+      })),
+    }));
+
     return {
       status: "Success",
       database: payload.database || payload.meta?.database || null,
       count: payload.meta?.count || 0,
-      category_count: payload.meta?.category_count || 0,
-      grouped_records: payload.data || [],
+      category_count: payload.meta?.category_count || groupedRecords.length,
+      grouped_records: groupedRecords,
     };
   }
 
@@ -59,7 +80,7 @@ function normalizeSchedulerLogsPayload(payload) {
 
 async function getNewsFeed() {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/news/grouped?limit=500`, {
+    const response = await fetch(`${API_BASE_URL}/api/v1/delivery/news/grouped?language=hindi&limit=500`, {
       cache: "no-store",
       headers: {
         "x-api-key": ADMIN_MASTER_API_KEY,

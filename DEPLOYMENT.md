@@ -67,7 +67,7 @@ DB_NAME=gautam_news_bot
 
 # Or use Supabase Postgres instead:
 # DB_DIALECT=postgres
-# DATABASE_URL=postgresql://postgres:password@db.xxx.supabase.co:5432/postgres
+# DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.<project-ref>.supabase.co:5432/postgres
 # DB_SSL_MODE=require
 
 BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome

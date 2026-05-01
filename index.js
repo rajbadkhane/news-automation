@@ -11,6 +11,7 @@ const {
   isDuplicateColumnError,
 } = require("./db");
 const {
+  createOrUpdateRewriteForRecord,
   findDeliveredAiRewrite,
   initializeAiRewriteStorage,
   listAiRewrites,
@@ -23,6 +24,20 @@ const {
   loadRetentionConfig,
   runDatabaseRetentionCleanup,
 } = require("./retention");
+const {
+  EDITORIAL_DAILY_LIMIT,
+  initializeEditorialStorage,
+  listEditorials,
+  syncEditorials,
+} = require("./editorials");
+const {
+  initializeRashifalStorage,
+  listRashifal,
+  syncRashifal,
+} = require("./rashifal");
+const { fetchGoogleRssFeed } = require("./google-rss-feed-fetcher");
+const { createMpInfoRoutes } = require("./routes/mpinfo.routes");
+const { crawlAllDistricts } = require("./services/mpinfo-scraper.service");
 
 const app = express();
 app.disable("x-powered-by");
@@ -36,8 +51,11 @@ if (TRUST_PROXY_ENABLED) {
 }
 const PORT = process.env.PORT || 3000;
 const IMAGE_PROXY_MAX_WIDTH = Math.max(320, Number.parseInt(process.env.IMAGE_PROXY_MAX_WIDTH || "1280", 10) || 1280);
-const IMAGE_PROXY_WEBP_QUALITY = Math.max(40, Math.min(Number.parseInt(process.env.IMAGE_PROXY_WEBP_QUALITY || "72", 10) || 72, 90));
-const IMAGE_PROXY_JPEG_QUALITY = Math.max(40, Math.min(Number.parseInt(process.env.IMAGE_PROXY_JPEG_QUALITY || "74", 10) || 74, 90));
+const IMAGE_PROXY_WEBP_QUALITY = Math.max(40, Math.min(Number.parseInt(process.env.IMAGE_PROXY_WEBP_QUALITY || "82", 10) || 82, 95));
+const IMAGE_PROXY_JPEG_QUALITY = Math.max(40, Math.min(Number.parseInt(process.env.IMAGE_PROXY_JPEG_QUALITY || "88", 10) || 88, 95));
+const IMAGE_PROXY_HIGH_MAX_WIDTH = Math.max(IMAGE_PROXY_MAX_WIDTH, Number.parseInt(process.env.IMAGE_PROXY_HIGH_MAX_WIDTH || "1920", 10) || 1920);
+const IMAGE_PROXY_HIGH_WEBP_QUALITY = Math.max(80, Math.min(Number.parseInt(process.env.IMAGE_PROXY_HIGH_WEBP_QUALITY || "92", 10) || 92, 95));
+const IMAGE_PROXY_HIGH_JPEG_QUALITY = Math.max(80, Math.min(Number.parseInt(process.env.IMAGE_PROXY_HIGH_JPEG_QUALITY || "94", 10) || 94, 95));
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = process.env.DB_USER || "root";
@@ -51,6 +69,9 @@ const SCHEDULER_ENABLED = !["false", "0", "no"].includes(
 const AI_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
   String(process.env.AI_SCHEDULER_ENABLED || "true").toLowerCase()
 );
+const MPINFO_DISTRICT_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_ENABLED || "true").toLowerCase()
+);
 const LEGACY_PUBLIC_ROUTES_ENABLED = ["true", "1", "yes"].includes(
   String(process.env.LEGACY_PUBLIC_ROUTES_ENABLED || "").toLowerCase()
 );
@@ -61,6 +82,9 @@ const API_KEYS = String(process.env.API_KEYS || "local-dev-key")
   .map((item) => item.trim())
   .filter(Boolean);
 const MASTER_API_KEY = String(process.env.MASTER_API_KEY || API_KEYS[0] || "").trim();
+const LEGACY_API_KEYS_AS_MASTER_ENABLED = NODE_ENV !== "production" || ["true", "1", "yes"].includes(
+  String(process.env.LEGACY_API_KEYS_AS_MASTER_ENABLED || "").toLowerCase()
+);
 const API_CORS_ORIGINS = String(process.env.API_CORS_ORIGINS || "*")
   .split(",")
   .map((item) => item.trim())
@@ -74,14 +98,33 @@ const REDIS_URL = String(
 const DASHBOARD_CACHE_TTL_SECONDS = Math.max(5, Number.parseInt(process.env.DASHBOARD_CACHE_TTL_SECONDS, 10) || 30);
 const STATUS_CACHE_TTL_SECONDS = Math.max(5, Number.parseInt(process.env.STATUS_CACHE_TTL_SECONDS, 10) || 10);
 const RSS_FEED_CACHE_TTL_SECONDS = Math.max(30, Number.parseInt(process.env.RSS_FEED_CACHE_TTL_SECONDS, 10) || 300);
-const ARTICLE_CANDIDATE_MULTIPLIER = Math.max(2, Number.parseInt(process.env.ARTICLE_CANDIDATE_MULTIPLIER, 10) || 4);
-const ARTICLE_CANDIDATE_CAP = Math.max(8, Number.parseInt(process.env.ARTICLE_CANDIDATE_CAP, 10) || 24);
-const FEED_QUEUE_MULTIPLIER = Math.max(2, Number.parseInt(process.env.FEED_QUEUE_MULTIPLIER, 10) || 2);
-const FEED_QUEUE_CAP = Math.max(6, Number.parseInt(process.env.FEED_QUEUE_CAP, 10) || 18);
+const RSS_REQUEST_TIMEOUT_MS = Math.max(
+  5_000,
+  Number.parseInt(process.env.RSS_REQUEST_TIMEOUT_MS, 10) || 15_000
+);
+const ARTICLE_CANDIDATE_MULTIPLIER = Math.max(1, Number.parseInt(process.env.ARTICLE_CANDIDATE_MULTIPLIER, 10) || 2);
+const ARTICLE_CANDIDATE_CAP = Math.max(4, Number.parseInt(process.env.ARTICLE_CANDIDATE_CAP, 10) || 10);
+const FEED_QUEUE_MULTIPLIER = Math.max(1, Number.parseInt(process.env.FEED_QUEUE_MULTIPLIER, 10) || 1);
+const FEED_QUEUE_CAP = Math.max(3, Number.parseInt(process.env.FEED_QUEUE_CAP, 10) || 6);
+const EXPENSIVE_SOURCE_MIN_INTERVAL_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.EXPENSIVE_SOURCE_MIN_INTERVAL_MS, 10) || 30 * 60 * 1000
+);
+const EXPENSIVE_SOURCE_BLOCK_COOLDOWN_MS = Math.max(
+  5 * 60_000,
+  Number.parseInt(process.env.EXPENSIVE_SOURCE_BLOCK_COOLDOWN_MS, 10) || 2 * 60 * 60 * 1000
+);
+const parsedExpensiveSourcePerRunLimit = Number.parseInt(process.env.EXPENSIVE_SOURCE_PER_RUN_LIMIT, 10);
+const EXPENSIVE_SOURCE_PER_RUN_LIMIT = Math.max(
+  0,
+  Number.isFinite(parsedExpensiveSourcePerRunLimit) ? parsedExpensiveSourcePerRunLimit : 1
+);
 const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60_000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const MAIN_SCHEDULER_LOCK_NAME = `${DB_NAME}:main-scheduler`;
 const AI_SCHEDULER_LOCK_NAME = `${DB_NAME}:ai-scheduler`;
+const MPINFO_DISTRICT_SCHEDULER_LOCK_NAME = `${DB_NAME}:mpinfo-district-scheduler`;
+const INGESTION_WORKER_LOCK_NAME = `${DB_NAME}:ingestion-worker`;
 const RETENTION_CLEANUP_LOCK_NAME = `${DB_NAME}:retention-cleanup`;
 const AVAILABLE_API_SCOPES = [
   "news:read",
@@ -98,12 +141,32 @@ const AVAILABLE_API_SCOPES = [
 const DEFAULT_CATEGORY = "india";
 const INDIA_TIMEZONE = "Asia/Kolkata";
 const NEWS18_RSS_BASE = "https://www.news18.com/commonfeeds/v1/eng/rss";
+const EXPENSIVE_NEWS_SOURCES = new Set(["zee", "news18"]);
+const GOVERNMENT_NEWS_SOURCES = new Set(["dd", "pib", "mpinfo"]);
+const STATE_GOV_SOURCES = [
+  { state: "उत्तर प्रदेश", source: "up-gov", url: "https://information.up.gov.in/en" },
+  { state: "महाराष्ट्र", source: "maharashtra-gov", url: "https://dgipr.maharashtra.gov.in/" },
+  { state: "गुजरात", source: "gujarat-gov", url: "https://gujaratindia.gov.in" },
+  { state: "राजस्थान", source: "rajasthan-gov", url: "https://dipr.rajasthan.gov.in/" },
+  { state: "बिहार", source: "bihar-gov", url: "https://state.bihar.gov.in/prdbihar/" },
+  { state: "पश्चिम बंगाल", source: "wb-gov", url: "https://www.wb.gov.in/press-release.aspx" },
+  { state: "तमिलनाडु", source: "tn-gov", url: "https://tn.gov.in" },
+  { state: "कर्नाटक", source: "karnataka-gov", url: "https://karnataka.gov.in" },
+  { state: "केरल", source: "kerala-gov", url: "https://kerala.gov.in" },
+  { state: "तेलंगाना", source: "telangana-gov", url: "https://www.telangana.gov.in/news/press-releases/" },
+  { state: "आंध्र प्रदेश", source: "ap-gov", url: "https://ipr.ap.gov.in/" },
+  { state: "पंजाब", source: "punjab-gov", url: "https://punjab.gov.in" },
+  { state: "हरियाणा", source: "haryana-gov", url: "https://lokbhavan.haryana.gov.in/" },
+  { state: "छत्तीसगढ़", source: "cg-gov", url: "https://jansampark.cg.gov.in/" },
+  { state: "ओडिशा", source: "odisha-gov", url: "https://odisha.gov.in/en/state-news" },
+].map((item) => ({ ...item, type: "state-gov" }));
 const RSS_FEEDS = {
   india: [
+    { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
+    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
     { source: "zee", url: "https://zeenews.india.com/rss/india-national-news.xml" },
     { source: "news18", url: `${NEWS18_RSS_BASE}/india.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/national/feed/" },
-    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
   ],
   world: [
     { source: "zee", url: "https://zeenews.india.com/rss/world-news.xml" },
@@ -111,9 +174,11 @@ const RSS_FEEDS = {
     { source: "dd", url: "https://ddnews.gov.in/en/category/international/feed/" },
   ],
   states: [
+    { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
+    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
     { source: "zee", url: "https://zeenews.india.com/rss/india-news.xml" },
     { source: "news18", url: `${NEWS18_RSS_BASE}/politics.xml` },
-    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
+    ...STATE_GOV_SOURCES,
   ],
   asia: [
     { source: "zee", url: "https://zeenews.india.com/rss/asia-news.xml" },
@@ -167,11 +232,12 @@ const RSS_FEEDS = {
     { source: "dd", url: "https://ddnews.gov.in/en/category/education/feed/" },
   ],
   top_stories: [
+    { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
+    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
     { source: "zee", url: "https://zeenews.india.com/rss/india-national-news.xml" },
     { source: "news18", url: `${NEWS18_RSS_BASE}/india.xml` },
     { source: "news18", url: `${NEWS18_RSS_BASE}/politics.xml` },
     { source: "dd", url: "https://ddnews.gov.in/en/category/top-stories/feed/" },
-    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
   ],
 };
 const CATEGORY_FEED_GROUPS = {
@@ -222,6 +288,7 @@ const RSS_REQUEST_PROFILES = [
     Pragma: "no-cache",
   },
 ];
+const sourceThrottleState = new Map();
 const ZEE_SECTION_FALLBACKS = {
   india: "https://zeenews.india.com/india",
   world: "https://zeenews.india.com/world",
@@ -238,6 +305,117 @@ const ZEE_SECTION_FALLBACKS = {
   top_stories: "https://zeenews.india.com/",
 };
 
+function isExpensiveNewsSource(feedConfig) {
+  return EXPENSIVE_NEWS_SOURCES.has(feedConfig?.source);
+}
+
+function getFeedThrottleKey(feedConfig) {
+  return `${feedConfig?.source || "unknown"}:${feedConfig?.url || ""}`;
+}
+
+function getFeedThrottleState(feedConfig) {
+  const key = getFeedThrottleKey(feedConfig);
+  if (!sourceThrottleState.has(key)) {
+    sourceThrottleState.set(key, {
+      lastAttemptAt: 0,
+      cooldownUntil: 0,
+      lastStatus: null,
+    });
+  }
+
+  return sourceThrottleState.get(key);
+}
+
+function getFeedThrottleReason(feedConfig) {
+  if (!isExpensiveNewsSource(feedConfig)) {
+    return null;
+  }
+
+  const now = Date.now();
+  const state = getFeedThrottleState(feedConfig);
+  if (state.cooldownUntil > now) {
+    return `cooldown for ${Math.ceil((state.cooldownUntil - now) / 60_000)}m after ${state.lastStatus || "block"}`;
+  }
+
+  const nextAllowedAt = state.lastAttemptAt + EXPENSIVE_SOURCE_MIN_INTERVAL_MS;
+  if (nextAllowedAt > now) {
+    return `rate limit for ${Math.ceil((nextAllowedAt - now) / 60_000)}m`;
+  }
+
+  return null;
+}
+
+function markFeedAttempt(feedConfig) {
+  if (!isExpensiveNewsSource(feedConfig)) {
+    return;
+  }
+
+  const state = getFeedThrottleState(feedConfig);
+  state.lastAttemptAt = Date.now();
+}
+
+function markFeedSuccess(feedConfig) {
+  if (!isExpensiveNewsSource(feedConfig)) {
+    return;
+  }
+
+  const state = getFeedThrottleState(feedConfig);
+  state.cooldownUntil = 0;
+  state.lastStatus = "ok";
+}
+
+function markFeedBlocked(feedConfig, status) {
+  if (!isExpensiveNewsSource(feedConfig)) {
+    return;
+  }
+
+  const state = getFeedThrottleState(feedConfig);
+  state.cooldownUntil = Date.now() + EXPENSIVE_SOURCE_BLOCK_COOLDOWN_MS;
+  state.lastStatus = status ? `status ${status}` : "network error";
+}
+
+function getExpensiveSourceThrottlePayload() {
+  return {
+    sources: Array.from(EXPENSIVE_NEWS_SOURCES),
+    min_interval_ms: EXPENSIVE_SOURCE_MIN_INTERVAL_MS,
+    block_cooldown_ms: EXPENSIVE_SOURCE_BLOCK_COOLDOWN_MS,
+    per_run_limit: EXPENSIVE_SOURCE_PER_RUN_LIMIT,
+    active_state: Object.fromEntries(
+      Array.from(sourceThrottleState.entries()).map(([key, state]) => [
+        key,
+        {
+          last_attempt_at: state.lastAttemptAt ? new Date(state.lastAttemptAt).toISOString() : null,
+          cooldown_until: state.cooldownUntil ? new Date(state.cooldownUntil).toISOString() : null,
+          last_status: state.lastStatus,
+        },
+      ])
+    ),
+  };
+}
+
+function getFeedPriority(feedConfig) {
+  if (feedConfig?.type === "state-gov" || GOVERNMENT_NEWS_SOURCES.has(feedConfig?.source)) {
+    return 0;
+  }
+
+  if (isExpensiveNewsSource(feedConfig)) {
+    return 2;
+  }
+
+  return 1;
+}
+
+function sortFeedsByPriority(feedConfigs) {
+  return [...feedConfigs].sort((left, right) => {
+    const priorityDiff = getFeedPriority(left) - getFeedPriority(right);
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+
+    return String(left?.source || "").localeCompare(String(right?.source || ""));
+  });
+}
+
 let dbPool;
 const DEFAULT_ARTICLE_LIMIT = 5;
 const MAX_ARTICLE_LIMIT = 500;
@@ -247,8 +425,34 @@ const QUIET_HOUR_START = 0;
 const QUIET_HOUR_END = 5;
 const SCHEDULER_TICK_MS = 30 * 1000;
 const AI_SCHEDULER_TICK_MS = 30 * 1000;
+const SCHEDULER_CATEGORY_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.SCHEDULER_CATEGORY_TIMEOUT_MS, 10) || 4 * 60 * 1000
+);
+const STALE_SCHEDULER_RUN_MS = Math.max(
+  5 * 60_000,
+  Number.parseInt(process.env.STALE_SCHEDULER_RUN_MS, 10) || 5 * 60 * 1000
+);
 const SCHEDULER_HEALTH_THRESHOLD_MS = 2 * SCHEDULER_TICK_MS + 15 * 1000;
 const AI_SCHEDULER_HEALTH_THRESHOLD_MS = 2 * AI_SCHEDULER_TICK_MS + 15 * 1000;
+const MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS = Math.max(
+  15 * 60 * 1000,
+  Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS, 10) || 60 * 60 * 1000
+);
+const MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS = Math.max(
+  5 * 60 * 1000,
+  Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS, 10) || 20 * 60 * 1000
+);
+const MPINFO_DISTRICT_SCHEDULER_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_LIMIT, 10) || 1, 3)
+);
+const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
+);
+const MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN = ["true", "1", "yes"].includes(
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "").toLowerCase()
+);
 const WATCHDOG_TICK_MS = 60 * 1000;
 const apiRateLimitStore = new Map();
 const quotaStore = new Map();
@@ -257,6 +461,8 @@ let schedulerInterval = null;
 let schedulerRunning = false;
 let aiSchedulerInterval = null;
 let aiSchedulerRunning = false;
+let mpInfoDistrictSchedulerInterval = null;
+let mpInfoDistrictSchedulerRunning = false;
 let schedulerWatchdogInterval = null;
 let schedulerHeartbeatInterval = null;
 let aiSchedulerHeartbeatInterval = null;
@@ -291,6 +497,12 @@ const schedulerState = {
     startHour: QUIET_HOUR_START,
     endHour: QUIET_HOUR_END,
   },
+  coordination: {
+    activeWorker: null,
+    activeSince: null,
+    lastBusyAt: null,
+    lastBusyReason: null,
+  },
   categories: {},
 };
 const aiSchedulerState = {
@@ -298,8 +510,21 @@ const aiSchedulerState = {
   lastTickAt: null,
   lastRunAt: null,
   lastWindowKey: null,
+  lastStatus: "Waiting",
+  lastError: null,
   frequency_minutes: 15,
   categories: {},
+};
+const mpInfoDistrictSchedulerState = {
+  enabled: MPINFO_DISTRICT_SCHEDULER_ENABLED,
+  intervalMs: MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS,
+  limit: MPINFO_DISTRICT_SCHEDULER_LIMIT,
+  rewrite: MPINFO_DISTRICT_SCHEDULER_REWRITE,
+  lastTickAt: null,
+  lastRunAt: null,
+  lastStatus: "Waiting",
+  lastError: null,
+  lastResult: null,
 };
 const processState = {
   startedAt: new Date().toISOString(),
@@ -390,6 +615,50 @@ async function cacheGetJson(key) {
     console.error("Redis cache read failed:", error.message);
     return null;
   }
+}
+
+async function recoverStaleSchedulerRuns(triggerSource = "startup") {
+  if (!dbPool) {
+    return 0;
+  }
+
+  const staleSeconds = Math.ceil(STALE_SCHEDULER_RUN_MS / 1000);
+  const staleMessage = `Recovered stale Running scheduler row during ${triggerSource}; previous process likely stopped before finalizing this run.`;
+  const [result] = await dbPool.execute(
+    dbPool.dialect === "postgres"
+      ? `
+          UPDATE scheduler_runs
+          SET
+            status = 'Abandoned',
+            failed_count = CASE WHEN failed_count = 0 THEN 1 ELSE failed_count END,
+            message = COALESCE(message, ?),
+            error_message = COALESCE(error_message, ?),
+            completed_at = CURRENT_TIMESTAMP,
+            duration_ms = FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000)
+          WHERE status = 'Running'
+            AND started_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 second')
+        `
+      : `
+          UPDATE scheduler_runs
+          SET
+            status = 'Abandoned',
+            failed_count = IF(failed_count = 0, 1, failed_count),
+            message = COALESCE(message, ?),
+            error_message = COALESCE(error_message, ?),
+            completed_at = CURRENT_TIMESTAMP,
+            duration_ms = TIMESTAMPDIFF(SECOND, started_at, CURRENT_TIMESTAMP) * 1000
+          WHERE status = 'Running'
+            AND started_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL ? SECOND)
+        `,
+    [staleMessage, staleMessage, staleSeconds]
+  );
+
+  const affectedRows = result?.affectedRows || result?.rowCount || 0;
+  if (affectedRows > 0) {
+    console.warn(`Recovered ${affectedRows} stale scheduler run(s) left in Running state.`);
+  }
+
+  return affectedRows;
 }
 
 async function cacheSetJson(key, value, ttlSeconds) {
@@ -556,6 +825,8 @@ async function initializeDatabase() {
   }
 
   await initializeAiRewriteStorage(dbPool);
+  await initializeEditorialStorage(dbPool);
+  await initializeRashifalStorage(dbPool);
 
   if (dbPool.dialect === "postgres") {
     await dbPool.query(`
@@ -727,6 +998,8 @@ async function initializeDatabase() {
       )
     `);
   }
+
+  await recoverStaleSchedulerRuns("startup");
 }
 
 async function saveNewsRecord({
@@ -766,6 +1039,11 @@ async function saveNewsRecord({
       : [category, feedSource, feedUrl, query, title, articleUrl, imageLink, imageSource, articleUrl]
   );
 
+  if (dbPool.dialect === "postgres" && result.rows?.[0]?.id) {
+    await invalidateDashboardCaches();
+    return result.rows[0].id;
+  }
+
   if (result.affectedRows > 0) {
     await invalidateDashboardCaches();
     return result.insertId;
@@ -782,6 +1060,42 @@ async function findNewsRecordByUrl(articleUrl) {
   const [rows] = await dbPool.execute(
     `
       SELECT id, category, source_url, fetched_at
+      FROM fetched_news
+      WHERE source_url = ?
+      LIMIT 1
+    `,
+    [articleUrl]
+  );
+
+  return rows[0] || null;
+}
+
+async function findFullNewsRecordById(newsId) {
+  if (!dbPool) {
+    throw new Error("Database pool is not initialized.");
+  }
+
+  const [rows] = await dbPool.execute(
+    `
+      SELECT id, category, feed_source, feed_url, search_query, title, source_url, image_link, image_source, fetched_at
+      FROM fetched_news
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [newsId]
+  );
+
+  return rows[0] || null;
+}
+
+async function findFullNewsRecordByUrl(articleUrl) {
+  if (!dbPool) {
+    throw new Error("Database pool is not initialized.");
+  }
+
+  const [rows] = await dbPool.execute(
+    `
+      SELECT id, category, feed_source, feed_url, search_query, title, source_url, image_link, image_source, fetched_at
       FROM fetched_news
       WHERE source_url = ?
       LIMIT 1
@@ -933,6 +1247,7 @@ async function getCachedRssFeedsPayload() {
     source: "Configured RSS feeds",
     count: Object.keys(RSS_FEEDS).length,
     feeds: RSS_FEEDS,
+    expensive_source_throttle: getExpensiveSourceThrottlePayload(),
     category_feed_pools: Object.fromEntries(
       Object.keys(RSS_FEEDS).map((category) => [
         category,
@@ -978,8 +1293,10 @@ async function getCachedCronStatusPayload() {
       last_run_at: schedulerState.lastRunAt,
       last_window_key: schedulerState.lastWindowKey,
       manual_run: schedulerState.manualRun,
+      coordination: schedulerState.coordination,
       categories: schedulerState.categories,
       schedule: schedulerState.schedule || getCategorySchedule(),
+      mpinfo_districts: getMpInfoDistrictSchedulerHealthSnapshot(),
       retention_cleanup: getRetentionCleanupHealthSnapshot(),
     },
   }));
@@ -1030,6 +1347,7 @@ function buildApiDocs() {
       { method: "GET", path: `${API_BASE_PATH}/rss-feeds`, description: "Configured RSS feed catalog." },
       { method: "POST", path: `${API_BASE_PATH}/sync/rss`, description: "Fetch RSS stories for one category." },
       { method: "POST", path: `${API_BASE_PATH}/sync/rss/all`, description: "Fetch RSS stories for all categories." },
+      { method: "POST", path: `${API_BASE_PATH}/sync/sources-ai`, description: "Fetch Google RSS plus configured news sources and optionally create 100/300/600-word AI rewrites." },
       { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo`, description: "Fetch MP Info stories." },
       { method: "GET", path: `${API_BASE_PATH}/cron/status`, description: "Main scheduler status." },
       { method: "POST", path: `${API_BASE_PATH}/cron/run-now`, description: "Trigger main scheduler manually." },
@@ -1735,6 +2053,16 @@ async function enforceApiKey(req, res, next) {
     return next();
   }
 
+  if (LEGACY_API_KEYS_AS_MASTER_ENABLED && API_KEYS.includes(apiKey)) {
+    req.apiKey = apiKey;
+    req.apiAuth = {
+      type: "legacy",
+      scopes: AVAILABLE_API_SCOPES,
+      client: null,
+    };
+    return next();
+  }
+
   try {
     const client = await findApiClientByKey(apiKey);
     if (!client || !client.is_active) {
@@ -1798,7 +2126,7 @@ function requireApiScope(scope) {
       return sendApiError(res, "UNAUTHORIZED", "API authentication context is missing.", 401);
     }
 
-    if (auth.type === "master") {
+    if (auth.type === "master" || auth.type === "legacy") {
       return next();
     }
 
@@ -1903,6 +2231,7 @@ function getSchedulerHealthSnapshot() {
       last_window_key: aiSchedulerState.lastWindowKey,
       frequency_minutes: aiSchedulerState.frequency_minutes,
     },
+    mpinfo_districts: getMpInfoDistrictSchedulerHealthSnapshot(),
     retention: getRetentionCleanupHealthSnapshot(),
   };
 }
@@ -2437,6 +2766,45 @@ async function withDatabaseLock(lockName, callback) {
   }
 }
 
+function markIngestionBusy(workerName, message) {
+  schedulerState.coordination = {
+    ...schedulerState.coordination,
+    lastBusyAt: new Date().toISOString(),
+    lastBusyReason: message || `${workerName} is busy.`,
+  };
+}
+
+async function withIngestionWorkerLock(workerName, callback) {
+  const locked = await withDatabaseLock(INGESTION_WORKER_LOCK_NAME, async () => {
+    schedulerState.coordination = {
+      ...schedulerState.coordination,
+      activeWorker: workerName,
+      activeSince: new Date().toISOString(),
+    };
+
+    try {
+      return await callback();
+    } finally {
+      schedulerState.coordination = {
+        ...schedulerState.coordination,
+        activeWorker: null,
+        activeSince: null,
+      };
+    }
+  });
+
+  if (!locked.acquired) {
+    markIngestionBusy(workerName, `Skipped ${workerName}; another cron worker is already running.`);
+  }
+
+  return locked;
+}
+
+async function isIngestionWorkerBusy() {
+  const locked = await withDatabaseLock(INGESTION_WORKER_LOCK_NAME, async () => true);
+  return !locked.acquired;
+}
+
 function validateProductionConfig() {
   if (NODE_ENV !== "production") {
     return;
@@ -2616,6 +2984,23 @@ function isTimestampStale(timestamp, thresholdMs) {
   return Date.now() - value > thresholdMs;
 }
 
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId = null;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 function updateSchedulerHeartbeat() {
   schedulerState.lastTickAt = new Date().toISOString();
 }
@@ -2649,6 +3034,11 @@ function clearSchedulerIntervals() {
     aiSchedulerInterval = null;
   }
 
+  if (mpInfoDistrictSchedulerInterval) {
+    clearInterval(mpInfoDistrictSchedulerInterval);
+    mpInfoDistrictSchedulerInterval = null;
+  }
+
   if (retentionCleanupInterval) {
     clearInterval(retentionCleanupInterval);
     retentionCleanupInterval = null;
@@ -2680,6 +3070,29 @@ function getRetentionCleanupHealthSnapshot() {
     last_status: retentionState.lastStatus,
     last_error: retentionState.lastError,
     last_result: retentionState.lastResult,
+  };
+}
+
+function updateMpInfoDistrictSchedulerHeartbeat() {
+  mpInfoDistrictSchedulerState.lastTickAt = new Date().toISOString();
+}
+
+function getMpInfoDistrictSchedulerHealthSnapshot() {
+  return {
+    enabled: mpInfoDistrictSchedulerState.enabled,
+    healthy: !mpInfoDistrictSchedulerState.enabled
+      || !isTimestampStale(
+        mpInfoDistrictSchedulerState.lastTickAt,
+        (mpInfoDistrictSchedulerState.intervalMs * 2) + 60_000
+      ),
+    interval_ms: mpInfoDistrictSchedulerState.intervalMs,
+    limit: mpInfoDistrictSchedulerState.limit,
+    rewrite: mpInfoDistrictSchedulerState.rewrite,
+    last_tick_at: mpInfoDistrictSchedulerState.lastTickAt,
+    last_run_at: mpInfoDistrictSchedulerState.lastRunAt,
+    last_status: mpInfoDistrictSchedulerState.lastStatus,
+    last_error: mpInfoDistrictSchedulerState.lastError,
+    last_result: mpInfoDistrictSchedulerState.lastResult,
   };
 }
 
@@ -2800,12 +3213,18 @@ async function fetchTextWithProfiles(url, acceptHeader) {
   let lastStatus = null;
 
   for (const profile of RSS_REQUEST_PROFILES) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, RSS_REQUEST_TIMEOUT_MS);
+
     try {
       response = await fetch(url, {
         headers: {
           ...profile,
           Accept: acceptHeader,
         },
+        signal: controller.signal,
       });
       if (response.ok) {
         break;
@@ -2815,6 +3234,8 @@ async function fetchTextWithProfiles(url, acceptHeader) {
       lastError = new Error(`RSS feed request failed with status ${response.status}`);
     } catch (error) {
       lastError = error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -2826,6 +3247,10 @@ async function fetchTextWithProfiles(url, acceptHeader) {
 }
 
 function getFallbackSectionUrl(feedConfig, category) {
+  if (feedConfig.type === "state-gov") {
+    return feedConfig.url;
+  }
+
   if (feedConfig.source === "zee") {
     return ZEE_SECTION_FALLBACKS[category] || "https://zeenews.india.com/";
   }
@@ -2843,6 +3268,14 @@ function getFallbackSectionUrl(feedConfig, category) {
   }
 
   return null;
+}
+
+function isRejectedGovernmentUrl(candidateUrl) {
+  const normalized = String(candidateUrl || "").toLowerCase();
+  return (
+    /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar)(?:[?#].*)?$/i.test(normalized) ||
+    /tender|tenders|recruitment|vacancy|career|careers|jobs|admission|result|results|download|login|contact|sitemap|about|intro|introduction|history|profile/.test(normalized)
+  );
 }
 
 function extractArticleUrlsFromHtml(html, baseUrl, predicate, limit) {
@@ -2938,6 +3371,30 @@ function getNews18SectionKeywords(feedConfig) {
 function createSectionUrlPredicate(feedConfig, sectionUrl) {
   const sectionHref = String(sectionUrl || "").replace(/\/+$/, "");
 
+  if (feedConfig.type === "state-gov") {
+    return (candidateUrl) => {
+      try {
+        const sectionHost = new URL(sectionUrl).hostname.toLowerCase().replace(/^www\./, "");
+        const parsed = new URL(candidateUrl);
+        const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+        const pathname = parsed.pathname.toLowerCase();
+        const text = `${pathname} ${parsed.search.toLowerCase()}`;
+        const hasNewsSignal = /news|press|release|latest|update|updates|announcement|article|story|समाचार|प्रेस|खबर/.test(text);
+
+        return (
+          hostname === sectionHost &&
+          candidateUrl.replace(/\/+$/, "") !== sectionHref &&
+          pathname.split("/").filter(Boolean).length >= 1 &&
+          !isRejectedGovernmentUrl(candidateUrl) &&
+          !/\.(jpg|jpeg|png|webp|gif|svg|css|js)(?:[?#].*)?$/i.test(pathname) &&
+          hasNewsSignal
+        );
+      } catch {
+        return false;
+      }
+    };
+  }
+
   if (feedConfig.source === "zee") {
     return (candidateUrl) => {
       try {
@@ -2996,35 +3453,131 @@ async function getArticleUrlsFromSectionFallback(feedConfig, category, limit) {
     return [];
   }
 
+  const throttleReason = getFeedThrottleReason(feedConfig);
+  if (throttleReason) {
+    console.log(`Skipping ${feedConfig.source} section fallback (${category}): ${throttleReason}.`);
+    return [];
+  }
+
+  markFeedAttempt(feedConfig);
+
   const { response, lastError, lastStatus } = await fetchTextWithProfiles(
     sectionUrl,
     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
   );
 
   if (!response || !response.ok) {
-    if (lastStatus === 403) {
+    if (lastStatus === 403 || lastStatus === 429) {
+      markFeedBlocked(feedConfig, lastStatus);
       return [];
     }
 
     throw lastError || new Error("Section fallback request failed.");
   }
 
+  markFeedSuccess(feedConfig);
+
   const html = await response.text();
-  return extractArticleUrlsFromHtml(
+  const directUrls = extractArticleUrlsFromHtml(
     html,
     sectionUrl,
     createSectionUrlPredicate(feedConfig, sectionUrl),
     limit
   );
+
+  if (feedConfig.type !== "state-gov" || directUrls.length >= limit) {
+    return directUrls;
+  }
+
+  const seen = new Set(directUrls);
+  const sectionUrls = extractArticleUrlsFromHtml(
+    html,
+    sectionUrl,
+    (candidateUrl) => {
+      try {
+        const parsed = new URL(candidateUrl);
+        const sectionHost = new URL(sectionUrl).hostname.toLowerCase().replace(/^www\./, "");
+        const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+        const text = `${parsed.pathname.toLowerCase()} ${parsed.search.toLowerCase()}`;
+        return (
+          hostname === sectionHost &&
+          !seen.has(candidateUrl) &&
+          !isRejectedGovernmentUrl(candidateUrl) &&
+          /news|press|release|latest|update|updates|announcement|समाचार|प्रेस|खबर/.test(text)
+        );
+      } catch {
+        return false;
+      }
+    },
+    4
+  );
+
+  for (const nestedSectionUrl of sectionUrls) {
+    if (directUrls.length >= limit) {
+      break;
+    }
+
+    try {
+      const nestedResult = await fetchTextWithProfiles(
+        nestedSectionUrl,
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      );
+      if (!nestedResult.response?.ok) {
+        continue;
+      }
+
+      const nestedHtml = await nestedResult.response.text();
+      for (const articleUrl of extractArticleUrlsFromHtml(
+        nestedHtml,
+        nestedSectionUrl,
+        createSectionUrlPredicate(feedConfig, nestedSectionUrl),
+        limit
+      )) {
+        if (!seen.has(articleUrl)) {
+          seen.add(articleUrl);
+          directUrls.push(articleUrl);
+        }
+
+        if (directUrls.length >= limit) {
+          break;
+        }
+      }
+    } catch {
+      // Keep the scraper best-effort for heterogeneous government portals.
+    }
+  }
+
+  return directUrls;
 }
 
 async function getArticleUrlsFromFeed(feedConfig, category, limit) {
+  if (feedConfig.type === "state-gov") {
+    const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
+    if (fallbackUrls.length > 0) {
+      console.log(`Using state government scraper for ${feedConfig.state || feedConfig.source}.`);
+    }
+    return fallbackUrls;
+  }
+
+  const throttleReason = getFeedThrottleReason(feedConfig);
+  if (throttleReason) {
+    console.log(`Skipping ${feedConfig.source} RSS feed (${category}): ${throttleReason}.`);
+    return [];
+  }
+
+  markFeedAttempt(feedConfig);
+
   const { response, lastError, lastStatus } = await fetchTextWithProfiles(
     feedConfig.url,
     "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8"
   );
 
   if (!response || !response.ok) {
+    if (lastStatus === 403 || lastStatus === 429) {
+      markFeedBlocked(feedConfig, lastStatus);
+      return [];
+    }
+
     const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
     if (fallbackUrls.length > 0) {
       console.log(
@@ -3033,17 +3586,13 @@ async function getArticleUrlsFromFeed(feedConfig, category, limit) {
       return fallbackUrls;
     }
 
-    if (lastStatus === 403) {
-      return [];
-    }
-
     throw lastError || new Error("RSS feed request failed.");
   }
 
+  markFeedSuccess(feedConfig);
+
   const xml = await response.text();
-  const itemMatches = Array.from(
-    xml.matchAll(/<item\b[\s\S]*?<link>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/link>/gi)
-  );
+  const itemMatches = Array.from(xml.matchAll(/<item\b[\s\S]*?<\/item>/gi));
 
   if (!itemMatches.length) {
     const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
@@ -3056,24 +3605,31 @@ async function getArticleUrlsFromFeed(feedConfig, category, limit) {
   }
 
   const seen = new Set();
-  const urls = [];
+  const articles = [];
 
   for (const match of itemMatches) {
-    const url = match[1].replace(/&amp;/g, "&").trim();
+    const itemXml = match[0];
+    const url = extractRssTagValue(itemXml, "link").replace(/&amp;/g, "&").trim();
 
     if (!url || !url.startsWith("http") || seen.has(url)) {
       continue;
     }
 
     seen.add(url);
-    urls.push(url);
+    const rssImageUrl = extractRssImageUrl(itemXml, feedConfig.url);
+    articles.push({
+      url,
+      title: extractRssTagValue(itemXml, "title"),
+      image_link: rssImageUrl,
+      image_source: rssImageUrl ? "rss-image" : null,
+    });
 
-    if (urls.length >= limit) {
+    if (articles.length >= limit) {
       break;
     }
   }
 
-  if (!urls.length) {
+  if (!articles.length) {
     const fallbackUrls = await getArticleUrlsFromSectionFallback(feedConfig, category, limit);
     if (fallbackUrls.length > 0) {
       console.log(`Using section fallback for ${feedConfig.source} (${category}) because RSS had no usable URLs.`);
@@ -3083,61 +3639,69 @@ async function getArticleUrlsFromFeed(feedConfig, category, limit) {
     throw new Error("The RSS feed did not contain usable article URLs.");
   }
 
-  return urls
-    .map((match) =>
-      match
-        .replace(/<!\[CDATA\[(.*?)\]\]>/g, "$1")
-        .trim()
-    )
-    .filter(Boolean);
+  return articles;
 }
 
 async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
   const startIndex = Number.isInteger(options.startIndex) ? options.startIndex : 0;
   const perFeedLimit = Math.min(
-    Math.max(limit * FEED_QUEUE_MULTIPLIER, 5),
+    Math.max(limit * FEED_QUEUE_MULTIPLIER, 3),
     FEED_QUEUE_CAP
   );
   const seen = new Set();
   const results = [];
-  const feedQueueResults = await Promise.allSettled(
-    feedConfigs.map(async (feedConfig) => ({
-      feed_source: feedConfig.source,
-      feed_url: feedConfig.url,
-      urls: await getArticleUrlsFromFeed(feedConfig, options.category || DEFAULT_CATEGORY, perFeedLimit),
-    }))
-  );
+  const orderedFeedConfigs = feedConfigs.map((_, index) => feedConfigs[(startIndex + index) % feedConfigs.length]);
+  const feedQueues = [];
+  let expensiveAttempts = 0;
 
-  const feedQueues = feedQueueResults
-    .map((result, index) => ({ result, feedConfig: feedConfigs[index] }))
-    .flatMap(({ result, feedConfig }) => {
-      if (result.status === "fulfilled") {
-        if (!Array.isArray(result.value.urls) || result.value.urls.length === 0) {
-          return [];
-        }
-
-        return [result.value];
+  for (const feedConfig of orderedFeedConfigs) {
+    if (isExpensiveNewsSource(feedConfig)) {
+      const throttleReason = getFeedThrottleReason(feedConfig);
+      if (throttleReason) {
+        console.log(`Skipping ${feedConfig.source} feed (${options.category || DEFAULT_CATEGORY}): ${throttleReason}.`);
+        continue;
       }
 
+      if (expensiveAttempts >= EXPENSIVE_SOURCE_PER_RUN_LIMIT) {
+        console.log(
+          `Skipping ${feedConfig.source} feed (${options.category || DEFAULT_CATEGORY}): expensive source run limit reached.`
+        );
+        continue;
+      }
+
+      expensiveAttempts += 1;
+    }
+
+    try {
+      const articles = await getArticleUrlsFromFeed(feedConfig, options.category || DEFAULT_CATEGORY, perFeedLimit);
+      if (Array.isArray(articles) && articles.length > 0) {
+        feedQueues.push({
+          feed_source: feedConfig.source,
+          feed_url: feedConfig.url,
+          articles,
+        });
+      }
+    } catch (error) {
       console.warn(
-        `Feed fetch failed for ${feedConfig.source} (${feedConfig.url}): ${result.reason?.message || "Unknown error"}`
+        `Feed fetch failed for ${feedConfig.source} (${feedConfig.url}): ${error?.message || "Unknown error"}`
       );
-      return [];
-    });
+    }
+  }
 
   if (!feedQueues.length) {
     throw new Error(`All feed requests failed for the selected category pool.`);
   }
 
-  const orderedQueues = feedQueues.map((_, index) => feedQueues[(startIndex + index) % feedQueues.length]);
+  const orderedQueues = feedQueues;
 
   let madeProgress = true;
   while (results.length < limit && madeProgress) {
     madeProgress = false;
 
     for (const queue of orderedQueues) {
-      while (queue.urls.length > 0) {
-        const url = queue.urls.shift();
+      while (queue.articles.length > 0) {
+        const article = queue.articles.shift();
+        const url = typeof article === "string" ? article : article?.url;
         if (!url || seen.has(url)) {
           continue;
         }
@@ -3147,6 +3711,9 @@ async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
           url,
           feed_source: queue.feed_source,
           feed_url: queue.feed_url,
+          title: typeof article === "object" ? article.title || null : null,
+          image_link: typeof article === "object" ? article.image_link || null : null,
+          image_source: typeof article === "object" ? article.image_source || null : null,
         });
         madeProgress = true;
         break;
@@ -3186,7 +3753,7 @@ function getCategoryFeedPool(category) {
     }
   }
 
-  return feedPool;
+  return sortFeedsByPriority(feedPool);
 }
 
 function isAllowedImageHost(value) {
@@ -3197,6 +3764,40 @@ function isAllowedImageHost(value) {
   try {
     const parsed = new URL(value);
     const hostname = parsed.hostname.toLowerCase();
+    const protocol = parsed.protocol.toLowerCase();
+
+    if (!["http:", "https:"].includes(protocol)) {
+      return false;
+    }
+
+    if (
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname === "metadata.google.internal" ||
+      hostname === "169.254.169.254"
+    ) {
+      return false;
+    }
+
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) {
+      const parts = hostname.split(".").map((part) => Number.parseInt(part, 10));
+      const [first, second] = parts;
+      const isPrivate =
+        first === 10 ||
+        first === 127 ||
+        (first === 172 && second >= 16 && second <= 31) ||
+        (first === 192 && second === 168) ||
+        (first === 169 && second === 254) ||
+        first === 0;
+
+      if (isPrivate) {
+        return false;
+      }
+    }
+
+    if (hostname === "::1" || hostname.startsWith("[::1]")) {
+      return false;
+    }
 
     const exactHosts = [
       "ddnews.gov.in",
@@ -3211,13 +3812,43 @@ function isAllowedImageHost(value) {
       "www.mpinfonew.org",
       "news18.com",
       "www.news18.com",
+      "images.news18.com",
+      "static.news18.com",
+      "pib.gov.in",
+      "www.pib.gov.in",
+      "static.pib.gov.in",
+      "static.toiimg.com",
+      "static.dw.com",
+      "ichef.bbci.co.uk",
+      "image.cnbcfm.com",
+      "img.etimg.com",
+      "etimg.etb2bimg.com",
+      "akm-img-a-in.tosshub.com",
+      "cdn1.wionews.com",
+      "images.indianexpress.com",
+      "bl-i.thgim.com",
+      "asset.peoplematters.in",
     ];
 
     if (exactHosts.includes(hostname)) {
       return true;
     }
 
-    return hostname.endsWith(".news18.com") || hostname.endsWith(".zeenews.com");
+    return (
+      hostname.endsWith(".news18.com") ||
+      hostname.endsWith(".zeenews.com") ||
+      hostname.endsWith(".gov.in") ||
+      hostname.endsWith(".toiimg.com") ||
+      hostname.endsWith(".indiatimes.com") ||
+      hostname.endsWith(".dw.com") ||
+      hostname.endsWith(".bbci.co.uk") ||
+      hostname.endsWith(".cnbcfm.com") ||
+      hostname.endsWith(".tosshub.com") ||
+      hostname.endsWith(".wionews.com") ||
+      hostname.endsWith(".indianexpress.com") ||
+      hostname.endsWith(".thgim.com") ||
+      hostname.endsWith(".peoplematters.in")
+    );
   } catch {
     return false;
   }
@@ -3228,7 +3859,7 @@ function shouldBypassImageCompression(contentType) {
   return normalized.includes("image/gif") || normalized.includes("image/svg");
 }
 
-async function optimizeImageBuffer(buffer, contentType, acceptHeader) {
+async function optimizeImageBuffer(buffer, contentType, acceptHeader, options = {}) {
   if (shouldBypassImageCompression(contentType)) {
     return {
       buffer,
@@ -3236,10 +3867,13 @@ async function optimizeImageBuffer(buffer, contentType, acceptHeader) {
     };
   }
 
+  const maxWidth = options.maxWidth || IMAGE_PROXY_MAX_WIDTH;
+  const webpQuality = options.webpQuality || IMAGE_PROXY_WEBP_QUALITY;
+  const jpegQuality = options.jpegQuality || IMAGE_PROXY_JPEG_QUALITY;
   const transformer = sharp(buffer, { failOn: "none" })
     .rotate()
     .resize({
-      width: IMAGE_PROXY_MAX_WIDTH,
+      width: maxWidth,
       withoutEnlargement: true,
       fit: "inside",
     });
@@ -3250,7 +3884,7 @@ async function optimizeImageBuffer(buffer, contentType, acceptHeader) {
   if (acceptsWebp) {
     return {
       buffer: await transformer.webp({
-        quality: IMAGE_PROXY_WEBP_QUALITY,
+        quality: webpQuality,
         effort: 4,
       }).toBuffer(),
       contentType: "image/webp",
@@ -3261,7 +3895,7 @@ async function optimizeImageBuffer(buffer, contentType, acceptHeader) {
     return {
       buffer: await transformer.png({
         compressionLevel: 9,
-        palette: true,
+        palette: !options.highQuality,
         effort: 7,
       }).toBuffer(),
       contentType: "image/png",
@@ -3270,7 +3904,7 @@ async function optimizeImageBuffer(buffer, contentType, acceptHeader) {
 
   return {
     buffer: await transformer.jpeg({
-      quality: IMAGE_PROXY_JPEG_QUALITY,
+      quality: jpegQuality,
       mozjpeg: true,
       progressive: true,
     }).toBuffer(),
@@ -3288,6 +3922,16 @@ function decodeHtmlEntities(value) {
     .replace(/&gt;/gi, ">");
 }
 
+function normalizeRssText(value) {
+  return decodeHtmlEntities(
+    String(value || "")
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
 function extractAttributesFromTag(tag) {
   const attributes = {};
   const attributePattern = /([a-zA-Z_:][\w:.-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
@@ -3300,6 +3944,54 @@ function extractAttributesFromTag(tag) {
   }
 
   return attributes;
+}
+
+function extractRssTagValue(itemXml, tagName) {
+  const escapedTag = String(tagName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<${escapedTag}\\b[^>]*>([\\s\\S]*?)<\\/${escapedTag}>`, "i");
+  const match = String(itemXml || "").match(pattern);
+  return match ? normalizeRssText(match[1]) : "";
+}
+
+function extractRssImageUrl(itemXml, feedUrl) {
+  const item = String(itemXml || "");
+  const tagPatterns = [
+    /<media:content\b[^>]*>/gi,
+    /<media:thumbnail\b[^>]*>/gi,
+    /<enclosure\b[^>]*>/gi,
+  ];
+
+  for (const pattern of tagPatterns) {
+    const tags = item.match(pattern) || [];
+    for (const tag of tags) {
+      const attributes = extractAttributesFromTag(tag);
+      const rawUrl = attributes.url || attributes.href || "";
+      const type = String(attributes.type || "").toLowerCase();
+      if (!rawUrl || (type && !type.startsWith("image/"))) {
+        continue;
+      }
+
+      try {
+        return new URL(rawUrl, feedUrl).href;
+      } catch {
+        return rawUrl;
+      }
+    }
+  }
+
+  const imageTags = item.match(/<image\b[\s\S]*?<\/image>/gi) || [];
+  for (const imageTag of imageTags) {
+    const rawUrl = extractRssTagValue(imageTag, "url");
+    if (rawUrl) {
+      try {
+        return new URL(rawUrl, feedUrl).href;
+      } catch {
+        return rawUrl;
+      }
+    }
+  }
+
+  return "";
 }
 
 function extractMetaContentFromHtml(html, metaKey) {
@@ -3398,6 +4090,17 @@ function isLikelyDecorativeImageUrl(value) {
     || normalized.includes("twitter")
     || normalized.includes("instagram")
     || normalized.includes("insta-feed")
+    || normalized.includes("google-play")
+    || normalized.includes("play-store")
+    || normalized.includes("app-store")
+    || normalized.includes("appstore")
+    || normalized.includes("get-it-on")
+    || normalized.includes("download-app")
+    || normalized.includes("mobile-app")
+    || normalized.includes("app-badge")
+    || normalized.includes("store-badge")
+    || normalized.includes("badge-google")
+    || normalized.includes("badge-app")
     || normalized.includes("social")
     || normalized.includes("share")
     || normalized.includes("follow-us")
@@ -3419,13 +4122,13 @@ function scoreImageCandidate({ src, altText = "", className = "", width = 0, hei
   }
 
   if (
-    /logo|icon|share|social|avatar|author|profile|button|emoji|thumbnail/.test(normalizedAlt)
-    || /logo|icon|share|social|avatar|author|profile|button|widget|thumb|thumbnail|gallery/.test(normalizedClass)
+    /logo|icon|share|social|avatar|author|profile|button|emoji|thumbnail|google play|play store|app store|download app|get it on/.test(normalizedAlt)
+    || /logo|icon|share|social|avatar|author|profile|button|widget|thumb|thumbnail|gallery|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass)
   ) {
     return Number.NEGATIVE_INFINITY;
   }
 
-  if ((width > 0 && width < 240) || (height > 0 && height < 160)) {
+  if ((width > 0 && width < 200) || (height > 0 && height < 120)) {
     return Number.NEGATIVE_INFINITY;
   }
 
@@ -3653,11 +4356,11 @@ async function extractBestImageFromArticle(page, articleUrl) {
           if (
             !normalizedSrc ||
             !normalizedSrc.startsWith("http") ||
-            /logo|icon|sprite|avatar|youtube|insta|social|share|feed|placeholder|default-image/.test(normalizedSrc) ||
-            /logo|icon|share|social|avatar|author|profile|button|thumbnail/.test(normalizedAlt) ||
-            /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery/.test(normalizedClass) ||
-            img.width < 240 ||
-            img.height < 160
+            /logo|icon|sprite|avatar|youtube|insta|social|share|feed|placeholder|default-image|google-play|play-store|app-store|appstore|get-it-on|download-app|mobile-app|app-badge|store-badge|badge-google|badge-app/.test(normalizedSrc) ||
+            /logo|icon|share|social|avatar|author|profile|button|thumbnail|google play|play store|app store|download app|get it on/.test(normalizedAlt) ||
+            /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass) ||
+            img.width < 320 ||
+            img.height < 180
           ) {
             return Number.NEGATIVE_INFINITY;
           }
@@ -3741,28 +4444,19 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
       }
 
       const imageData = await extractBestImageFromArticle(page, articleUrl);
-      if (!imageData.featuredImage) {
-        results.push({
-          status: "Skipped",
-          category,
-          feed_source: articleEntry.feed_source,
-          feed_url: articleEntry.feed_url,
-          source: articleUrl,
-          title: imageData.title,
-          message: "Skipped because the article did not contain a usable image.",
-        });
-        continue;
-      }
+      const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
+      const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
+      const title = imageData.title || articleEntry.title || articleUrl;
 
       const recordId = await saveNewsRecord({
         category,
         feedSource: articleEntry.feed_source,
         feedUrl: articleEntry.feed_url,
         query: category,
-        title: imageData.title,
+        title,
         articleUrl,
-        imageLink: imageData.featuredImage,
-        imageSource: imageData.imageSource,
+        imageLink: featuredImage,
+        imageSource,
       });
 
       if (!recordId) {
@@ -3785,9 +4479,9 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
         feed_source: articleEntry.feed_source,
         feed_url: articleEntry.feed_url,
         source: articleUrl,
-        title: imageData.title,
-        image_link: imageData.featuredImage,
-        image_source: imageData.imageSource,
+        title,
+        image_link: featuredImage,
+        image_source: imageSource,
       });
     } catch (articleError) {
       results.push({
@@ -3873,6 +4567,288 @@ async function fetchAllCategoriesByTotal(page, total) {
   };
 }
 
+function normalizeSyncSources(value) {
+  const raw = Array.isArray(value) ? value.join(",") : String(value || "all");
+  const sources = raw
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!sources.length || sources.includes("all")) {
+    return ["google", "rss"];
+  }
+
+  const normalized = [
+    ...new Set(
+      sources
+        .filter((source) => ["google", "rss", "other"].includes(source))
+        .map((source) => (source === "other" ? "rss" : source))
+    ),
+  ];
+
+  return normalized.length ? normalized : ["google", "rss"];
+}
+
+async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
+  const query = options.query || getCategoryDisplayName(category);
+  const googleResult = await fetchGoogleRssFeed({
+    query,
+    limit,
+    timeoutMs: options.timeoutMs,
+  });
+  const results = [];
+  const rewriteCandidates = [];
+
+  for (const item of googleResult.items) {
+    try {
+      const existingRecord = await findFullNewsRecordByUrl(item.link);
+      if (existingRecord && !options.includeExisting) {
+        results.push({
+          status: "Skipped",
+          category,
+          feed_source: "google-rss",
+          feed_url: googleResult.feed_url,
+          source: item.link,
+          title: item.title,
+          image_link: item.image_link,
+          image_source: item.image_source,
+          message: `Duplicate article already saved as id ${existingRecord.id}.`,
+          existing_id: existingRecord.id,
+        });
+        continue;
+      }
+
+      const recordId = existingRecord?.id || await saveNewsRecord({
+        category,
+        feedSource: "google-rss",
+        feedUrl: googleResult.feed_url,
+        query,
+        title: item.title,
+        articleUrl: item.link,
+        imageLink: item.image_link,
+        imageSource: item.image_source,
+      });
+      const savedRecord = existingRecord || (recordId
+        ? await findFullNewsRecordById(recordId)
+        : await findFullNewsRecordByUrl(item.link));
+
+      if (!savedRecord) {
+        results.push({
+          status: "Skipped",
+          category,
+          feed_source: "google-rss",
+          feed_url: googleResult.feed_url,
+          source: item.link,
+          title: item.title,
+          image_link: item.image_link,
+          image_source: item.image_source,
+          message: "Duplicate article was already saved before insert.",
+        });
+        continue;
+      }
+
+      rewriteCandidates.push(savedRecord);
+      results.push({
+        status: existingRecord ? "Existing" : "Success",
+        saved_id: savedRecord.id,
+        category,
+        feed_source: "google-rss",
+        feed_url: googleResult.feed_url,
+        source: savedRecord.source_url,
+        title: savedRecord.title,
+        image_link: savedRecord.image_link,
+        image_source: savedRecord.image_source,
+      });
+    } catch (error) {
+      results.push({
+        status: "Error",
+        category,
+        feed_source: "google-rss",
+        feed_url: googleResult.feed_url,
+        source: item.link,
+        title: item.title,
+        message: error.message,
+      });
+    }
+  }
+
+  return {
+    category,
+    source: "google-rss",
+    query,
+    feed_url: googleResult.feed_url,
+    fetched_count: googleResult.fetched_count,
+    saved_count: results.filter((item) => item.status === "Success").length,
+    existing_count: results.filter((item) => item.status === "Existing").length,
+    skipped_count: results.filter((item) => item.status === "Skipped").length,
+    failed_count: results.filter((item) => item.status === "Error").length,
+    results,
+    rewriteCandidates,
+  };
+}
+
+async function rewriteNewsRecords(records, options = {}) {
+  if (!options.enabled) {
+    return [];
+  }
+
+  const seen = new Set();
+  const uniqueRecords = records.filter((record) => {
+    if (!record?.id || seen.has(record.id)) {
+      return false;
+    }
+    seen.add(record.id);
+    return true;
+  });
+  const results = [];
+
+  for (const record of uniqueRecords) {
+    try {
+      const rewrite = await createOrUpdateRewriteForRecord(
+        dbPool,
+        record,
+        createBrowserPage,
+        () => runRetentionCleanupCycle("source-ai-sync")
+      );
+
+      results.push({
+        status: "Success",
+        news_id: record.id,
+        rewrite_id: rewrite.id,
+        category: record.category,
+        title: rewrite.ui_hindi?.title || record.title,
+        image_link: rewrite.ui_hindi?.image_url || record.image_link || null,
+        words_100: rewrite.ui_hindi?.short_100 || "",
+        words_300: rewrite.ui_hindi?.medium_300 || "",
+        words_600: rewrite.ui_hindi?.long_500 || "",
+      });
+    } catch (error) {
+      results.push({
+        status: "Error",
+        news_id: record.id,
+        category: record.category,
+        title: record.title,
+        message: error.message,
+      });
+    }
+  }
+
+  return results;
+}
+
+async function syncSourcesAndAi({ category, limit, sources, rewrite, includeExisting, googleQuery }) {
+  const normalizedSources = normalizeSyncSources(sources);
+  const sourceResults = [];
+  const rewriteCandidates = [];
+
+  if (normalizedSources.includes("google")) {
+    const googleResult = await saveGoogleRssNewsForCategory(category, limit, {
+      query: googleQuery,
+      includeExisting,
+    });
+    sourceResults.push(googleResult);
+    rewriteCandidates.push(...googleResult.rewriteCandidates);
+  }
+
+  if (normalizedSources.includes("rss")) {
+    const { browser, page } = await createBrowserPage();
+    try {
+      const rssResult = await fetchArticlesForCategory(page, category, limit);
+      sourceResults.push({
+        ...rssResult,
+        source: "configured-rss",
+      });
+
+      for (const item of rssResult.results || []) {
+        if (item.status !== "Success" || !item.saved_id) {
+          continue;
+        }
+
+        const record = await findFullNewsRecordById(item.saved_id);
+        if (record) {
+          rewriteCandidates.push(record);
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+  }
+
+  const rewriteResults = await rewriteNewsRecords(rewriteCandidates, { enabled: rewrite });
+
+  return {
+    status: sourceResults.some((item) => item.saved_count > 0 || item.existing_count > 0) ? "Success" : "Skipped",
+    category,
+    sources: normalizedSources,
+    requested_limit_per_source: limit,
+    saved_count: sourceResults.reduce((sum, item) => sum + (item.saved_count || 0), 0),
+    existing_count: sourceResults.reduce((sum, item) => sum + (item.existing_count || 0), 0),
+    skipped_count: sourceResults.reduce((sum, item) => sum + (item.skipped_count || 0), 0),
+    failed_count: sourceResults.reduce((sum, item) => sum + (item.failed_count || 0), 0),
+    ai_rewrite_enabled: Boolean(rewrite),
+    ai_success_count: rewriteResults.filter((item) => item.status === "Success").length,
+    ai_failed_count: rewriteResults.filter((item) => item.status === "Error").length,
+    source_results: sourceResults.map(({ rewriteCandidates: _rewriteCandidates, ...item }) => item),
+    ai_results: rewriteResults,
+  };
+}
+
+async function saveMpInfoScraperArticle(article) {
+  const sourceUrl = article?.sourceUrl;
+  if (!sourceUrl) {
+    return {
+      status: "Error",
+      message: "MP Info article sourceUrl is missing.",
+    };
+  }
+
+  const existingRecord = await findFullNewsRecordByUrl(sourceUrl);
+  if (existingRecord) {
+    return {
+      id: existingRecord.id,
+      status: "Existing",
+      record: existingRecord,
+      message: `Duplicate article already saved as id ${existingRecord.id}.`,
+    };
+  }
+
+  const recordId = await saveNewsRecord({
+    category: "states",
+    feedSource: `mpinfo-${String(article.district || "district").toLowerCase().replace(/\s+/g, "-")}`,
+    feedUrl: `https://${article.subdomain || "mpinfo.org"}/`,
+    query: article.district || "mpinfo",
+    title: article.title || "MP Info News",
+    articleUrl: sourceUrl,
+    imageLink: article.imageUrl || article.fallbackImageUrl || null,
+    imageSource: article.imageUrl ? "mpinfo-playwright" : article.fallbackImageUrl ? "mpinfo-fallback" : null,
+  });
+  const record = recordId ? await findFullNewsRecordById(recordId) : await findFullNewsRecordByUrl(sourceUrl);
+
+  return {
+    id: record?.id || null,
+    status: recordId ? "Success" : "Skipped",
+    record,
+    message: recordId ? null : "Duplicate article was already saved before insert.",
+  };
+}
+
+async function rewriteSavedNewsRecord(record, scrapedArticle = null) {
+  return createOrUpdateRewriteForRecord(
+    dbPool,
+    {
+      ...record,
+      scraped_content_text: scrapedArticle?.contentText || "",
+      scraped_content_html: scrapedArticle?.contentHtml || "",
+      scraped_subtitle: scrapedArticle?.subtitle || "",
+      scraped_publish_date: scrapedArticle?.publishDate || "",
+      scraped_district: scrapedArticle?.district || "",
+      scraped_division: scrapedArticle?.division || "",
+    },
+    createBrowserPage,
+    () => runRetentionCleanupCycle("mpinfo-ai-rewrite-save")
+  );
+}
+
 async function createBrowserPage() {
   const executablePath = resolveBrowserExecutablePath();
   const browser = await puppeteer.launch({
@@ -3915,6 +4891,32 @@ async function createBrowserPage() {
 }
 
 async function runScheduledCategoryFetch(category, options = {}) {
+  const workerName = `main:${category}:${options.triggerSource || "schedule"}`;
+  const locked = await withIngestionWorkerLock(workerName, () => (
+    runScheduledCategoryFetchUnlocked(category, options)
+  ));
+
+  if (!locked.acquired) {
+    return {
+      category,
+      fetched_count: 0,
+      saved_count: 0,
+      failed_count: 0,
+      skipped_count: 1,
+      results: [
+        {
+          status: "Skipped",
+          category,
+          message: "Another cron worker is already running.",
+        },
+      ],
+    };
+  }
+
+  return locked.result;
+}
+
+async function runScheduledCategoryFetchUnlocked(category, options = {}) {
   const feedCount = RSS_FEEDS[category]?.length || 1;
   const currentCursor = schedulerState.categories[category]?.sourceCursor || 0;
   const triggerSource = options.triggerSource || "schedule";
@@ -3931,9 +4933,13 @@ async function runScheduledCategoryFetch(category, options = {}) {
   const { browser, page } = await createBrowserPage();
 
   try {
-    const result = await fetchArticlesForCategory(page, category, 1, {
-      startIndex: currentCursor,
-    });
+    const result = await withTimeout(
+      fetchArticlesForCategory(page, category, 1, {
+        startIndex: currentCursor,
+      }),
+      SCHEDULER_CATEGORY_TIMEOUT_MS,
+      `Scheduled category fetch for ${category}`
+    );
     schedulerState.categories[category] = {
       ...schedulerState.categories[category],
       lastRunAt: new Date().toISOString(),
@@ -3953,6 +4959,9 @@ async function runScheduledCategoryFetch(category, options = {}) {
       title: result.results.find((item) => item.status === "Success")?.title || null,
       message: `Completed ${triggerSource} fetch for ${category}.`,
       details: result,
+    });
+    void runRetentionCleanupCycle("scheduled-category-fetch").catch((cleanupError) => {
+      console.warn(`Retention cleanup after scheduled fetch failed: ${cleanupError.message}`);
     });
     return result;
   } catch (error) {
@@ -3982,6 +4991,7 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
       dbPool,
       categories,
       createBrowserPage,
+      afterRewriteSaved: () => runRetentionCleanupCycle("ai-rewrite-save"),
     });
 
     const nowIso = new Date().toISOString();
@@ -4045,11 +5055,197 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
 }
 
 async function runAiScheduledCycleWithLock(triggerSource = "schedule") {
-  const locked = await withDatabaseLock(AI_SCHEDULER_LOCK_NAME, async () => (
-    runAiScheduledCycle(triggerSource)
-  ));
+  const sharedLocked = await withIngestionWorkerLock(`ai:${triggerSource}`, async () => {
+    const locked = await withDatabaseLock(AI_SCHEDULER_LOCK_NAME, async () => (
+      runAiScheduledCycle(triggerSource)
+    ));
 
-  return locked;
+    if (!locked.acquired) {
+      aiSchedulerState.lastStatus = "Busy";
+      aiSchedulerState.lastError = null;
+      return {
+        __cronBusy: true,
+        message: "Another backend instance is already running the AI scheduler cycle.",
+      };
+    }
+
+    return locked.result;
+  });
+
+  if (!sharedLocked.acquired) {
+    aiSchedulerState.lastStatus = "Busy";
+    aiSchedulerState.lastError = "Waiting for another cron worker to finish.";
+    return {
+      acquired: false,
+      result: null,
+    };
+  }
+
+  if (sharedLocked.result?.__cronBusy) {
+    return {
+      acquired: false,
+      result: null,
+    };
+  }
+
+  return {
+    acquired: true,
+    result: sharedLocked.result,
+  };
+}
+
+async function runMpInfoDistrictScheduledCycle(triggerSource = "schedule") {
+  if (!mpInfoDistrictSchedulerState.enabled) {
+    return {
+      status: "Skipped",
+      message: "MP Info district scheduler is disabled.",
+    };
+  }
+
+  const ingestionLocked = await withIngestionWorkerLock(`mpinfo-districts:${triggerSource}`, async () => {
+    const locked = await withDatabaseLock(MPINFO_DISTRICT_SCHEDULER_LOCK_NAME, async () => (
+      runMpInfoDistrictScheduledCycleUnlocked(triggerSource)
+    ));
+
+    if (!locked.acquired) {
+      mpInfoDistrictSchedulerState.lastStatus = "Busy";
+      mpInfoDistrictSchedulerState.lastError = null;
+      updateMpInfoDistrictSchedulerHeartbeat();
+      return {
+        status: "Busy",
+        message: "Another backend instance is already running the MP Info district scheduler.",
+      };
+    }
+
+    return locked.result;
+  });
+
+  if (!ingestionLocked.acquired) {
+    mpInfoDistrictSchedulerState.lastStatus = "Busy";
+    mpInfoDistrictSchedulerState.lastError = null;
+    updateMpInfoDistrictSchedulerHeartbeat();
+    return {
+      status: "Busy",
+      message: "Another cron worker is already running.",
+    };
+  }
+
+  return ingestionLocked.result;
+}
+
+async function runMpInfoDistrictScheduledCycleUnlocked(triggerSource = "schedule") {
+  if (!mpInfoDistrictSchedulerState.enabled || mpInfoDistrictSchedulerRunning) {
+    return {
+      status: "Skipped",
+      message: "MP Info district scheduler is disabled or already running.",
+    };
+  }
+
+  mpInfoDistrictSchedulerRunning = true;
+  updateMpInfoDistrictSchedulerHeartbeat();
+  mpInfoDistrictSchedulerState.lastStatus = "Running";
+  mpInfoDistrictSchedulerState.lastError = null;
+
+  try {
+    return await runMpInfoDistrictScheduledCycleWork(triggerSource);
+  } finally {
+    mpInfoDistrictSchedulerRunning = false;
+    updateMpInfoDistrictSchedulerHeartbeat();
+  }
+}
+
+async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
+  const logId = await createSchedulerRunLog({
+    schedulerName: "main",
+    runType: "mpinfo-districts",
+    triggerSource,
+    category: "states",
+    requestedLimit: mpInfoDistrictSchedulerState.limit,
+    message: "Starting MP Info district crawl.",
+  });
+
+  try {
+    const result = await withTimeout(
+      crawlAllDistricts({
+        limit: mpInfoDistrictSchedulerState.limit,
+        withContent: true,
+        saveSnapshots: false,
+      }),
+      MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS,
+      "MP Info district crawl"
+    );
+    const saved = [];
+    const rewritten = [];
+
+    for (const article of result.articles || []) {
+      const savedRecord = await saveMpInfoScraperArticle(article);
+      saved.push({
+        articleId: article.articleId,
+        savedId: savedRecord?.id || null,
+        status: savedRecord?.status || "Skipped",
+      });
+
+      if (mpInfoDistrictSchedulerState.rewrite && savedRecord?.record) {
+        try {
+          const rewriteRecord = await rewriteSavedNewsRecord(savedRecord.record, article);
+          rewritten.push({
+            articleId: article.articleId,
+            newsId: savedRecord.record.id,
+            rewriteId: rewriteRecord.id,
+            status: "Success",
+          });
+        } catch (error) {
+          rewritten.push({
+            articleId: article.articleId,
+            newsId: savedRecord.record.id,
+            status: "Error",
+            message: error.message,
+          });
+        }
+      }
+    }
+
+    const summary = {
+      district_count: result.districtCount || 0,
+      fetched_count: result.fetchedCount || 0,
+      failed_district_count: result.failedDistrictCount || 0,
+      saved_count: saved.filter((item) => item.status === "Success").length,
+      existing_count: saved.filter((item) => item.status === "Existing").length,
+      rewrite_success_count: rewritten.filter((item) => item.status === "Success").length,
+      rewrite_failed_count: rewritten.filter((item) => item.status === "Error").length,
+    };
+
+    mpInfoDistrictSchedulerState.lastRunAt = new Date().toISOString();
+    mpInfoDistrictSchedulerState.lastStatus = summary.failed_district_count > 0 ? "CompletedWithErrors" : "Success";
+    mpInfoDistrictSchedulerState.lastError = null;
+    mpInfoDistrictSchedulerState.lastResult = summary;
+
+    await finalizeSchedulerRunLog(logId, {
+      status: mpInfoDistrictSchedulerState.lastStatus,
+      savedCount: summary.saved_count + summary.rewrite_success_count,
+      skippedCount: summary.existing_count,
+      failedCount: summary.failed_district_count + summary.rewrite_failed_count,
+      message: "MP Info district crawl finished.",
+      details: { summary, saved, rewritten },
+    });
+
+    void runRetentionCleanupCycle("mpinfo-district-scheduler").catch((cleanupError) => {
+      console.warn(`Retention cleanup after MP Info district scheduler failed: ${cleanupError.message}`);
+    });
+
+    return { status: mpInfoDistrictSchedulerState.lastStatus, ...summary };
+  } catch (error) {
+    mpInfoDistrictSchedulerState.lastRunAt = new Date().toISOString();
+    mpInfoDistrictSchedulerState.lastStatus = "Error";
+    mpInfoDistrictSchedulerState.lastError = error.message;
+    await finalizeSchedulerRunLog(logId, {
+      status: "Error",
+      failedCount: 1,
+      message: "MP Info district crawl failed.",
+      errorMessage: error.message,
+    });
+    throw error;
+  }
 }
 
 async function runSchedulerTestCycle(limit = 1, options = {}) {
@@ -4069,9 +5265,13 @@ async function runSchedulerTestCycle(limit = 1, options = {}) {
     const { browser, page } = await createBrowserPage();
 
     try {
-      const result = await fetchArticlesForCategory(page, slot.category, limit, {
-        startIndex: schedulerState.categories[slot.category]?.sourceCursor || 0,
-      });
+      const result = await withTimeout(
+        fetchArticlesForCategory(page, slot.category, limit, {
+          startIndex: schedulerState.categories[slot.category]?.sourceCursor || 0,
+        }),
+        SCHEDULER_CATEGORY_TIMEOUT_MS,
+        `Manual scheduler fetch for ${slot.category}`
+      );
 
       const feedCount = RSS_FEEDS[slot.category]?.length || 1;
       schedulerState.categories[slot.category] = {
@@ -4260,6 +5460,12 @@ function startAiScheduler() {
         return;
       }
 
+      if (await isIngestionWorkerBusy()) {
+        aiSchedulerState.lastStatus = "Busy";
+        aiSchedulerState.lastError = "Waiting for ingestion cron to finish.";
+        return;
+      }
+
       aiSchedulerState.lastWindowKey = windowKey;
 
       const locked = await runAiScheduledCycleWithLock("schedule");
@@ -4285,6 +5491,25 @@ function startAiScheduler() {
   void aiSchedulerTick();
 }
 
+function startMpInfoDistrictScheduler() {
+  if (!mpInfoDistrictSchedulerState.enabled || mpInfoDistrictSchedulerInterval) {
+    return;
+  }
+
+  updateMpInfoDistrictSchedulerHeartbeat();
+  mpInfoDistrictSchedulerInterval = setInterval(() => {
+    void runMpInfoDistrictScheduledCycle("schedule").catch((error) => {
+      console.error("MP Info district scheduler tick failed:", error.message);
+    });
+  }, mpInfoDistrictSchedulerState.intervalMs);
+
+  if (MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN) {
+    void runMpInfoDistrictScheduledCycle("startup").catch((error) => {
+      console.error("MP Info district scheduler startup run failed:", error.message);
+    });
+  }
+}
+
 function startSchedulerWatchdog() {
   if (schedulerWatchdogInterval) {
     return;
@@ -4292,6 +5517,10 @@ function startSchedulerWatchdog() {
 
   schedulerWatchdogInterval = setInterval(() => {
     if (!processState.shuttingDown) {
+      void recoverStaleSchedulerRuns("watchdog").catch((error) => {
+        console.error("Scheduler stale-run recovery failed:", error.message);
+      });
+
       if (schedulerState.enabled && !schedulerInterval) {
         console.warn("Scheduler watchdog restarted the main scheduler interval.");
         startScheduler();
@@ -4300,6 +5529,11 @@ function startSchedulerWatchdog() {
       if (aiSchedulerState.enabled && !aiSchedulerInterval) {
         console.warn("Scheduler watchdog restarted the AI scheduler interval.");
         startAiScheduler();
+      }
+
+      if (mpInfoDistrictSchedulerState.enabled && !mpInfoDistrictSchedulerInterval) {
+        console.warn("Scheduler watchdog restarted the MP Info district scheduler interval.");
+        startMpInfoDistrictScheduler();
       }
 
       if (schedulerState.enabled && isTimestampStale(schedulerState.lastTickAt, SCHEDULER_HEALTH_THRESHOLD_MS)) {
@@ -4334,6 +5568,20 @@ function startSchedulerWatchdog() {
             updateAiSchedulerHeartbeat();
             aiSchedulerRunning = false;
           });
+      }
+
+      if (
+        mpInfoDistrictSchedulerState.enabled &&
+        isTimestampStale(
+          mpInfoDistrictSchedulerState.lastTickAt,
+          (mpInfoDistrictSchedulerState.intervalMs * 2) + 60_000
+        ) &&
+        !mpInfoDistrictSchedulerRunning
+      ) {
+        console.warn("Scheduler watchdog detected a stale MP Info district scheduler tick and triggered recovery.");
+        void runMpInfoDistrictScheduledCycle("watchdog").catch((error) => {
+          console.error("MP Info district scheduler watchdog recovery failed:", error.message);
+        });
       }
     }
   }, WATCHDOG_TICK_MS);
@@ -4566,7 +5814,10 @@ app.get("/fetch-mpinfo-news", async (req, res) => {
 
       try {
         const imageData = await extractBestImageFromArticle(page, articleUrl);
-        if (!imageData.featuredImage) {
+        const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
+        const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
+        const title = imageData.title || articleEntry.title || articleUrl;
+        if (!featuredImage) {
           throw new Error(
             "The original article opened, but no direct image URL could be extracted from that page."
           );
@@ -4577,10 +5828,10 @@ app.get("/fetch-mpinfo-news", async (req, res) => {
           feedSource: articleEntry.feed_source,
           feedUrl: articleEntry.feed_url,
           query: category,
-          title: imageData.title,
+          title,
           articleUrl,
-          imageLink: imageData.featuredImage,
-          imageSource: imageData.imageSource,
+          imageLink: featuredImage,
+          imageSource,
         });
 
         results.push({
@@ -4590,9 +5841,9 @@ app.get("/fetch-mpinfo-news", async (req, res) => {
           feed_source: articleEntry.feed_source,
           feed_url: articleEntry.feed_url,
           source: articleUrl,
-          title: imageData.title,
-          image_link: imageData.featuredImage,
-          image_source: imageData.imageSource,
+          title,
+          image_link: featuredImage,
+          image_source: imageSource,
         });
       } catch (articleError) {
         results.push({
@@ -4633,6 +5884,45 @@ app.get("/fetch-rss-news", handleFetchRssNews);
 app.get("/fetch-rss-news/all", handleFetchRssNewsAll);
 app.get("/fetch-zee-news", handleFetchRssNews);
 app.get("/fetch-zee-news/all", handleFetchRssNewsAll);
+
+app.post("/fetch-sources-ai", async (req, res) => {
+  const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
+  const limit = Math.min(normalizeArticleLimit(req.query.limit || req.body?.limit || 2), 20);
+  const sources = req.query.sources || req.body?.sources || "all";
+  const rewrite = !["false", "0", "no"].includes(
+    String(req.query.rewrite ?? req.body?.rewrite ?? "true").toLowerCase()
+  );
+  const includeExisting = ["true", "1", "yes"].includes(
+    String(req.query.include_existing ?? req.body?.include_existing ?? "").toLowerCase()
+  );
+
+  try {
+    const result = await syncSourcesAndAi({
+      category,
+      limit,
+      sources,
+      rewrite,
+      includeExisting,
+      googleQuery: req.query.google_query || req.body?.google_query || null,
+    });
+
+    return res.json({
+      status: "Success",
+      database: DB_NAME,
+      output_sizes: {
+        words_100: "ui_hindi.short_100",
+        words_300: "ui_hindi.medium_300",
+        words_600: "ui_hindi.long_500",
+      },
+      ...result,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "Error",
+      message: error.message,
+    });
+  }
+});
 
 app.get("/rss-feeds", (req, res) => {
   void getCachedRssFeedsPayload()
@@ -4759,84 +6049,96 @@ async function triggerManualSchedulerRun(limit, waitForCompletion = false) {
   }
 
   const executeManualRun = async () => {
-    const locked = await withDatabaseLock(MAIN_SCHEDULER_LOCK_NAME, async () => {
-      const cycleLogId = await createSchedulerRunLog({
-        schedulerName: "main",
-        runType: "cycle",
-        triggerSource: "manual",
-        requestedLimit: limit,
-        message: "Starting manual scheduler test cycle.",
-      });
-
-      schedulerState.manualRun = {
-        ...schedulerState.manualRun,
-        inProgress: true,
-        lastStartedAt: new Date().toISOString(),
-        lastFinishedAt: null,
-        lastRequestedLimit: limit,
-        lastResult: null,
-        lastError: null,
-      };
-
-      try {
-        const results = await runSchedulerTestCycle(limit, { triggerSource: "manual" });
-        const savedCount = results.reduce((sum, item) => sum + item.saved_count, 0);
-        const skippedCount = results.reduce((sum, item) => sum + item.skipped_count, 0);
-        const failedCount = results.reduce((sum, item) => sum + item.failed_count, 0);
-
-        await finalizeSchedulerRunLog(cycleLogId, {
-          status: failedCount > 0 ? "CompletedWithErrors" : savedCount > 0 ? "Success" : "Skipped",
-          savedCount,
-          skippedCount,
-          failedCount,
-          message: "Manual scheduler test cycle finished.",
-          details: results,
+    const sharedLocked = await withIngestionWorkerLock("main:manual", async () => {
+      const locked = await withDatabaseLock(MAIN_SCHEDULER_LOCK_NAME, async () => {
+        const cycleLogId = await createSchedulerRunLog({
+          schedulerName: "main",
+          runType: "cycle",
+          triggerSource: "manual",
+          requestedLimit: limit,
+          message: "Starting manual scheduler test cycle.",
         });
 
         schedulerState.manualRun = {
           ...schedulerState.manualRun,
-          inProgress: false,
-          lastFinishedAt: new Date().toISOString(),
-          lastResult: {
-            requested_limit_per_category: limit,
-            saved_count: savedCount,
-            skipped_count: skippedCount,
-            failed_count: failedCount,
-            results,
-          },
+          inProgress: true,
+          lastStartedAt: new Date().toISOString(),
+          lastFinishedAt: null,
+          lastRequestedLimit: limit,
+          lastResult: null,
           lastError: null,
         };
 
-        return schedulerState.manualRun.lastResult;
-      } catch (error) {
-        schedulerState.manualRun = {
-          ...schedulerState.manualRun,
-          inProgress: false,
-          lastFinishedAt: new Date().toISOString(),
-          lastResult: null,
-          lastError: error.message,
+        try {
+          const results = await runSchedulerTestCycle(limit, { triggerSource: "manual" });
+          const savedCount = results.reduce((sum, item) => sum + item.saved_count, 0);
+          const skippedCount = results.reduce((sum, item) => sum + item.skipped_count, 0);
+          const failedCount = results.reduce((sum, item) => sum + item.failed_count, 0);
+
+          await finalizeSchedulerRunLog(cycleLogId, {
+            status: failedCount > 0 ? "CompletedWithErrors" : savedCount > 0 ? "Success" : "Skipped",
+            savedCount,
+            skippedCount,
+            failedCount,
+            message: "Manual scheduler test cycle finished.",
+            details: results,
+          });
+
+          schedulerState.manualRun = {
+            ...schedulerState.manualRun,
+            inProgress: false,
+            lastFinishedAt: new Date().toISOString(),
+            lastResult: {
+              requested_limit_per_category: limit,
+              saved_count: savedCount,
+              skipped_count: skippedCount,
+              failed_count: failedCount,
+              results,
+            },
+            lastError: null,
+          };
+
+          return schedulerState.manualRun.lastResult;
+        } catch (error) {
+          schedulerState.manualRun = {
+            ...schedulerState.manualRun,
+            inProgress: false,
+            lastFinishedAt: new Date().toISOString(),
+            lastResult: null,
+            lastError: error.message,
+          };
+
+          await finalizeSchedulerRunLog(cycleLogId, {
+            status: "Error",
+            failedCount: 1,
+            message: "Manual scheduler test cycle failed.",
+            errorMessage: error.message,
+          });
+
+          throw error;
+        }
+      });
+
+      if (!locked.acquired) {
+        return {
+          busy: true,
+          requested_limit_per_category: limit,
+          message: "Another backend instance is already running the main scheduler cycle.",
         };
-
-        await finalizeSchedulerRunLog(cycleLogId, {
-          status: "Error",
-          failedCount: 1,
-          message: "Manual scheduler test cycle failed.",
-          errorMessage: error.message,
-        });
-
-        throw error;
       }
+
+      return locked.result;
     });
 
-    if (!locked.acquired) {
+    if (!sharedLocked.acquired) {
       return {
         busy: true,
         requested_limit_per_category: limit,
-        message: "Another backend instance is already running the main scheduler cycle.",
+        message: "Another cron worker is already running.",
       };
     }
 
-    return locked.result;
+    return sharedLocked.result;
   };
 
   if (waitForCompletion) {
@@ -4876,6 +6178,11 @@ async function triggerManualSchedulerRun(limit, waitForCompletion = false) {
 }
 
 const apiV1 = express.Router();
+
+app.use("/api/mpinfo", createMpInfoRoutes({
+  saveArticle: saveMpInfoScraperArticle,
+  rewriteArticle: rewriteSavedNewsRecord,
+}));
 
 apiV1.use(applyApiCors);
 
@@ -4981,6 +6288,7 @@ apiV1.get("/rss-feeds", requireApiScope("feeds:read"), (req, res) => {
     .then((payload) => sendApiSuccess(res, {
       count: payload.count,
       feeds: payload.feeds,
+      expensive_source_throttle: payload.expensive_source_throttle,
       category_feed_pools: payload.category_feed_pools,
     }))
     .catch((error) => sendApiError(res, "RSS_FEEDS_FAILED", error.message, 500));
@@ -5027,7 +6335,7 @@ apiV1.get("/delivery/news", requireApiScope("delivery:read"), async (req, res) =
 apiV1.get("/delivery/news/grouped", requireApiScope("delivery:read"), async (req, res) => {
   try {
     const language = normalizeDeliveryLanguage(req.query.language);
-    const limit = normalizeApiLimit(req.query.limit, 100, 300);
+    const limit = normalizeApiLimit(req.query.limit, 100, 500);
     const records = await listDeliveredAiRewrites(dbPool, { language, limit });
     const grouped = groupDeliveryRecordsByCategory(records);
     return sendApiSuccess(res, grouped, {
@@ -5138,6 +6446,12 @@ apiV1.get("/ai/cron/status", requireApiScope("cron:read"), (req, res) => {
 
 apiV1.post("/ai/cron/run-now", requireApiScope("ai:write"), async (req, res) => {
   try {
+    if (await isIngestionWorkerBusy()) {
+      aiSchedulerState.lastStatus = "Busy";
+      aiSchedulerState.lastError = "Waiting for ingestion cron to finish.";
+      return sendApiError(res, "AI_CRON_BUSY", "An ingestion cron is already running. Try again after it finishes.", 409);
+    }
+
     const locked = await runAiScheduledCycleWithLock("manual");
     if (!locked.acquired) {
       return sendApiError(res, "AI_CRON_BUSY", "Another backend instance is already running the AI scheduler cycle.", 409);
@@ -5196,6 +6510,122 @@ apiV1.post("/sync/rss/all", requireApiScope("sync:write"), async (req, res) => {
   }
 });
 
+apiV1.post("/sync/sources-ai", requireApiScope("sync:write"), async (req, res) => {
+  const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
+  const limit = Math.min(normalizeArticleLimit(req.query.limit || req.body?.limit || 2), 20);
+  const sources = req.query.sources || req.body?.sources || "all";
+  const rewrite = !["false", "0", "no"].includes(
+    String(req.query.rewrite ?? req.body?.rewrite ?? "true").toLowerCase()
+  );
+  const includeExisting = ["true", "1", "yes"].includes(
+    String(req.query.include_existing ?? req.body?.include_existing ?? "").toLowerCase()
+  );
+  const googleQuery = req.query.google_query || req.body?.google_query || null;
+
+  try {
+    const result = await syncSourcesAndAi({
+      category,
+      limit,
+      sources,
+      rewrite,
+      includeExisting,
+      googleQuery,
+    });
+
+    return sendApiSuccess(res, result, {
+      category,
+      limit,
+      sources: result.sources,
+      rewrite,
+      output_sizes: {
+        words_100: "ui_hindi.short_100",
+        words_300: "ui_hindi.medium_300",
+        words_600: "ui_hindi.long_500",
+      },
+    });
+  } catch (error) {
+    return sendApiError(res, "SOURCES_AI_SYNC_FAILED", error.message, 500, {
+      category,
+      limit,
+      sources,
+      rewrite,
+    });
+  }
+});
+
+apiV1.get("/editorial/grouped", requireApiScope("news:read"), async (req, res) => {
+  try {
+    const limit = normalizeApiLimit(req.query.limit, 15, 50);
+    const records = await listEditorials(dbPool, { limit });
+    return sendApiSuccess(res, [
+      {
+        category: "editorial",
+        count: records.length,
+        daily_limit: EDITORIAL_DAILY_LIMIT,
+        records,
+      },
+    ], {
+      count: records.length,
+      category_count: records.length ? 1 : 0,
+      limit,
+      daily_limit: EDITORIAL_DAILY_LIMIT,
+    });
+  } catch (error) {
+    return sendApiError(res, "EDITORIAL_GROUP_FAILED", error.message, 500);
+  }
+});
+
+apiV1.post("/sync/editorial", requireApiScope("sync:write"), async (req, res) => {
+  try {
+    const limit = normalizeApiLimit(req.query.limit || req.body?.limit, EDITORIAL_DAILY_LIMIT, EDITORIAL_DAILY_LIMIT);
+    const force = isTruthyQueryValue(req.query.force || req.body?.force);
+    const result = await syncEditorials(dbPool, { limit, force });
+    return sendApiSuccess(res, result, {
+      daily_limit: EDITORIAL_DAILY_LIMIT,
+      saved_count: result.saved_count || 0,
+      skipped_count: result.skipped_count || 0,
+      failed_count: result.failed_count || 0,
+    });
+  } catch (error) {
+    return sendApiError(res, "EDITORIAL_SYNC_FAILED", error.message, 500);
+  }
+});
+
+apiV1.get("/rashifal/grouped", requireApiScope("news:read"), async (req, res) => {
+  try {
+    const limit = normalizeApiLimit(req.query.limit, 50, 100);
+    const records = await listRashifal(dbPool, { limit });
+    return sendApiSuccess(res, [
+      {
+        category: "rashifal",
+        count: records.length,
+        records,
+      },
+    ], {
+      count: records.length,
+      category_count: records.length ? 1 : 0,
+      limit,
+    });
+  } catch (error) {
+    return sendApiError(res, "RASHIFAL_GROUP_FAILED", error.message, 500);
+  }
+});
+
+apiV1.post("/sync/rashifal", requireApiScope("sync:write"), async (req, res) => {
+  try {
+    const limit = normalizeApiLimit(req.query.limit || req.body?.limit, 50, 100);
+    const force = isTruthyQueryValue(req.query.force || req.body?.force);
+    const result = await syncRashifal(dbPool, { limit, force });
+    return sendApiSuccess(res, result, {
+      saved_count: result.saved_count || 0,
+      skipped_count: result.skipped_count || 0,
+      failed_count: result.failed_count || 0,
+    });
+  } catch (error) {
+    return sendApiError(res, "RASHIFAL_SYNC_FAILED", error.message, 500);
+  }
+});
+
 apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
   const category = normalizeCategory(req.query.category || req.body?.category || "states");
   const limit = normalizeArticleLimit(req.query.limit || req.body?.limit || 5);
@@ -5209,7 +6639,10 @@ apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
     for (const articleEntry of articleEntries) {
       try {
         const imageData = await extractBestImageFromArticle(page, articleEntry.url);
-        if (!imageData.featuredImage) {
+        const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
+        const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
+        const title = imageData.title || articleEntry.title || articleEntry.url;
+        if (!featuredImage) {
           throw new Error("The original article opened, but no direct image URL could be extracted from that page.");
         }
 
@@ -5218,10 +6651,10 @@ apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
           feedSource: articleEntry.feed_source,
           feedUrl: articleEntry.feed_url,
           query: category,
-          title: imageData.title,
+          title,
           articleUrl: articleEntry.url,
-          imageLink: imageData.featuredImage,
-          imageSource: imageData.imageSource,
+          imageLink: featuredImage,
+          imageSource,
         });
 
         results.push({
@@ -5231,9 +6664,9 @@ apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
           feed_source: articleEntry.feed_source,
           feed_url: articleEntry.feed_url,
           source: articleEntry.url,
-          title: imageData.title,
-          image_link: imageData.featuredImage,
-          image_source: imageData.imageSource,
+          title,
+          image_link: featuredImage,
+          image_source: imageSource,
         });
       } catch (articleError) {
         results.push({
@@ -5471,6 +6904,15 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
 
   app.post("/ai/cron/run-now", async (req, res) => {
     try {
+      if (await isIngestionWorkerBusy()) {
+        aiSchedulerState.lastStatus = "Busy";
+        aiSchedulerState.lastError = "Waiting for ingestion cron to finish.";
+        return res.status(409).json({
+          status: "Busy",
+          message: "An ingestion cron is already running. Try again after it finishes.",
+        });
+      }
+
       const locked = await runAiScheduledCycleWithLock("manual");
       if (!locked.acquired) {
         return res.status(409).json({
@@ -5500,6 +6942,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
     getDbPool: () => dbPool,
     createBrowserPage,
     normalizeCategory,
+    afterRewriteSaved: () => runRetentionCleanupCycle("manual-ai-rewrite-save"),
   });
 
   app.get("/zee-feeds", (req, res) => {
@@ -5569,6 +7012,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
 
 app.get("/image-proxy", async (req, res) => {
   const imageUrl = typeof req.query.url === "string" ? req.query.url : "";
+  const imageQualityMode = typeof req.query.quality === "string" ? req.query.quality.toLowerCase() : "";
 
   if (!imageUrl) {
     return res.status(400).json({
@@ -5602,11 +7046,35 @@ app.get("/image-proxy", async (req, res) => {
 
     const arrayBuffer = await upstream.arrayBuffer();
     const contentType = upstream.headers.get("content-type") || "image/jpeg";
-    const optimizedImage = await optimizeImageBuffer(
-      Buffer.from(arrayBuffer),
-      contentType,
-      req.headers.accept
-    );
+    if (imageQualityMode === "original") {
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+      return res.send(Buffer.from(arrayBuffer));
+    }
+
+    const highQuality = imageQualityMode === "high";
+    const originalBuffer = Buffer.from(arrayBuffer);
+    let optimizedImage;
+    try {
+      optimizedImage = await optimizeImageBuffer(
+        originalBuffer,
+        contentType,
+        req.headers.accept,
+        highQuality
+          ? {
+              highQuality: true,
+              maxWidth: IMAGE_PROXY_HIGH_MAX_WIDTH,
+              webpQuality: IMAGE_PROXY_HIGH_WEBP_QUALITY,
+              jpegQuality: IMAGE_PROXY_HIGH_JPEG_QUALITY,
+            }
+          : {}
+      );
+    } catch (optimizationError) {
+      console.warn(`Image optimization failed for ${imageUrl}: ${optimizationError.message}`);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+      return res.send(originalBuffer);
+    }
 
     res.setHeader("Content-Type", optimizedImage.contentType);
     res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
@@ -5625,6 +7093,7 @@ initializeDatabase()
   .then(() => {
     startScheduler();
     startAiScheduler();
+    startMpInfoDistrictScheduler();
     startRetentionCleanupScheduler();
     startSchedulerWatchdog();
     serverInstance = app.listen(PORT, () => {
@@ -5681,7 +7150,7 @@ initializeDatabase()
         `MySQL: host=${DB_HOST} port=${DB_PORT} user=${DB_USER} database=${DB_NAME}`
       );
       console.log(
-        `Schedulers: main=${schedulerState.enabled ? "enabled" : "disabled"} ai=${aiSchedulerState.enabled ? "enabled" : "disabled"}`
+        `Schedulers: main=${schedulerState.enabled ? "enabled" : "disabled"} ai=${aiSchedulerState.enabled ? "enabled" : "disabled"} mpinfo-districts=${mpInfoDistrictSchedulerState.enabled ? "enabled" : "disabled"}`
       );
     });
   })

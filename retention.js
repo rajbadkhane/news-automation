@@ -17,23 +17,40 @@ function parsePositiveIntEnv(value, defaultValue, minValue = 1, maxValue = Numbe
   return Math.min(parsed, maxValue);
 }
 
+function parsePositiveNumberEnv(value, defaultValue, minValue = 1, maxValue = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < minValue) {
+    return defaultValue;
+  }
+
+  return Math.min(parsed, maxValue);
+}
+
+function resolveRetentionHours(env, hoursKey, daysKey, defaultHours) {
+  if (env[hoursKey] !== undefined && String(env[hoursKey]).trim() !== "") {
+    return parsePositiveNumberEnv(env[hoursKey], defaultHours, 1);
+  }
+
+  return parsePositiveNumberEnv(env[daysKey], defaultHours / 24, 1) * 24;
+}
+
 function loadRetentionConfig(env = process.env) {
   return {
     enabled: parseBooleanEnv(env.RETENTION_ENABLED, true),
-    intervalMs: parsePositiveIntEnv(env.RETENTION_CLEANUP_INTERVAL_MS, 60 * 60 * 1000, 60_000),
+    intervalMs: parsePositiveIntEnv(env.RETENTION_CLEANUP_INTERVAL_MS, 15 * 60 * 1000, 60_000),
     batchSize: parsePositiveIntEnv(env.RETENTION_BATCH_SIZE, 2000, 100),
     maxPasses: parsePositiveIntEnv(env.RETENTION_MAX_PASSES, 20, 1, 100),
     tables: [
       {
         tableName: "ai_news_rewrites",
         timestampExpression: "COALESCE(published_at, updated_at)",
-        keepDays: parsePositiveIntEnv(env.AI_REWRITE_RETENTION_DAYS, 45, 1),
+        keepHours: resolveRetentionHours(env, "AI_REWRITE_RETENTION_HOURS", "AI_REWRITE_RETENTION_DAYS", 24),
         maxRows: parsePositiveIntEnv(env.AI_REWRITE_MAX_ROWS, 5000, 1),
       },
       {
         tableName: "fetched_news",
         timestampExpression: "fetched_at",
-        keepDays: parsePositiveIntEnv(env.FETCHED_NEWS_RETENTION_DAYS, 45, 1),
+        keepHours: resolveRetentionHours(env, "FETCHED_NEWS_RETENTION_HOURS", "FETCHED_NEWS_RETENTION_DAYS", 24),
         maxRows: parsePositiveIntEnv(env.FETCHED_NEWS_MAX_ROWS, 10000, 1),
         dependentDeletes: [
           {
@@ -45,31 +62,31 @@ function loadRetentionConfig(env = process.env) {
       {
         tableName: "scheduler_runs",
         timestampExpression: "started_at",
-        keepDays: parsePositiveIntEnv(env.SCHEDULER_RUNS_RETENTION_DAYS, 30, 1),
+        keepHours: resolveRetentionHours(env, "SCHEDULER_RUNS_RETENTION_HOURS", "SCHEDULER_RUNS_RETENTION_DAYS", 24 * 30),
         maxRows: parsePositiveIntEnv(env.SCHEDULER_RUNS_MAX_ROWS, 2000, 1),
       },
       {
         tableName: "api_usage_logs",
         timestampExpression: "created_at",
-        keepDays: parsePositiveIntEnv(env.API_USAGE_LOG_RETENTION_DAYS, 14, 1),
+        keepHours: resolveRetentionHours(env, "API_USAGE_LOG_RETENTION_HOURS", "API_USAGE_LOG_RETENTION_DAYS", 24 * 14),
         maxRows: parsePositiveIntEnv(env.API_USAGE_LOG_MAX_ROWS, 5000, 1),
       },
       {
         tableName: "admin_audit_logs",
         timestampExpression: "created_at",
-        keepDays: parsePositiveIntEnv(env.ADMIN_AUDIT_LOG_RETENTION_DAYS, 90, 1),
+        keepHours: resolveRetentionHours(env, "ADMIN_AUDIT_LOG_RETENTION_HOURS", "ADMIN_AUDIT_LOG_RETENTION_DAYS", 24 * 90),
         maxRows: parsePositiveIntEnv(env.ADMIN_AUDIT_LOG_MAX_ROWS, 5000, 1),
       },
     ],
   };
 }
 
-function buildCutoffDate(keepDays) {
-  if (!keepDays || keepDays < 1) {
+function buildCutoffDate(keepHours) {
+  if (!keepHours || keepHours < 1) {
     return null;
   }
 
-  return new Date(Date.now() - (keepDays * MILLISECONDS_PER_DAY));
+  return new Date(Date.now() - (keepHours * MILLISECONDS_PER_DAY / 24));
 }
 
 function buildRetentionWhereClause({ additionalWhereSql = null, additionalWhereParams = [], cutoffExpression = null, cutoffValue = null }) {
@@ -175,11 +192,11 @@ async function cleanupTable(dbPool, tableConfig, runtimeConfig) {
     dependent_deleted: 0,
     eligible_remaining: 0,
     total_remaining: 0,
-    keep_days: tableConfig.keepDays,
+    keep_hours: tableConfig.keepHours,
     max_rows: tableConfig.maxRows,
   };
 
-  const cutoff = buildCutoffDate(tableConfig.keepDays);
+  const cutoff = buildCutoffDate(tableConfig.keepHours);
   const maxPasses = runtimeConfig.maxPasses;
   const batchSize = runtimeConfig.batchSize;
   const dependentDeletes = Array.isArray(tableConfig.dependentDeletes) ? tableConfig.dependentDeletes : [];

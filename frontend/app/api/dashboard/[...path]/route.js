@@ -20,7 +20,15 @@ function getCacheSeconds(pathname) {
     return 20;
   }
 
+  if (normalized.startsWith("/delivery/news/grouped") || normalized.startsWith("/delivery/news")) {
+    return 0;
+  }
+
   if (normalized.startsWith("/ai/news/grouped")) {
+    return 0;
+  }
+
+  if (normalized.startsWith("/editorial/grouped") || normalized.startsWith("/rashifal/grouped")) {
     return 60;
   }
 
@@ -116,6 +124,46 @@ function normalizeDashboardJson(pathname, payload, status) {
         category_count: payload.meta?.category_count || 0,
       };
     }
+
+    if (normalized === "/delivery/news/grouped") {
+      const groups = Array.isArray(payload.data) ? payload.data : [];
+      return {
+        status: "Success",
+        database: payload.database || payload.meta?.database || null,
+        grouped_records: groups.map((group) => ({
+          category: group.category,
+          count: group.records?.length || group.published_count || group.count || 0,
+          records: (group.records || []).map((item) => ({
+            id: item.news_id || item.id,
+            rewrite_id: item.id,
+            category: item.category || group.category,
+            title: item.ui_hindi?.title || item.article?.headline || item.source?.title || "Untitled story",
+            source_url: item.link || item.source?.url || "",
+            image_link: item.ui_hindi?.image_url || item.media?.image_link || "",
+            image_source: item.media?.image_source || "article-image",
+            fetched_at: item.source?.fetched_at || item.published_at || item.updated_at,
+            feed_source: item.source?.feed_source || item.source?.title || "published",
+            feed_url: item.source?.feed_url || "",
+            ui_hindi: item.ui_hindi || null,
+            raw_articles: item.raw_articles || null,
+            article: item.article || null,
+          })),
+        })),
+        count: payload.meta?.count || 0,
+        category_count: payload.meta?.category_count || groups.length,
+      };
+    }
+
+    if (normalized === "/editorial/grouped" || normalized === "/rashifal/grouped") {
+      return {
+        status: "Success",
+        database: payload.database || payload.meta?.database || null,
+        grouped_records: payload.data || [],
+        count: payload.meta?.count || 0,
+        category_count: payload.meta?.category_count || 0,
+        daily_limit: payload.meta?.daily_limit || null,
+      };
+    }
   }
 
   return payload;
@@ -130,6 +178,12 @@ function resolveBackendPath(pathname) {
     "/scheduler/logs",
     "/ai/news/grouped",
     "/ai/cron/status",
+    "/delivery/news/grouped",
+    "/delivery/news",
+    "/editorial/grouped",
+    "/rashifal/grouped",
+    "/sync/editorial",
+    "/sync/rashifal",
   ];
 
   if (normalized === "/image-proxy" || normalized.startsWith("/image-proxy?")) {
@@ -144,11 +198,19 @@ function resolveBackendPath(pathname) {
 }
 
 async function proxyToBackend(request, { params }) {
-  const pathSegments = Array.isArray(params?.path) ? params.path : [];
+  const resolvedParams = typeof params?.then === "function" ? await params : params;
+  const pathSegments = Array.isArray(resolvedParams?.path) ? resolvedParams.path : [];
   const url = new URL(request.url);
   const targetPath = pathSegments.join("/");
   const backendPath = resolveBackendPath(targetPath);
-  if (!backendPath || request.method !== "GET" && request.method !== "HEAD") {
+  const allowedMethod = request.method === "GET"
+    || request.method === "HEAD"
+    || (
+      request.method === "POST" &&
+      (backendPath === "/api/v1/sync/editorial" || backendPath === "/api/v1/sync/rashifal")
+    );
+
+  if (!backendPath || !allowedMethod) {
     return NextResponse.json({
       success: false,
       error: {

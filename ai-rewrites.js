@@ -1,104 +1,137 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-const AI_PROMPT_VERSION = "the-cliff-news-v1";
-const AI_REWRITE_SYSTEM_PROMPT = `You are a senior digital editor writing for "The Cliff News", a Google Discover-optimized, mobile-first news platform.
+const AI_PROMPT_VERSION = "hindi-ui-news-v7-structured-flatten";
+const HINDI_NEWS_CATEGORIES = [
+  "राजनीति",
+  "सरकारी योजना",
+  "अर्थव्यवस्था",
+  "शिक्षा",
+  "स्वास्थ्य",
+  "प्रौद्योगिकी",
+  "कानून व्यवस्था",
+  "कृषि",
+  "बुनियादी ढांचा",
+  "राष्ट्रीय",
+];
+const AI_REWRITE_SYSTEM_PROMPT = `आप एक वरिष्ठ खोजी हिंदी पत्रकार हैं, जो राष्ट्रीय स्तर के अखबार के कड़े संपादकीय मानकों के लिए लिखते हैं।
 
-Rewrite the following raw news into a fully original, high-quality news report designed to perform well on Google Discover and within The Cliff News app.
+काम: दिए गए शीर्षक, संक्षिप्त विवरण और कच्चे समाचार इनपुट को 100, 300 और 600 शब्दों के प्रकाशन योग्य हिंदी समाचार लेखों में बदलना। आउटपुट केवल वैध JSON हो।
 
-FOLLOW ALL INSTRUCTIONS STRICTLY:
+सामान्य नियम:
+- केवल दिए गए कच्चे इनपुट, लिंक, चित्र और उपलब्ध संदर्भ पर आधारित रहें।
+- कोई तथ्य, आंकड़ा, उद्धरण, तारीख, आरोप या दावा न गढ़ें। यदि व्यापक नीति संदर्भ दें तो उसे सामान्य और सावधान भाषा में रखें।
+- आउटपुट 100 प्रतिशत हिंदी हो। संस्था, कानून, योजना या तकनीकी नाम मूल रूप में रह सकते हैं।
+- JSON keys अंग्रेजी में रहेंगी, लेकिन JSON values पूरी तरह हिंदी में लिखें।
+- "Main Heading", "Photo Caption", "Full News Article Body" जैसे अंग्रेजी निर्देशों को output में न लिखें। उनकी जगह वास्तविक हिंदी शीर्षक, हिंदी फोटो कैप्शन और हिंदी article body लिखें।
+- केवल section label "Subheadings" को इसी अंग्रेजी spelling में रखें, क्योंकि frontend/parser को वही label चाहिए। बाकी सभी content हिंदी रहे।
+- heading, subheading, caption और article body में अंग्रेजी वाक्य न आएं।
+- किसी समाचार एजेंसी, प्रकाशन, अखबार, टीवी चैनल, वेबसाइट, पोर्टल या मैगजीन का नाम article text, title, subheading, caption, keywords या source में न लिखें।
+- विशेष रूप से ऐसे नामों से बचें: आज तक, टाइम्स ऑफ इंडिया, हिंदुस्तान टाइम्स, द हिंदू, इंडिया टुडे, पत्रिका, मैगजीन, पीटीआई, एएनआई, रायटर्स, एपी, एएफपी।
+- किसी भी जगह em dash या en dash जैसे चिन्ह न लगाएं।
+- शैली साफ, तथ्य आधारित, संतुलित और PIB तथा CBC दिशानिर्देशों के अनुरूप हो।
+- क्लिकबेट, राय, अतिशयोक्ति, HTML, मार्कडाउन, बुलेट सूची और डुप्लिकेट सामग्री से बचें।
 
-1) DISCOVER-FIRST ORIGINALITY
-- The article must be 100% original.
-- Do NOT reuse wording, phrases, or structure from wire agencies or competing outlets.
-- The story must feel exclusive, timely, and authoritative.
+title नियम:
+- केवल एक मुख्य शीर्षक दें।
+- 10 से 16 शब्द।
+- असरदार, लयदार, तात्कालिक और फ्रंट-पेज जैसा हो।
+- समाचार एजेंसी या प्रकाशन का नाम न हो।
 
-2) TOP SUMMARY (MANDATORY - DISCOVER FRIENDLY)
-Start with 3-4 concise bullet points answering and highlighting:
-- What happened
-- Why it matters now
-- What changes for people
-- Who is affected
+short_100 नियम:
+- यह 80 से 100 शब्दों का बहुत संक्षिप्त breaking-news style article हो।
+- पूरे short_100 output में 100 शब्दों से अधिक न हों।
+- हर शब्द जरूरी हो, कोई अतिरिक्त व्याख्या न हो।
+- नीचे दी गई संरचना और क्रम बिल्कुल रखें:
+1. Main Heading
+2. Subheading Section Label: Subheadings
+3. Subheading 1 numbered
+4. Subheading 2 numbered
+5. Subheading 3 numbered
+6. Subheading 4 numbered
+7. Photo Caption immediately after subheading 4
+8. Full News Article Body after photo caption
+- short_100 में "Subheadings" label ठीक इसी तरह हो।
+- Main Heading 8 से 14 शब्दों का sharp, urgent और attention-grabbing हो।
+- चारों subheading numbered format में हों: 1. 2. 3. 4.
+- हर subheading 10 से 14 शब्दों की mini-headline हो, action और context के साथ।
+- Photo Caption एक छोटी factual line हो।
+- article body सिर्फ 1 बहुत tight paragraph हो और compressed form में 5W1H शामिल करे।
+- सिर्फ 1 sharp stat या fact जोड़ें, वह भी relevant हो तो।
 
-These bullets must be skimmable and curiosity-driven without clickbait.
+medium_300 नियम:
+- यह 300 से 350 शब्दों का संक्षिप्त लेकिन high-impact article हो।
+- किसी भी हालत में 350 शब्दों से अधिक न हो।
+- नीचे दी गई संरचना और क्रम बिल्कुल रखें:
+1. Main Heading
+2. Subheading Section Label: Subheadings
+3. Subheading 1 numbered
+4. Subheading 2 numbered
+5. Subheading 3 numbered
+6. Subheading 4 numbered
+7. Photo Caption immediately after subheading 4
+8. Full News Article Body after photo caption
+- medium_300 में "Subheadings" label ठीक इसी तरह हो।
+- चारों subheading numbered format में हों: 1. 2. 3. 4.
+- हर subheading 14 से 20 शब्दों की पूरी mini-headline हो, जिसमें action, context और consequence हो।
+- Photo Caption छोटा, तथ्यात्मक और पत्रकारिता शैली में हो।
+- article body inverted pyramid में हो: पहले 5W1H, फिर विवरण, फिर संदर्भ, फिर असर।
+- body शुरू होने से पहले कोई अलग पैराग्राफ न हो।
+- अंत मजबूत और आगे की दिशा दिखाने वाली पंक्ति से हो।
 
-3) STRONG DISCOVER HEADLINE
-- Write a clear, emotionally engaging but factual headline.
-- Avoid ALL CAPS and clickbait.
-- Include the most important keyword naturally.
-- Make it suitable for Google Discover cards and push notifications.
+long_500 नियम:
+- यह 600 शब्दों का संस्करण है। field name compatibility के लिए long_500 ही रहेगा।
+- पूर्ण long_500 अधिकतम 600 शब्द, लक्ष्य 520 से 600 शब्द।
+- नीचे दी गई संरचना और क्रम बिल्कुल रखें:
+1. Main Heading
+2. Subheading Section Label: Subheadings
+3. Subheading 1 numbered
+4. Subheading 2 numbered
+5. Subheading 3 numbered
+6. Subheading 4 numbered
+7. Photo Caption immediately after subheading 4
+8. Full News Article Body after photo caption
+- long_500 में "Subheadings" label ठीक इसी तरह हो।
+- चारों subheading numbered format में हों: 1. 2. 3. 4.
+- हर subheading 14 से 20 शब्दों की पूरी mini-headline हो, जिसमें action, context और consequence हो।
+- Photo Caption छोटा, तथ्यात्मक और पत्रकारिता शैली में हो।
+- article body inverted pyramid में हो: पहले सबसे जरूरी तथ्य, फिर विवरण, फिर पृष्ठभूमि, फिर विश्लेषण और असर।
+- body शुरू होने से पहले कोई अलग पैराग्राफ न हो।
+- अंत मजबूत और आगे की दिशा दिखाने वाली पंक्ति से हो।
 
-4) POWERFUL LEAD PARAGRAPH
-- First 2-3 lines must clearly explain the news and why it matters.
-- Assume the reader has no prior context.
-- Encourage continued reading without exaggeration.
+डेटा नियम:
+- तीनों संस्करण अलग गहराई के हों, एक-दूसरे की कॉपी न हों।
+- state सामग्री या स्रोत से पहचानें। न मिले तो "राष्ट्रीय" लिखें।
+- category केवल इनमें से एक हो: राजनीति, सरकारी योजना, अर्थव्यवस्था, शिक्षा, स्वास्थ्य, प्रौद्योगिकी, कानून व्यवस्था, कृषि, बुनियादी ढांचा, राष्ट्रीय।
+- keywords में 3 से 5 हिंदी कीवर्ड दें।
+- source में प्रकाशन, एजेंसी, चैनल, वेबसाइट या मैगजीन का नाम न दें। "आधिकारिक स्रोत" या विषय आधारित सामान्य स्रोत लिखें।
+- image_url वैध और दिया गया हो तो उसे बिना बदले लौटाएं।
+- image_url खाली हो तो image_url खाली रखें और image_prompt बनाएं: "भारत में {state} से संबंधित समाचार दृश्य: {headline}, यथार्थवादी फोटो पत्रकारिता शैली, प्राकृतिक रोशनी, बिना टेक्स्ट, 16:9"
+- image_url हो तो image_prompt खाली स्ट्रिंग रखें।
+- कोई भी JSON field गायब न हो।
 
-5) CONTEXT, BACKGROUND & IMPACT
-- Add relevant historical and situational context.
-- Explain implications for:
-  - Public safety
-  - Security
-  - Governance
-  - Economy
-  - Travel
-  - International relations (if applicable)
-- Answer: "Why should a mobile reader care right now?"
-
-6) CREDIBLE ATTRIBUTION & TRUST SIGNALS
-- Attribute information to official statements, verified agencies, press releases, or domain experts.
-- Paraphrase official remarks clearly.
-- Avoid vague sourcing.
-
-7) FACTUAL INTEGRITY
-- Do NOT invent facts, figures, or claims.
-- Ensure all details are accurate and verifiable.
-- If details are developing, clearly state it.
-
-8) MOBILE-FIRST STRUCTURE
-- Use short paragraphs (2-3 lines max).
-- Use clear subheadings for scannability.
-- Keep language simple, direct, and accessible.
-
-9) MULTIPLE PERSPECTIVES
-- Include viewpoints from officials, experts, and affected sectors.
-- Clearly distinguish facts from analysis.
-
-10) VALUE ADDITION
-- Do not merely summarize existing reports.
-- Add insight, clarity, and relevance.
-- Help readers understand consequences and next steps.
-
-11) GOOGLE DISCOVER STYLE & FORMATTING RULES
-- Bold all key facts, numbers, names, dates, locations, and decisions.
-- Underline the most critical elements such as policy changes, warnings, major outcomes, and official actions.
-- Remove the word "pilgrims" completely.
-- Do NOT use em dashes.
-- Avoid repetition and filler.
-
-12) ENGAGEMENT BOOST
-- End with a short "What to watch next" section (2-3 lines).
-- Keep tone authoritative, not promotional.
-
-Keep the heading at top and remove any labels like top summary, headline, or lead paragraph.
-
-Return ONLY valid JSON using this exact schema:
+केवल वैध JSON लौटाएं:
 {
-  "english": {
-    "headline": "string",
-    "top_summary": ["string", "string", "string"],
-    "short_description": "string",
-    "long_description": "string",
-    "what_to_watch_next": "string"
-  },
-  "hindi": {
-    "headline": "string",
-    "top_summary": ["string", "string", "string"],
-    "short_description": "string",
-    "long_description": "string",
-    "what_to_watch_next": "string"
-  }
-}
+  "title": "",
+  "short_100": "",
+  "medium_300": "",
+  "long_500": "",
+  "keywords": [],
+  "category": "",
+  "state": "",
+  "image_url": "",
+  "image_prompt": "",
+  "source": "",
+  "link": ""
+}`;
 
-The Hindi section must be a proper Hindi translation and adaptation of the English rewrite, kept separate and not mixed.`;
+const AI_REWRITE_SIZE_OVERRIDE = `
+OUTPUT SIZE OVERRIDE:
+- short_100 must be a complete raw Hindi article version of 80 to 100 words.
+- medium_300 must be a complete raw Hindi article version of 280 to 320 words.
+- long_500 must be a complete raw Hindi article version of 520 to 600 words. It is the 600-word version; the field name remains long_500 only for database compatibility.
+- Do not create or change the image. If the input image URL exists, return the exact same image URL.
+- Keep these three versions in the JSON and make them independently publishable raw article bodies.
+`;
 
 const { isDuplicateColumnError, isDuplicateKeyError } = require("./db");
 
@@ -123,6 +156,17 @@ async function initializeAiRewriteStorage(dbPool) {
         hindi_short_description TEXT,
         hindi_long_description TEXT,
         hindi_what_to_watch_next TEXT,
+        ui_title TEXT,
+        ui_short_100 TEXT,
+        ui_medium_300 TEXT,
+        ui_long_500 TEXT,
+        ui_keywords_json TEXT,
+        ui_category VARCHAR(100),
+        ui_state VARCHAR(150),
+        ui_image_url TEXT,
+        ui_image_prompt TEXT,
+        ui_source TEXT,
+        ui_link TEXT,
         publication_status VARCHAR(20) NOT NULL DEFAULT 'draft',
         published_at TIMESTAMPTZ NULL DEFAULT NULL,
         published_by VARCHAR(150) NULL,
@@ -152,6 +196,17 @@ async function initializeAiRewriteStorage(dbPool) {
         hindi_short_description MEDIUMTEXT,
         hindi_long_description LONGTEXT,
         hindi_what_to_watch_next TEXT,
+        ui_title TEXT,
+        ui_short_100 MEDIUMTEXT,
+        ui_medium_300 MEDIUMTEXT,
+        ui_long_500 LONGTEXT,
+        ui_keywords_json TEXT,
+        ui_category VARCHAR(100),
+        ui_state VARCHAR(150),
+        ui_image_url TEXT,
+        ui_image_prompt TEXT,
+        ui_source TEXT,
+        ui_link TEXT,
         publication_status VARCHAR(20) NOT NULL DEFAULT 'draft',
         published_at TIMESTAMP NULL DEFAULT NULL,
         published_by VARCHAR(150) NULL,
@@ -171,6 +226,17 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN published_at TIMESTAMPTZ NULL DEFAULT NULL",
         "ALTER TABLE ai_news_rewrites ADD COLUMN published_by VARCHAR(150) NULL",
         "ALTER TABLE ai_news_rewrites ADD COLUMN delivery_slug VARCHAR(191) NULL",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_title TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_short_100 TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_medium_300 TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_long_500 TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_keywords_json TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_category VARCHAR(100)",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_state VARCHAR(150)",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_url TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_link TEXT",
         "CREATE UNIQUE INDEX unique_delivery_slug ON ai_news_rewrites (delivery_slug)",
       ]
     : [
@@ -178,6 +244,17 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN published_at TIMESTAMP NULL DEFAULT NULL",
         "ALTER TABLE ai_news_rewrites ADD COLUMN published_by VARCHAR(150) NULL",
         "ALTER TABLE ai_news_rewrites ADD COLUMN delivery_slug VARCHAR(191) NULL",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_title TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_short_100 MEDIUMTEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_medium_300 MEDIUMTEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_long_500 LONGTEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_keywords_json TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_category VARCHAR(100)",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_state VARCHAR(150)",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_url TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_link TEXT",
         "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
       ];
 
@@ -207,12 +284,65 @@ function truncateText(value, maxLength) {
   return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
 }
 
+function stringifyGeneratedValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyGeneratedValue(item)).filter(Boolean).join("\n");
+  }
+
+  if (value && typeof value === "object") {
+    const preferredKeys = [
+      "title",
+      "heading",
+      "main_heading",
+      "headline",
+      "subheading_label",
+      "subheadings",
+      "photo_caption",
+      "caption",
+      "body",
+      "article",
+      "article_body",
+      "text",
+      "content",
+    ];
+    const orderedValues = [];
+    const usedKeys = new Set();
+
+    for (const key of preferredKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        orderedValues.push(stringifyGeneratedValue(value[key]));
+        usedKeys.add(key);
+      }
+    }
+
+    for (const [key, item] of Object.entries(value)) {
+      if (!usedKeys.has(key)) {
+        orderedValues.push(stringifyGeneratedValue(item));
+      }
+    }
+
+    return orderedValues.filter(Boolean).join("\n");
+  }
+
+  return String(value || "");
+}
+
 function cleanGeneratedText(value) {
-  return String(value || "")
+  return stringifyGeneratedValue(value)
     .replace(/^\s*#{1,6}\s*/gm, "")
     .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1")
     .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/[—–]/g, "-")
     .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function removePublisherMentions(value) {
+  return cleanGeneratedText(value)
+    .replace(/\b(?:Aaj Tak|Times of India|Hindustan Times|The Hindu|India Today|Reuters|ANI|PTI|Associated Press|AP|AFP|BBC|CNN)\b/gi, "")
+    .replace(/(?:आज तक|टाइम्स ऑफ इंडिया|हिंदुस्तान टाइम्स|द हिंदू|इंडिया टुडे|रायटर्स|एएनआई|पीटीआई|एपी|एएफपी|बीबीसी|सीएनएन|समाचार एजेंसी|न्यूज एजेंसी|मैगजीन|पत्रिका)/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
     .trim();
 }
 
@@ -220,6 +350,80 @@ function cleanSummaryList(values) {
   return (Array.isArray(values) ? values : [])
     .map((item) => cleanGeneratedText(item))
     .filter(Boolean);
+}
+
+function isLikelyValidImageUrl(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.startsWith("data:")) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeUiHindiPayload(payload) {
+  const normalized = payload && typeof payload === "object" ? payload : {};
+  const keywords = Array.isArray(normalized.keywords)
+    ? normalized.keywords.map((item) => removePublisherMentions(item)).filter(Boolean).slice(0, 5)
+    : [];
+  const imageUrl = isLikelyValidImageUrl(normalized.image_url) ? String(normalized.image_url).trim() : "";
+
+  return {
+    title: removePublisherMentions(normalized.title),
+    short_100: removePublisherMentions(normalized.short_100),
+    medium_300: removePublisherMentions(normalized.medium_300),
+    long_500: removePublisherMentions(normalized.long_500),
+    keywords,
+    category: HINDI_NEWS_CATEGORIES.includes(normalized.category) ? normalized.category : "राष्ट्रीय",
+    state: removePublisherMentions(normalized.state) || "राष्ट्रीय",
+    image_url: imageUrl,
+    image_prompt: imageUrl ? "" : removePublisherMentions(normalized.image_prompt),
+    source: removePublisherMentions(normalized.source) || "आधिकारिक स्रोत",
+    link: String(normalized.link || "").trim(),
+  };
+}
+
+function buildImagePrompt(title, state) {
+  return `भारत में ${state || "राष्ट्रीय"} से संबंधित समाचार दृश्य: ${title || "समाचार"}, यथार्थवादी फोटो पत्रकारिता शैली, प्राकृतिक रोशनी, बिना टेक्स्ट, 16:9`;
+}
+
+function hasHindiText(value) {
+  return /[\u0900-\u097F]/.test(String(value || ""));
+}
+
+function hasUiHindiShape(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      Object.prototype.hasOwnProperty.call(payload, "short_100") &&
+      Object.prototype.hasOwnProperty.call(payload, "medium_300") &&
+      Object.prototype.hasOwnProperty.call(payload, "long_500")
+  );
+}
+
+function createLegacyPayloadFromUiHindi(uiHindi) {
+  const summary = uiHindi.keywords.length ? uiHindi.keywords : [uiHindi.category, uiHindi.state].filter(Boolean);
+  return {
+    english: {
+      headline: uiHindi.title,
+      top_summary: summary,
+      short_description: uiHindi.short_100,
+      long_description: uiHindi.long_500,
+      what_to_watch_next: uiHindi.medium_300,
+    },
+    hindi: {
+      headline: uiHindi.title,
+      top_summary: summary,
+      short_description: uiHindi.short_100,
+      long_description: uiHindi.long_500,
+      what_to_watch_next: uiHindi.medium_300,
+    },
+  };
 }
 
 function slugifyText(value) {
@@ -244,6 +448,31 @@ function parseJsonResponse(rawText) {
 function validateAiPayload(payload) {
   if (!payload || typeof payload !== "object") {
     throw new Error("Gemini response was not a valid object.");
+  }
+
+  if (hasUiHindiShape(payload)) {
+    const uiHindi = normalizeUiHindiPayload(payload);
+    const requiredFields = ["title", "short_100", "medium_300", "long_500", "category", "state", "source", "link"];
+    for (const field of requiredFields) {
+      if (!uiHindi[field]) {
+        throw new Error(`Gemini response is missing ${field}.`);
+      }
+    }
+
+    for (const field of ["title", "short_100", "medium_300", "long_500"]) {
+      if (!hasHindiText(uiHindi[field])) {
+        throw new Error(`Gemini response field ${field} is not Hindi.`);
+      }
+    }
+
+    if (!uiHindi.image_url && !uiHindi.image_prompt) {
+      uiHindi.image_prompt = buildImagePrompt(uiHindi.title, uiHindi.state);
+    }
+
+    return {
+      ...createLegacyPayloadFromUiHindi(uiHindi),
+      ui_hindi: uiHindi,
+    };
   }
 
   for (const language of ["english", "hindi"]) {
@@ -293,8 +522,10 @@ async function saveAiRewrite(dbPool, {
   payload,
   rawResponse,
 }) {
-  const english = payload.english || {};
-  const hindi = payload.hindi || {};
+  const normalizedPayload = hasUiHindiShape(payload) ? validateAiPayload(payload) : payload;
+  const english = normalizedPayload.english || {};
+  const hindi = normalizedPayload.hindi || {};
+  const uiHindi = normalizedPayload.ui_hindi || (hasUiHindiShape(payload) ? normalizeUiHindiPayload(payload) : null);
 
   await dbPool.execute(
     dbPool.dialect === "postgres"
@@ -303,9 +534,11 @@ async function saveAiRewrite(dbPool, {
             news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
             english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
             hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
+            ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
+            ui_image_url, ui_image_prompt, ui_source, ui_link,
             raw_response
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (news_id) DO UPDATE SET
             model_name = EXCLUDED.model_name,
             prompt_version = EXCLUDED.prompt_version,
@@ -322,6 +555,17 @@ async function saveAiRewrite(dbPool, {
             hindi_short_description = EXCLUDED.hindi_short_description,
             hindi_long_description = EXCLUDED.hindi_long_description,
             hindi_what_to_watch_next = EXCLUDED.hindi_what_to_watch_next,
+            ui_title = EXCLUDED.ui_title,
+            ui_short_100 = EXCLUDED.ui_short_100,
+            ui_medium_300 = EXCLUDED.ui_medium_300,
+            ui_long_500 = EXCLUDED.ui_long_500,
+            ui_keywords_json = EXCLUDED.ui_keywords_json,
+            ui_category = EXCLUDED.ui_category,
+            ui_state = EXCLUDED.ui_state,
+            ui_image_url = EXCLUDED.ui_image_url,
+            ui_image_prompt = EXCLUDED.ui_image_prompt,
+            ui_source = EXCLUDED.ui_source,
+            ui_link = EXCLUDED.ui_link,
             raw_response = EXCLUDED.raw_response,
             updated_at = CURRENT_TIMESTAMP
         `
@@ -330,9 +574,11 @@ async function saveAiRewrite(dbPool, {
             news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
             english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
             hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
+            ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
+            ui_image_url, ui_image_prompt, ui_source, ui_link,
             raw_response
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE
             model_name = VALUES(model_name),
             prompt_version = VALUES(prompt_version),
@@ -349,6 +595,17 @@ async function saveAiRewrite(dbPool, {
             hindi_short_description = VALUES(hindi_short_description),
             hindi_long_description = VALUES(hindi_long_description),
             hindi_what_to_watch_next = VALUES(hindi_what_to_watch_next),
+            ui_title = VALUES(ui_title),
+            ui_short_100 = VALUES(ui_short_100),
+            ui_medium_300 = VALUES(ui_medium_300),
+            ui_long_500 = VALUES(ui_long_500),
+            ui_keywords_json = VALUES(ui_keywords_json),
+            ui_category = VALUES(ui_category),
+            ui_state = VALUES(ui_state),
+            ui_image_url = VALUES(ui_image_url),
+            ui_image_prompt = VALUES(ui_image_prompt),
+            ui_source = VALUES(ui_source),
+            ui_link = VALUES(ui_link),
             raw_response = VALUES(raw_response)
         `,
     [
@@ -368,6 +625,17 @@ async function saveAiRewrite(dbPool, {
       hindi.short_description || null,
       hindi.long_description || null,
       hindi.what_to_watch_next || null,
+      uiHindi?.title || null,
+      uiHindi?.short_100 || null,
+      uiHindi?.medium_300 || null,
+      uiHindi?.long_500 || null,
+      JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
+      uiHindi?.category || null,
+      uiHindi?.state || null,
+      uiHindi?.image_url || null,
+      uiHindi?.image_prompt || null,
+      uiHindi?.source || null,
+      uiHindi?.link || null,
       rawResponse,
     ]
   );
@@ -584,51 +852,84 @@ async function generateAiRewrite(articleRecord, articleText) {
   }
 
   const prompt = `${AI_REWRITE_SYSTEM_PROMPT}
+${AI_REWRITE_SIZE_OVERRIDE}
 
 RAW ARTICLE DETAILS
 Category: ${articleRecord.category || "uncategorized"}
 Feed source: ${articleRecord.feed_source || "unknown"}
 Original title: ${articleRecord.title || ""}
 Original URL: ${articleRecord.source_url}
+Image URL: ${articleRecord.image_link || ""}
+Source name: ${articleRecord.feed_source || "RSS"}
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.7,
-          responseMimeType: "application/json",
+  let rawText = "";
+  let parsed = null;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const attemptPrompt = attempt === 0
+      ? prompt
+      : `${prompt}
+
+कड़ा सुधार निर्देश: पिछला उत्तर अस्वीकार हुआ क्योंकि कोई field पूरी तरह हिंदी में नहीं थी। अब सभी JSON values हिंदी में लिखें। केवल "Subheadings" label अंग्रेजी spelling में रह सकता है।`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      }),
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: attemptPrompt }],
+            },
+          ],
+          generationConfig: {
+            temperature: attempt === 0 ? 0.45 : 0.2,
+            responseMimeType: "application/json",
+          },
+        }),
+      }
+    );
+
+    const payload = await response.json();
+
+    if (!response.ok) {
+      lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+      if (response.status === 429 || response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        continue;
+      }
+      throw lastError;
     }
-  );
 
-  const payload = await response.json();
+    rawText =
+      payload?.candidates?.[0]?.content?.parts
+        ?.map((part) => part.text || "")
+        .join("\n")
+        .trim() || "";
 
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+    try {
+      parsed = validateAiPayload(parseJsonResponse(rawText));
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0 && /not Hindi|missing|JSON/i.test(error.message)) {
+        continue;
+      }
+      throw error;
+    }
   }
 
-  const rawText =
-    payload?.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text || "")
-      .join("\n")
-      .trim() || "";
-
-  const parsed = validateAiPayload(parseJsonResponse(rawText));
+  if (!parsed) {
+    throw lastError || new Error("Gemini did not return a valid Hindi rewrite.");
+  }
 
   return {
     model_name: GEMINI_MODEL,
@@ -649,6 +950,57 @@ function formatAiRewriteRecord(record) {
     } catch {
       return [];
     }
+  };
+
+  const parseUiHindi = () => {
+    if (record.ui_short_100 || record.ui_medium_300 || record.ui_long_500) {
+      const uiHindi = normalizeUiHindiPayload({
+        title: record.ui_title || record.hindi_headline || record.english_headline || record.source_title,
+        short_100: record.ui_short_100,
+        medium_300: record.ui_medium_300,
+        long_500: record.ui_long_500,
+        keywords: parseSummary(record.ui_keywords_json),
+        category: record.ui_category,
+        state: record.ui_state,
+        image_url: record.ui_image_url,
+        image_prompt: record.ui_image_prompt,
+        source: record.ui_source,
+        link: record.ui_link || record.source_url,
+      });
+      if (!uiHindi.image_url && !uiHindi.image_prompt) {
+        uiHindi.image_prompt = buildImagePrompt(uiHindi.title, uiHindi.state);
+      }
+      return uiHindi;
+    }
+
+    try {
+      const parsed = JSON.parse(record.raw_response || "{}");
+      if (hasUiHindiShape(parsed)) {
+        const uiHindi = normalizeUiHindiPayload(parsed);
+        if (!uiHindi.image_url && !uiHindi.image_prompt) {
+          uiHindi.image_prompt = buildImagePrompt(uiHindi.title, uiHindi.state);
+        }
+        return uiHindi;
+      }
+    } catch {
+      // Older records may contain non-JSON or legacy JSON only.
+    }
+
+    const fallbackTitle = cleanGeneratedText(record.hindi_headline || record.english_headline || record.source_title);
+    const fallbackState = "राष्ट्रीय";
+    return {
+      title: fallbackTitle,
+      short_100: cleanGeneratedText(record.hindi_short_description || record.english_short_description),
+      medium_300: cleanGeneratedText(record.hindi_what_to_watch_next || record.english_what_to_watch_next),
+      long_500: cleanGeneratedText(record.hindi_long_description || record.english_long_description),
+      keywords: cleanSummaryList(parseSummary(record.hindi_top_summary || record.english_top_summary)).slice(0, 5),
+      category: "राष्ट्रीय",
+      state: fallbackState,
+      image_url: "",
+      image_prompt: buildImagePrompt(fallbackTitle, fallbackState),
+      source: cleanGeneratedText(record.source_title || "समाचार स्रोत"),
+      link: record.source_url || "",
+    };
   };
 
   return {
@@ -673,6 +1025,7 @@ function formatAiRewriteRecord(record) {
       long_description: cleanGeneratedText(record.hindi_long_description),
       what_to_watch_next: cleanGeneratedText(record.hindi_what_to_watch_next),
     },
+    ui_hindi: parseUiHindi(),
     publication: {
       status: record.publication_status || "draft",
       published_at: record.published_at || null,
@@ -690,6 +1043,17 @@ function formatAiRewriteWithNewsRecord(record) {
   }
 
   const rewrite = formatAiRewriteRecord(record);
+  if (rewrite?.ui_hindi) {
+    if (isLikelyValidImageUrl(record.news_image_link)) {
+      rewrite.ui_hindi.image_url = record.news_image_link;
+    }
+
+    if (rewrite.ui_hindi.image_url) {
+      rewrite.ui_hindi.image_prompt = "";
+    } else if (!rewrite.ui_hindi.image_prompt) {
+      rewrite.ui_hindi.image_prompt = buildImagePrompt(rewrite.ui_hindi.title, rewrite.ui_hindi.state);
+    }
+  }
 
   return {
     ...rewrite,
@@ -711,9 +1075,24 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
   const { browser, page } = await createBrowserPage();
 
   try {
-    const articleText = await withTransientRetry(
+    let articleText = await withTransientRetry(
       async () => extractArticleTextFromPage(page, articleRecord.source_url)
     );
+
+    const scrapedText = normalizeWhitespace(articleRecord.scraped_content_text || "");
+    if ((!articleText.combinedText || articleText.combinedText.length < 120) && scrapedText.length >= 120) {
+      articleText = {
+        title: articleRecord.title || articleRecord.scraped_subtitle || "",
+        metaDescription: articleRecord.scraped_subtitle || "",
+        paragraphs: scrapedText
+          .split(/\n{2,}|(?<=[।.!?])\s+/)
+          .map((paragraph) => normalizeWhitespace(paragraph))
+          .filter((paragraph) => paragraph.length >= 40)
+          .slice(0, 25),
+        combinedText: scrapedText,
+      };
+    }
+
     if (!articleText.combinedText || articleText.combinedText.length < 120) {
       throw new Error("Could not extract enough article text for AI rewriting.");
     }
@@ -811,8 +1190,22 @@ function formatDeliveredRewrite(record, language = "both") {
       fetched_at: formatted.news?.fetched_at || null,
     },
     media: {
-      image_link: formatted.news?.image_link || null,
+      image_link: formatted.ui_hindi?.image_url || formatted.news?.image_link || null,
       image_source: formatted.news?.image_source || null,
+    },
+    raw_articles: {
+      words_100: formatted.ui_hindi?.short_100 || formatted.hindi?.short_description || "",
+      words_300: formatted.ui_hindi?.medium_300 || formatted.hindi?.what_to_watch_next || "",
+      words_600: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
+      words_500: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
+    },
+    ui_hindi: {
+      ...(formatted.ui_hindi || {}),
+      image_url: formatted.ui_hindi?.image_url || formatted.news?.image_link || "",
+      image_prompt:
+        formatted.ui_hindi?.image_url || formatted.news?.image_link
+          ? ""
+          : formatted.ui_hindi?.image_prompt || buildImagePrompt(formatted.hindi?.headline, "राष्ट्रीय"),
     },
   };
 
@@ -989,7 +1382,7 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
   return results;
 }
 
-function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeCategory }) {
+function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeCategory, afterRewriteSaved = null }) {
   app.get("/ai/rewrite/:newsId", async (req, res) => {
     try {
       const dbPool = getDbPool();
@@ -1061,7 +1454,12 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
         });
       }
 
-        const savedRewrite = await createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage);
+        const savedRewrite = await createOrUpdateRewriteForRecord(
+          dbPool,
+          articleRecord,
+          createBrowserPage,
+          afterRewriteSaved
+        );
 
         return res.json({
           status: "Success",
@@ -1121,7 +1519,12 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
         }
 
         try {
-          const savedRewrite = await createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage);
+          const savedRewrite = await createOrUpdateRewriteForRecord(
+            dbPool,
+            articleRecord,
+            createBrowserPage,
+            afterRewriteSaved
+          );
 
           results.push({
             status: "Success",
@@ -1214,6 +1617,7 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
 }
 
 module.exports = {
+  createOrUpdateRewriteForRecord,
   initializeAiRewriteStorage,
   findDeliveredAiRewrite,
   listAiRewrites,

@@ -6,5 +6,11 @@ frontend/.next/
 frontend/node_modules/
 backend.out.log
 backend.err.log
+backend-cron-check*.log
+xampp-mysql-start*.log
+frontend.out.log
+frontend.err.log
+logs/
+.tmp*
 .vercel/
 .puppeteer-cache/
