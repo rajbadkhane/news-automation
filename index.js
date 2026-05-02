@@ -4123,8 +4123,26 @@ function extractTitleFromHtml(html) {
 
 function isLikelyDecorativeImageUrl(value) {
   const normalized = String(value || "").toLowerCase();
+  let hostname = "";
+
+  try {
+    hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    hostname = "";
+  }
+
+  const isSocialMediaImageHost =
+    hostname.endsWith("cdninstagram.com") ||
+    hostname.endsWith("fbcdn.net") ||
+    hostname.endsWith("facebook.com") ||
+    hostname.endsWith("instagram.com") ||
+    hostname.endsWith("twimg.com") ||
+    hostname.endsWith("x.com") ||
+    hostname.endsWith("twitter.com");
+
   return (
     !normalized
+    || isSocialMediaImageHost
     || normalized.includes("logo")
     || normalized.includes("icon")
     || normalized.includes("sprite")
@@ -4136,6 +4154,12 @@ function isLikelyDecorativeImageUrl(value) {
     || normalized.includes("facebook")
     || normalized.includes("twitter")
     || normalized.includes("instagram")
+    || normalized.includes("cdninstagram")
+    || normalized.includes("fbcdn")
+    || normalized.includes("facebook.com")
+    || normalized.includes("twitter.com")
+    || normalized.includes("twimg")
+    || normalized.includes("profile")
     || normalized.includes("insta-feed")
     || normalized.includes("google-play")
     || normalized.includes("play-store")
@@ -4273,34 +4297,47 @@ async function extractArticleMetadataFromHtml(articleUrl) {
     extractMetaContentFromHtml(html, "og:title")
     || extractMetaContentFromHtml(html, "twitter:title")
     || extractTitleFromHtml(html);
-  const featuredImageRaw =
-    extractMetaContentFromHtml(html, "og:image")
-    || extractMetaContentFromHtml(html, "og:image:secure_url")
-    || extractMetaContentFromHtml(html, "og:image:url")
-    || extractMetaContentFromHtml(html, "twitter:image")
-    || extractMetaContentFromHtml(html, "twitter:image:src")
-    || extractLinkHrefFromHtml(html, "image_src")
-    || extractImageFromHtml(html, articleUrl);
+  const imageCandidates = [
+    {
+      rawUrl:
+        extractMetaContentFromHtml(html, "og:image") ||
+        extractMetaContentFromHtml(html, "og:image:secure_url") ||
+        extractMetaContentFromHtml(html, "og:image:url"),
+      source: "og:image",
+    },
+    {
+      rawUrl:
+        extractMetaContentFromHtml(html, "twitter:image") ||
+        extractMetaContentFromHtml(html, "twitter:image:src"),
+      source: "twitter:image",
+    },
+    { rawUrl: extractLinkHrefFromHtml(html, "image_src"), source: "link[rel=image_src]" },
+    { rawUrl: extractImageFromHtml(html, articleUrl), source: "html-image" },
+  ];
 
   let featuredImage = null;
-  if (featuredImageRaw && !isLikelyDecorativeImageUrl(featuredImageRaw)) {
+  let imageSource = null;
+  for (const candidate of imageCandidates) {
+    if (!candidate.rawUrl || isLikelyDecorativeImageUrl(candidate.rawUrl)) {
+      continue;
+    }
+
     try {
-      featuredImage = new URL(featuredImageRaw, articleUrl).href;
+      featuredImage = new URL(candidate.rawUrl, articleUrl).href;
     } catch {
-      featuredImage = featuredImageRaw;
+      featuredImage = candidate.rawUrl;
+    }
+
+    if (featuredImage && !isLikelyDecorativeImageUrl(featuredImage)) {
+      imageSource = candidate.source;
+      break;
     }
   }
 
   return {
     title,
     featuredImage,
-    imageSource: featuredImage
-      ? (extractMetaContentFromHtml(html, "og:image")
-        ? "og:image"
-        : extractMetaContentFromHtml(html, "twitter:image")
-          ? "twitter:image"
-          : "html-image")
-      : null,
+    imageSource,
   };
 }
 
@@ -4338,38 +4375,49 @@ async function extractBestImageFromArticle(page, articleUrl) {
       document.title ||
       null;
 
-    const ogImage = makeAbsolute(
-      document.querySelector('meta[property="og:image"], meta[property="og:image:secure_url"], meta[property="og:image:url"]')?.content
-    );
-    if (ogImage) {
-      return {
-        title,
-        featuredImage: ogImage,
-        imageSource: "og:image",
-      };
-    }
+    const isBlockedImage = (value) => {
+      const normalized = String(value || "").toLowerCase();
+      let hostname = "";
 
-    const twitterImage = makeAbsolute(
-      document.querySelector('meta[name="twitter:image"], meta[name="twitter:image:src"]')?.content
-    );
-    if (twitterImage) {
-      return {
-        title,
-        featuredImage: twitterImage,
-        imageSource: "twitter:image",
-      };
-    }
+      try {
+        hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+      } catch {
+        hostname = "";
+      }
 
-    const linkImage = makeAbsolute(
-      document.querySelector('link[rel="image_src"]')?.href || document.querySelector('link[rel="image_src"]')?.getAttribute("href")
-    );
-    if (linkImage) {
-      return {
-        title,
-        featuredImage: linkImage,
-        imageSource: "link[rel=image_src]",
-      };
-    }
+      return (
+        !normalized ||
+        hostname.endsWith("cdninstagram.com") ||
+        hostname.endsWith("fbcdn.net") ||
+        hostname.endsWith("facebook.com") ||
+        hostname.endsWith("instagram.com") ||
+        hostname.endsWith("twimg.com") ||
+        hostname.endsWith("x.com") ||
+        hostname.endsWith("twitter.com") ||
+        /logo|icon|sprite|avatar|youtube|insta|instagram|cdninstagram|fbcdn|facebook|twitter|twimg|social|share|feed|profile|placeholder|default-image|google-play|play-store|app-store|appstore|get-it-on|download-app|mobile-app|app-badge|store-badge|badge-google|badge-app/.test(normalized)
+      );
+    };
+
+    const metaCandidates = [
+      {
+        src: makeAbsolute(
+          document.querySelector('meta[property="og:image"], meta[property="og:image:secure_url"], meta[property="og:image:url"]')?.content
+        ),
+        source: "og:image",
+      },
+      {
+        src: makeAbsolute(
+          document.querySelector('meta[name="twitter:image"], meta[name="twitter:image:src"]')?.content
+        ),
+        source: "twitter:image",
+      },
+      {
+        src: makeAbsolute(
+          document.querySelector('link[rel="image_src"]')?.href || document.querySelector('link[rel="image_src"]')?.getAttribute("href")
+        ),
+        source: "link[rel=image_src]",
+      },
+    ].filter((candidate) => candidate.src && !isBlockedImage(candidate.src));
 
     const imageCandidates = Array.from(document.images)
       .map((img) => {
@@ -4403,9 +4451,9 @@ async function extractBestImageFromArticle(page, articleUrl) {
           if (
             !normalizedSrc ||
             !normalizedSrc.startsWith("http") ||
-            /logo|icon|sprite|avatar|youtube|insta|social|share|feed|placeholder|default-image|google-play|play-store|app-store|appstore|get-it-on|download-app|mobile-app|app-badge|store-badge|badge-google|badge-app/.test(normalizedSrc) ||
+            isBlockedImage(normalizedSrc) ||
             /logo|icon|share|social|avatar|author|profile|button|thumbnail|google play|play store|app store|download app|get it on/.test(normalizedAlt) ||
-            /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass) ||
+            /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|instagram|insta|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass) ||
             img.width < 320 ||
             img.height < 180
           ) {
@@ -4435,8 +4483,8 @@ async function extractBestImageFromArticle(page, articleUrl) {
 
     return {
       title,
-      featuredImage: imageCandidates[0]?.src || null,
-      imageSource: imageCandidates[0] ? "article-image" : null,
+      featuredImage: imageCandidates[0]?.src || metaCandidates[0]?.src || null,
+      imageSource: imageCandidates[0] ? "article-image" : metaCandidates[0]?.source || null,
     };
   });
 

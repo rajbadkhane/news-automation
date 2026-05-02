@@ -244,6 +244,14 @@ function pickBestSrcsetCandidate(srcset, articleUrl) {
 
 function isLikelyDecorativeImageUrl(value) {
   const normalized = String(value || "").toLowerCase();
+  let hostname = "";
+
+  try {
+    hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    hostname = "";
+  }
+
   const isLikelyContentUpload =
     normalized.includes("/wp-content/uploads/") ||
     normalized.includes("/upload/") ||
@@ -253,6 +261,13 @@ function isLikelyDecorativeImageUrl(value) {
 
   return (
     !normalized ||
+    hostname.endsWith("cdninstagram.com") ||
+    hostname.endsWith("fbcdn.net") ||
+    hostname.endsWith("facebook.com") ||
+    hostname.endsWith("instagram.com") ||
+    hostname.endsWith("twimg.com") ||
+    hostname.endsWith("x.com") ||
+    hostname.endsWith("twitter.com") ||
     normalized.includes("sprite") ||
     normalized.includes("avatar") ||
     /(?:^|[/?&_.-])ads?(?:[/?&_.=-]|$)/.test(normalized) ||
@@ -260,6 +275,13 @@ function isLikelyDecorativeImageUrl(value) {
     normalized.includes("social") ||
     normalized.includes("share") ||
     normalized.includes("follow-us") ||
+    normalized.includes("instagram") ||
+    normalized.includes("cdninstagram") ||
+    normalized.includes("fbcdn") ||
+    normalized.includes("facebook.com") ||
+    normalized.includes("twitter.com") ||
+    normalized.includes("twimg") ||
+    normalized.includes("profile") ||
     normalized.includes("placeholder") ||
     normalized.includes("default-image") ||
     normalized.includes("google-play") ||
@@ -384,27 +406,19 @@ function extractBestImageFromHtml(html, articleUrl) {
   const linkImage = extractLinkHrefFromHtml(html, "image_src");
   const jsonLdImage = extractJsonLdImageUrl(html, finalUrl);
   const htmlImage = extractImageFromHtml(html, finalUrl);
-  const imageUrl =
-    absolutizeUrl(ogImage, finalUrl) ||
-    absolutizeUrl(twitterImage, finalUrl) ||
-    absolutizeUrl(linkImage, finalUrl) ||
-    jsonLdImage ||
-    htmlImage;
+  const imageCandidates = [
+    { url: absolutizeUrl(ogImage, finalUrl), source: "og:image" },
+    { url: absolutizeUrl(twitterImage, finalUrl), source: "twitter:image" },
+    { url: absolutizeUrl(linkImage, finalUrl), source: "link[rel=image_src]" },
+    { url: jsonLdImage, source: "json-ld" },
+    { url: htmlImage, source: "html-image" },
+  ];
+  const bestImage = imageCandidates.find((candidate) => candidate.url && !isLikelyDecorativeImageUrl(candidate.url));
 
   return {
     title: extractTitleFromHtml(html) || null,
-    imageUrl: imageUrl && !isLikelyDecorativeImageUrl(imageUrl) ? imageUrl : null,
-    imageSource: ogImage
-      ? "og:image"
-      : twitterImage
-        ? "twitter:image"
-        : linkImage
-          ? "link[rel=image_src]"
-          : jsonLdImage
-            ? "json-ld"
-            : htmlImage
-              ? "html-image"
-              : null,
+    imageUrl: bestImage?.url || null,
+    imageSource: bestImage?.source || null,
   };
 }
 
