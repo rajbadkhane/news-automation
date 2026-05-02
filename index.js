@@ -4725,6 +4725,19 @@ async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
 
   for (const item of googleResult.items) {
     try {
+      if (!item.link) {
+        results.push({
+          status: "Skipped",
+          category,
+          feed_source: "google-rss",
+          feed_url: googleResult.feed_url,
+          source: item.google_link || null,
+          title: item.title,
+          message: item.skipped_reason || "Google RSS item did not resolve to the original publisher URL.",
+        });
+        continue;
+      }
+
       const existingRecord = await findFullNewsRecordByUrl(item.link);
       if (existingRecord && !options.includeExisting) {
         results.push({

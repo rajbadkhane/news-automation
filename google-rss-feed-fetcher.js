@@ -175,6 +175,15 @@ function extractMetaContentFromHtml(html, metaKey) {
   return null;
 }
 
+function extractTitleFromHtml(html) {
+  return sanitizeText(
+    extractMetaContentFromHtml(html, "og:title") ||
+      extractMetaContentFromHtml(html, "twitter:title") ||
+      String(html || "").match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] ||
+      ""
+  );
+}
+
 function extractLinkHrefFromHtml(html, relValue) {
   const linkTags = String(html || "").match(/<link\b[^>]*>/gi) || [];
   const normalizedRelValue = String(relValue || "").toLowerCase();
@@ -188,6 +197,24 @@ function extractLinkHrefFromHtml(html, relValue) {
   }
 
   return null;
+}
+
+function isGoogleNewsUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "news.google.com";
+  } catch {
+    return false;
+  }
+}
+
+function isGoogleHostedImageUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "lh3.googleusercontent.com" || hostname.endsWith(".googleusercontent.com");
+  } catch {
+    return false;
+  }
 }
 
 function pickBestSrcsetCandidate(srcset, articleUrl) {
@@ -365,6 +392,7 @@ function extractBestImageFromHtml(html, articleUrl) {
     htmlImage;
 
   return {
+    title: extractTitleFromHtml(html) || null,
     imageUrl: imageUrl && !isLikelyDecorativeImageUrl(imageUrl) ? imageUrl : null,
     imageSource: ogImage
       ? "og:image"
@@ -543,7 +571,7 @@ async function extractBestImageFromArticle(articleUrl, options = {}) {
       }
 
       const imageResult = extractBestImageFromHtml(html, response.url || articleUrl);
-      if (imageResult.imageUrl) {
+      if (imageResult.imageUrl || imageResult.title) {
         return imageResult;
       }
     } catch {
@@ -551,7 +579,7 @@ async function extractBestImageFromArticle(articleUrl, options = {}) {
     }
   }
 
-  return { imageUrl: null, imageSource: null };
+  return { title: null, imageUrl: null, imageSource: null };
 }
 
 function parseGoogleRssItems(xml, feedUrl, limit = DEFAULT_LIMIT) {
@@ -615,14 +643,27 @@ async function fetchGoogleRssFeed(options = {}) {
 
   for (const item of items) {
     const articleUrl = await resolveGoogleNewsLink(item.google_link, options);
+    if (!articleUrl || isGoogleNewsUrl(articleUrl)) {
+      resolvedItems.push({
+        ...item,
+        link: null,
+        image_link: null,
+        image_source: null,
+        skipped_reason: "Google RSS link could not be resolved to the original publisher URL.",
+      });
+      continue;
+    }
+
     const articleImage = await extractBestImageFromArticle(articleUrl, options);
-    const imageUrl = articleImage.imageUrl || item.image_link || null;
+    const rssImageUrl = item.image_link && !isGoogleHostedImageUrl(item.image_link) ? item.image_link : null;
+    const imageUrl = articleImage.imageUrl || rssImageUrl || null;
 
     resolvedItems.push({
       ...item,
+      title: articleImage.title || item.title,
       link: articleUrl,
       image_link: imageUrl,
-      image_source: articleImage.imageUrl ? articleImage.imageSource : item.image_source,
+      image_source: articleImage.imageUrl ? articleImage.imageSource : rssImageUrl ? item.image_source : null,
     });
   }
 
@@ -639,6 +680,7 @@ module.exports = {
   decodeGoogleNewsUrl,
   extractBestImageFromArticle,
   fetchGoogleRssFeed,
+  isGoogleNewsUrl,
   parseGoogleRssItems,
   resolveGoogleNewsLink,
 };
