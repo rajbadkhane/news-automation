@@ -74,7 +74,7 @@ function isMeaningfulImageUrl(value = "") {
     return false;
   }
 
-  return !/logo|icon|sprite|avatar|banner|advert|placeholder|default|facebook|twitter|instagram|youtube|whatsapp|vaccination|mahaabhiyan|abhiyan|\.svg(?:\?|$)/i.test(normalized);
+  return !/tn-250921125347\.jpg|logo|icon|sprite|avatar|banner|advert|placeholder|default|facebook|twitter|instagram|youtube|whatsapp|vaccination|mahaabhiyan|abhiyan|\.svg(?:\?|$)/i.test(normalized);
 }
 
 function resolveImageUrl(value, baseUrl) {

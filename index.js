@@ -4172,6 +4172,7 @@ function isLikelyDecorativeImageUrl(value) {
     || normalized.includes("store-badge")
     || normalized.includes("badge-google")
     || normalized.includes("badge-app")
+    || normalized.includes("tn-250921125347.jpg")
     || normalized.includes("social")
     || normalized.includes("share")
     || normalized.includes("follow-us")

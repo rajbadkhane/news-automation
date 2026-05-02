@@ -320,6 +320,10 @@ function scoreImageCandidate(candidate) {
   score += Math.min(candidate.height || 0, 1400);
 
   const normalized = `${candidate.src} ${candidate.alt || ""} ${candidate.className || ""}`.toLowerCase();
+  if (/tn-250921125347\.jpg/.test(normalized)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
   if (/newsimages|mpinfonew\/newsimages/.test(normalized)) {
     score += 5000;
   }
