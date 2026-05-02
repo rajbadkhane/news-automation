@@ -134,6 +134,10 @@ OUTPUT SIZE OVERRIDE:
 `;
 
 const { isDuplicateColumnError, isDuplicateKeyError } = require("./db");
+const AI_REWRITE_CANDIDATE_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "10", 10), 25)
+);
 
 async function initializeAiRewriteStorage(dbPool) {
   if (dbPool.dialect === "postgres") {
@@ -172,6 +176,16 @@ async function initializeAiRewriteStorage(dbPool) {
         published_by VARCHAR(150) NULL,
         delivery_slug VARCHAR(191) NULL UNIQUE,
         raw_response TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS ai_rewrite_skips (
+        news_id BIGINT PRIMARY KEY,
+        reason TEXT,
+        attempts INT NOT NULL DEFAULT 1,
+        last_error TEXT,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
@@ -216,6 +230,16 @@ async function initializeAiRewriteStorage(dbPool) {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY unique_news_id (news_id),
         UNIQUE KEY unique_delivery_slug (delivery_slug)
+      )
+    `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS ai_rewrite_skips (
+        news_id INT PRIMARY KEY,
+        reason TEXT,
+        attempts INT NOT NULL DEFAULT 1,
+        last_error TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
   }
@@ -649,7 +673,8 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
       SELECT fn.id, fn.category, fn.feed_source, fn.feed_url, fn.search_query, fn.title, fn.source_url, fn.image_link, fn.image_source, fn.fetched_at
       FROM fetched_news fn
       LEFT JOIN ai_news_rewrites air ON air.news_id = fn.id
-      WHERE fn.category = ? AND air.news_id IS NULL
+      LEFT JOIN ai_rewrite_skips ars ON ars.news_id = fn.id
+      WHERE fn.category = ? AND air.news_id IS NULL AND ars.news_id IS NULL
       ORDER BY fn.id DESC
       LIMIT ?
     `,
@@ -659,9 +684,46 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
   return rows;
 }
 
+async function recordAiRewriteSkip(dbPool, articleRecord, error, reason = "unreadable_article") {
+  const message = truncateText(error?.message || String(error || reason), 1000);
+
+  if (dbPool.dialect === "postgres") {
+    await dbPool.execute(
+      `
+        INSERT INTO ai_rewrite_skips (news_id, reason, attempts, last_error)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT (news_id) DO UPDATE SET
+          attempts = ai_rewrite_skips.attempts + 1,
+          reason = EXCLUDED.reason,
+          last_error = EXCLUDED.last_error,
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      [articleRecord.id, reason, message]
+    );
+    return;
+  }
+
+  await dbPool.execute(
+    `
+      INSERT INTO ai_rewrite_skips (news_id, reason, attempts, last_error)
+      VALUES (?, ?, 1, ?)
+      ON DUPLICATE KEY UPDATE
+        attempts = attempts + 1,
+        reason = VALUES(reason),
+        last_error = VALUES(last_error),
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    [articleRecord.id, reason, message]
+  );
+}
+
 async function extractArticleTextFromPage(page, articleUrl) {
   await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+  if (typeof page.waitForLoadState === "function") {
+    await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+  } else if (typeof page.waitForSelector === "function") {
+    await page.waitForSelector("body", { timeout: 5000 }).catch(() => {});
+  }
 
   return page.evaluate(() => {
     if (!document.body) {
@@ -1368,7 +1430,7 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
     const skippedCandidates = [];
 
     try {
-      const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, 5);
+      const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, AI_REWRITE_CANDIDATE_LIMIT);
 
       if (!candidates.length) {
         results.push({
@@ -1408,6 +1470,7 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
             title: articleRecord.title,
             message: error.message,
           });
+          await recordAiRewriteSkip(dbPool, articleRecord, error);
         }
       }
 

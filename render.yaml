@@ -32,6 +32,10 @@ services:
         value: true
       - key: AI_SCHEDULER_ENABLED
         value: true
+      - key: SCHEDULER_ARTICLES_PER_CATEGORY_RUN
+        value: 2
+      - key: AI_REWRITE_CANDIDATE_LIMIT
+        value: 10
       - key: MPINFO_DISTRICT_SCHEDULER_ENABLED
         value: true
       - key: MPINFO_DISTRICT_BROWSER_ENABLED

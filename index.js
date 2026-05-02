@@ -461,6 +461,10 @@ const SCHEDULER_CATEGORY_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.SCHEDULER_CATEGORY_TIMEOUT_MS, 10) || 4 * 60 * 1000
 );
+const SCHEDULER_ARTICLES_PER_CATEGORY_RUN = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.SCHEDULER_ARTICLES_PER_CATEGORY_RUN, 10) || 2, 5)
+);
 const STALE_SCHEDULER_RUN_MS = Math.max(
   5 * 60_000,
   Number.parseInt(process.env.STALE_SCHEDULER_RUN_MS, 10) || 5 * 60 * 1000
@@ -5105,6 +5109,7 @@ async function runScheduledCategoryFetch(category, options = {}) {
 }
 
 async function runScheduledCategoryFetchUnlocked(category, options = {}) {
+  const perRunLimit = SCHEDULER_ARTICLES_PER_CATEGORY_RUN;
   const rssFeedCount = getCategoryFeedPool(category).length;
   const googleSourceCount = SCHEDULER_GOOGLE_RSS_ENABLED ? 1 : 0;
   const feedCount = Math.max(googleSourceCount + rssFeedCount, 1);
@@ -5119,8 +5124,8 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
     triggerSource,
     category,
     windowKey,
-    requestedLimit: 1,
-    message: `Fetching one story for ${category}.`,
+    requestedLimit: perRunLimit,
+    message: `Fetching up to ${perRunLimit} story/stories for ${category}.`,
   });
   let browser = null;
 
@@ -5129,14 +5134,14 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
 
     if (shouldFetchGoogle) {
       const googleResult = await withTimeout(
-        saveGoogleRssNewsForCategory(category, 1),
+        saveGoogleRssNewsForCategory(category, perRunLimit),
         SCHEDULER_CATEGORY_TIMEOUT_MS,
         `Scheduled Google RSS fetch for ${category}`
       );
 
       if (rssFeedCount > 0) {
         const rssResult = await withTimeout(
-          fetchArticlesForCategory(null, category, 1, {
+          fetchArticlesForCategory(null, category, perRunLimit, {
             startIndex: 0,
           }),
           SCHEDULER_CATEGORY_TIMEOUT_MS,
@@ -5148,7 +5153,7 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
       }
     } else {
       result = await withTimeout(
-        fetchArticlesForCategory(null, category, 1, {
+        fetchArticlesForCategory(null, category, perRunLimit, {
           startIndex: rssStartIndex,
         }),
         SCHEDULER_CATEGORY_TIMEOUT_MS,
