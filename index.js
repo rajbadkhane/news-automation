@@ -76,7 +76,7 @@ const SCHEDULER_GOOGLE_RSS_ENABLED = !["false", "0", "no"].includes(
   String(process.env.SCHEDULER_GOOGLE_RSS_ENABLED || "true").toLowerCase()
 );
 const MPINFO_DISTRICT_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
-  String(process.env.MPINFO_DISTRICT_SCHEDULER_ENABLED || "true").toLowerCase()
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_ENABLED || "false").toLowerCase()
 );
 const LEGACY_PUBLIC_ROUTES_ENABLED = ["true", "1", "yes"].includes(
   String(process.env.LEGACY_PUBLIC_ROUTES_ENABLED || "").toLowerCase()
@@ -484,7 +484,7 @@ const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
 );
 const MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN = ["true", "1", "yes"].includes(
-  String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "true").toLowerCase()
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "").toLowerCase()
 );
 const WATCHDOG_TICK_MS = 60 * 1000;
 const apiRateLimitStore = new Map();
