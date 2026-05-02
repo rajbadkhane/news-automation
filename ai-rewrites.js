@@ -661,9 +661,18 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
 
 async function extractArticleTextFromPage(page, articleUrl) {
   await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await page.waitForSelector("body", { timeout: 10000 });
+  await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
 
   return page.evaluate(() => {
+    if (!document.body) {
+      return {
+        title: document.title || "",
+        metaDescription: "",
+        paragraphs: [],
+        combinedText: document.title || "",
+      };
+    }
+
     const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
     const removePatternMatches = (value, patterns) => {
       let output = String(value || "");
@@ -825,6 +834,18 @@ function isTransientBrowserError(error) {
     "Target closed",
     "Session closed",
   ].some((fragment) => message.includes(fragment));
+}
+
+function isSkippableRewriteInputError(error) {
+  const message = String(error?.message || "");
+  return (
+    message.includes("Could not extract enough article text") ||
+    message.includes("Waiting for selector") ||
+    message.includes("Navigation timeout") ||
+    message.includes("ERR_ABORTED") ||
+    message.includes("ERR_CONNECTION_RESET") ||
+    message.includes("ERR_TIMED_OUT")
+  );
 }
 
 async function withTransientRetry(task, { retries = 2, delayMs = 1200 } = {}) {
@@ -1344,11 +1365,12 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
   const results = [];
 
   for (const category of categories) {
-    try {
-      const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, 1);
-      const articleRecord = candidates[0];
+    const skippedCandidates = [];
 
-      if (!articleRecord) {
+    try {
+      const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, 5);
+
+      if (!candidates.length) {
         results.push({
           status: "Skipped",
           category,
@@ -1357,24 +1379,53 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
         continue;
       }
 
-      const savedRewrite = await createOrUpdateRewriteForRecord(
-        dbPool,
-        articleRecord,
-        createBrowserPage,
-        afterRewriteSaved
-      );
-      results.push({
-        status: "Success",
-        category,
-        news_id: articleRecord.id,
-        title: articleRecord.title,
-        rewrite: formatAiRewriteRecord(savedRewrite),
-      });
+      let saved = false;
+      for (const articleRecord of candidates) {
+        try {
+          const savedRewrite = await createOrUpdateRewriteForRecord(
+            dbPool,
+            articleRecord,
+            createBrowserPage,
+            afterRewriteSaved
+          );
+          results.push({
+            status: "Success",
+            category,
+            news_id: articleRecord.id,
+            title: articleRecord.title,
+            skipped_candidates: skippedCandidates,
+            rewrite: formatAiRewriteRecord(savedRewrite),
+          });
+          saved = true;
+          break;
+        } catch (error) {
+          if (!isSkippableRewriteInputError(error)) {
+            throw error;
+          }
+
+          skippedCandidates.push({
+            news_id: articleRecord.id,
+            title: articleRecord.title,
+            message: error.message,
+          });
+        }
+      }
+
+      if (!saved) {
+        results.push({
+          status: "Skipped",
+          category,
+          skipped_count: skippedCandidates.length,
+          message: "No pending article in this category had enough readable text for AI rewriting.",
+          skipped_candidates: skippedCandidates,
+        });
+      }
     } catch (error) {
       results.push({
         status: "Error",
         category,
         message: error.message,
+        skipped_candidates: skippedCandidates,
       });
     }
   }
