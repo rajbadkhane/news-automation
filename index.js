@@ -406,15 +406,29 @@ function getExpensiveSourceThrottlePayload() {
 }
 
 function getFeedPriority(feedConfig) {
-  if (feedConfig?.type === "state-gov" || GOVERNMENT_NEWS_SOURCES.has(feedConfig?.source)) {
+  const source = String(feedConfig?.source || "").toLowerCase();
+
+  if (source === "mpinfo") {
     return 0;
   }
 
-  if (isExpensiveNewsSource(feedConfig)) {
+  if (source === "dd") {
+    return 1;
+  }
+
+  if (source === "pib") {
     return 2;
   }
 
-  return 1;
+  if (feedConfig?.type === "state-gov") {
+    return 3;
+  }
+
+  if (isExpensiveNewsSource(feedConfig)) {
+    return 5;
+  }
+
+  return 4;
 }
 
 function sortFeedsByPriority(feedConfigs) {
@@ -463,7 +477,7 @@ const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
 );
 const MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN = ["true", "1", "yes"].includes(
-  String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "").toLowerCase()
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "true").toLowerCase()
 );
 const WATCHDOG_TICK_MS = 60 * 1000;
 const apiRateLimitStore = new Map();
@@ -1361,6 +1375,7 @@ function buildApiDocs() {
       { method: "POST", path: `${API_BASE_PATH}/sync/rss/all`, description: "Fetch RSS stories for all categories." },
       { method: "POST", path: `${API_BASE_PATH}/sync/sources-ai`, description: "Fetch Google RSS plus configured news sources and optionally create 100/300/600-word AI rewrites." },
       { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo`, description: "Fetch MP Info stories." },
+      { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo-districts`, description: "Fetch MP Info district stories." },
       { method: "GET", path: `${API_BASE_PATH}/cron/status`, description: "Main scheduler status." },
       { method: "POST", path: `${API_BASE_PATH}/cron/run-now`, description: "Trigger main scheduler manually." },
       { method: "GET", path: `${API_BASE_PATH}/ai/news`, description: "List AI rewrite records." },
@@ -3768,6 +3783,12 @@ function getCategoryFeedPool(category) {
   return sortFeedsByPriority(feedPool);
 }
 
+function getSchedulerSourceCount(category) {
+  const rssSourceCount = getCategoryFeedPool(category).length;
+  const googleSourceCount = SCHEDULER_GOOGLE_RSS_ENABLED ? 1 : 0;
+  return Math.max(googleSourceCount + rssSourceCount, 1);
+}
+
 function isAllowedImageHost(value) {
   if (!value) {
     return false;
@@ -4523,6 +4544,18 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
   };
 }
 
+function mergeCategoryFetchResults(category, results) {
+  const normalizedResults = results.filter(Boolean);
+  return {
+    category,
+    fetched_count: normalizedResults.reduce((sum, item) => sum + (item.fetched_count || 0), 0),
+    saved_count: normalizedResults.reduce((sum, item) => sum + (item.saved_count || 0), 0),
+    failed_count: normalizedResults.reduce((sum, item) => sum + (item.failed_count || 0), 0),
+    skipped_count: normalizedResults.reduce((sum, item) => sum + (item.skipped_count || 0), 0),
+    results: normalizedResults.flatMap((item) => item.results || []),
+  };
+}
+
 async function fetchAllCategories(page, limit) {
   const categories = Object.keys(RSS_FEEDS);
   const allResults = [];
@@ -4929,7 +4962,7 @@ async function runScheduledCategoryFetch(category, options = {}) {
 }
 
 async function runScheduledCategoryFetchUnlocked(category, options = {}) {
-  const rssFeedCount = RSS_FEEDS[category]?.length || 0;
+  const rssFeedCount = getCategoryFeedPool(category).length;
   const googleSourceCount = SCHEDULER_GOOGLE_RSS_ENABLED ? 1 : 0;
   const feedCount = Math.max(googleSourceCount + rssFeedCount, 1);
   const currentCursor = schedulerState.categories[category]?.sourceCursor || 0;
@@ -4952,11 +4985,26 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
     let result;
 
     if (shouldFetchGoogle) {
-      result = await withTimeout(
+      const googleResult = await withTimeout(
         saveGoogleRssNewsForCategory(category, 1),
         SCHEDULER_CATEGORY_TIMEOUT_MS,
         `Scheduled Google RSS fetch for ${category}`
       );
+
+      if (rssFeedCount > 0) {
+        const browserPage = await createBrowserPage();
+        browser = browserPage.browser;
+        const rssResult = await withTimeout(
+          fetchArticlesForCategory(browserPage.page, category, 1, {
+            startIndex: 0,
+          }),
+          SCHEDULER_CATEGORY_TIMEOUT_MS,
+          `Scheduled priority RSS fetch for ${category}`
+        );
+        result = mergeCategoryFetchResults(category, [googleResult, rssResult]);
+      } else {
+        result = googleResult;
+      }
     } else {
       const browserPage = await createBrowserPage();
       browser = browserPage.browser;
@@ -4977,7 +5025,7 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
       skippedCount: result.skipped_count,
       failedCount: result.failed_count,
       lastHeadline: result.results.find((item) => item.status === "Success")?.title || null,
-      sourceCursor: (currentCursor + 1) % feedCount,
+      sourceCursor: (shouldFetchGoogle && rssFeedCount > 0 ? 2 : currentCursor + 1) % feedCount,
     };
     schedulerState.lastRunAt = new Date().toISOString();
     await finalizeSchedulerRunLog(logId, {
@@ -5304,7 +5352,7 @@ async function runSchedulerTestCycle(limit = 1, options = {}) {
         `Manual scheduler fetch for ${slot.category}`
       );
 
-      const feedCount = RSS_FEEDS[slot.category]?.length || 1;
+      const feedCount = getSchedulerSourceCount(slot.category);
       schedulerState.categories[slot.category] = {
         ...schedulerState.categories[slot.category],
         lastRunAt: new Date().toISOString(),
@@ -5400,8 +5448,6 @@ async function schedulerTick() {
             triggerSource: "schedule",
             windowKey,
           });
-          const feedCount = RSS_FEEDS[slot.category]?.length || 1;
-
           schedulerState.categories[slot.category] = {
             ...schedulerState.categories[slot.category],
             lastRunAt: new Date().toISOString(),
@@ -5412,7 +5458,6 @@ async function schedulerTick() {
             failedCount: result.failed_count,
             lastHeadline: result.results.find((item) => item.status === "Success")?.title || null,
             lastError: null,
-            sourceCursor: ((categoryState.sourceCursor || 0) + 1) % feedCount,
           };
         } catch (error) {
           schedulerState.categories[slot.category] = {
@@ -6722,6 +6767,20 @@ apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
     return sendApiError(res, "MPINFO_SYNC_FAILED", error.message, 500, { category, limit });
   } finally {
     await browser.close();
+  }
+});
+
+apiV1.post("/sync/mpinfo-districts", requireApiScope("sync:write"), async (req, res) => {
+  try {
+    const result = await runMpInfoDistrictScheduledCycle("manual");
+    return sendApiSuccess(res, result, {
+      saved_count: result.saved_count || 0,
+      existing_count: result.existing_count || 0,
+      failed_count: result.failed_district_count || 0,
+      rewrite_success_count: result.rewrite_success_count || 0,
+    });
+  } catch (error) {
+    return sendApiError(res, "MPINFO_DISTRICT_SYNC_FAILED", error.message, 500);
   }
 });
 
