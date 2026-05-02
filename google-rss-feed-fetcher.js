@@ -638,6 +638,10 @@ function parseGoogleRssItems(xml, feedUrl, limit = DEFAULT_LIMIT) {
 async function fetchGoogleRssFeed(options = {}) {
   const query = options.query || "India news";
   const limit = Math.max(1, Number.parseInt(options.limit || DEFAULT_LIMIT, 10));
+  const candidateLimit = Math.max(
+    limit,
+    Math.min(Number.parseInt(options.candidateLimit || limit * 8, 10) || limit * 8, 75)
+  );
   const feedUrl = options.feedUrl || buildGoogleNewsRssUrl(query, options.locale);
   const { response, text: xml } = await withRetry(
     () =>
@@ -652,8 +656,9 @@ async function fetchGoogleRssFeed(options = {}) {
     throw new Error(`Google RSS request failed with status ${response?.status || "unknown"}`);
   }
 
-  const items = parseGoogleRssItems(xml, feedUrl, limit);
+  const items = parseGoogleRssItems(xml, feedUrl, candidateLimit);
   const resolvedItems = [];
+  let usableCount = 0;
 
   for (const item of items) {
     const articleUrl = await resolveGoogleNewsLink(item.google_link, options);
@@ -679,11 +684,18 @@ async function fetchGoogleRssFeed(options = {}) {
       image_link: imageUrl,
       image_source: articleImage.imageUrl ? articleImage.imageSource : rssImageUrl ? item.image_source : null,
     });
+    usableCount += 1;
+
+    if (usableCount >= limit) {
+      break;
+    }
   }
 
   return {
     query,
     feed_url: feedUrl,
+    candidate_count: items.length,
+    usable_count: usableCount,
     fetched_count: resolvedItems.length,
     items: resolvedItems,
   };

@@ -4773,6 +4773,7 @@ async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
   const googleResult = await fetchGoogleRssFeed({
     query,
     limit,
+    candidateLimit: Math.max(limit * 10, 25),
     timeoutMs: options.timeoutMs,
   });
   const results = [];
