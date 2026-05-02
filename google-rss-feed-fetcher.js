@@ -217,15 +217,19 @@ function pickBestSrcsetCandidate(srcset, articleUrl) {
 
 function isLikelyDecorativeImageUrl(value) {
   const normalized = String(value || "").toLowerCase();
+  const isLikelyContentUpload =
+    normalized.includes("/wp-content/uploads/") ||
+    normalized.includes("/upload/") ||
+    normalized.includes("/uploads/") ||
+    normalized.includes("/images/") ||
+    normalized.includes("/image/");
+
   return (
     !normalized ||
-    normalized.includes("logo") ||
-    normalized.includes("icon") ||
     normalized.includes("sprite") ||
     normalized.includes("avatar") ||
-    normalized.includes("banner") ||
-    normalized.includes("ads") ||
-    normalized.includes("advert") ||
+    /(?:^|[/?&_.-])ads?(?:[/?&_.=-]|$)/.test(normalized) ||
+    /(?:^|[/?&_.-])advert(?:ising|isement)?(?:[/?&_.=-]|$)/.test(normalized) ||
     normalized.includes("social") ||
     normalized.includes("share") ||
     normalized.includes("follow-us") ||
@@ -234,7 +238,9 @@ function isLikelyDecorativeImageUrl(value) {
     normalized.includes("google-play") ||
     normalized.includes("play-store") ||
     normalized.includes("app-store") ||
-    normalized.endsWith(".svg")
+    normalized.endsWith(".svg") ||
+    (!isLikelyContentUpload &&
+      (normalized.includes("logo") || normalized.includes("icon") || normalized.includes("banner")))
   );
 }
 

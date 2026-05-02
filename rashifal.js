@@ -7,6 +7,36 @@ const RASHIFAL_MIN_SYNC_INTERVAL_MS = Math.max(
 
 let lastRashifalSyncAt = 0;
 
+const ZODIAC_HINDI = {
+  aries: "मेष",
+  taurus: "वृषभ",
+  gemini: "मिथुन",
+  cancer: "कर्क",
+  leo: "सिंह",
+  virgo: "कन्या",
+  libra: "तुला",
+  scorpio: "वृश्चिक",
+  sagittarius: "धनु",
+  capricorn: "मकर",
+  aquarius: "कुंभ",
+  pisces: "मीन",
+};
+
+const MONTH_HINDI = {
+  january: "जनवरी",
+  february: "फरवरी",
+  march: "मार्च",
+  april: "अप्रैल",
+  may: "मई",
+  june: "जून",
+  july: "जुलाई",
+  august: "अगस्त",
+  september: "सितंबर",
+  october: "अक्टूबर",
+  november: "नवंबर",
+  december: "दिसंबर",
+};
+
 function decodeXml(value) {
   return String(value || "")
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -19,6 +49,81 @@ function decodeXml(value) {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stripRashifalBrand(value) {
+  return String(value || "")
+    .replace(/\b(?:astro\s*sage|astrosage|ashtrosage)(?:\.com)?\b/gi, "")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/^[\s,;:.-]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractZodiacName(value) {
+  const normalized = String(value || "").toLowerCase();
+  const sign = Object.keys(ZODIAC_HINDI).find((name) => new RegExp(`\\b${name}\\b`, "i").test(normalized));
+  return sign ? ZODIAC_HINDI[sign] : "";
+}
+
+function translateTitleDate(value) {
+  return String(value || "").replace(
+    /\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})\b/gi,
+    (_, day, month, year) => `${day} ${MONTH_HINDI[month.toLowerCase()] || month} ${year}`
+  );
+}
+
+function buildHindiRashifalTitle(item) {
+  const signName = extractZodiacName(`${item.title} ${item.description} ${item.source_url}`);
+  const datedTitle = translateTitleDate(stripRashifalBrand(item.title));
+  const dateMatch = datedTitle.match(/\b\d{1,2}\s+[^\s]+\s+\d{4}\b/u);
+  const dateText = dateMatch ? ` ${dateMatch[0]}` : "";
+
+  if (signName) {
+    return `${signName} राशिफल${dateText}`;
+  }
+
+  return "आज का राशिफल";
+}
+
+function buildHindiRashifalDescription(item, title) {
+  const sourceText = stripRashifalBrand(`${item.title}. ${item.description}`).toLowerCase();
+  const lines = [];
+
+  if (/health|fitness|wellness|disease|illness/.test(sourceText)) {
+    lines.push("स्वास्थ्य के मामले में दिन सामान्य से अच्छा रहेगा");
+  }
+  if (/money|account|income|expense|financial|investment|profit|loss|bank/.test(sourceText)) {
+    lines.push("धन से जुड़े काम सोच-समझकर करें और अनावश्यक खर्च से बचें");
+  }
+  if (/family|home|relative|children|spouse|love|relationship|friend/.test(sourceText)) {
+    lines.push("परिवार और रिश्तों में बातचीत शांत रखें, सहयोग मिलेगा");
+  }
+  if (/work|job|career|business|office|profession|project/.test(sourceText)) {
+    lines.push("कामकाज में धैर्य और योजना से आगे बढ़ना लाभ देगा");
+  }
+  if (/travel|journey|vehicle|drive/.test(sourceText)) {
+    lines.push("यात्रा या वाहन से जुड़े मामलों में सावधानी रखें");
+  }
+
+  const guidance = lines.length
+    ? lines
+    : [
+        "आज का दिन संतुलित रहेगा",
+        "स्वास्थ्य, परिवार और कामकाज में धैर्य के साथ निर्णय लें",
+        "धन से जुड़े मामलों में जल्दबाजी से बचना बेहतर रहेगा",
+      ];
+
+  return `${title}: ${guidance.join("। ")}। सकारात्मक सोच बनाए रखें और जरूरी काम प्राथमिकता से पूरे करें।`;
+}
+
+function normalizeRashifalItem(item) {
+  const title = buildHindiRashifalTitle(item);
+  return {
+    ...item,
+    title,
+    description: buildHindiRashifalDescription(item, title),
+  };
 }
 
 function extractTag(itemXml, tagName) {
@@ -39,6 +144,7 @@ function extractRssItems(xml, limit) {
       };
     })
     .filter((item) => item.title && item.source_url)
+    .map(normalizeRashifalItem)
     .slice(0, limit);
 }
 
@@ -96,7 +202,7 @@ async function initializeRashifalStorage(dbPool) {
         source_url TEXT NOT NULL UNIQUE,
         title TEXT,
         description TEXT,
-        source_name VARCHAR(100) NOT NULL DEFAULT 'astrosage-rashifal',
+        source_name VARCHAR(100) NOT NULL DEFAULT 'hindi-rashifal',
         published_at TEXT,
         fetched_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -110,7 +216,7 @@ async function initializeRashifalStorage(dbPool) {
         source_url TEXT NOT NULL,
         title TEXT,
         description MEDIUMTEXT,
-        source_name VARCHAR(100) NOT NULL DEFAULT 'astrosage-rashifal',
+        source_name VARCHAR(100) NOT NULL DEFAULT 'hindi-rashifal',
         published_at TEXT,
         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -171,16 +277,27 @@ async function syncRashifal(dbPool, { limit = 50, force = false } = {}) {
       const [result] = await dbPool.execute(
         dbPool.dialect === "postgres"
           ? `
-              INSERT INTO rashifal_articles (source_url, title, description, published_at)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT (source_url) DO NOTHING
+              INSERT INTO rashifal_articles (source_url, title, description, source_name, published_at)
+              VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT (source_url) DO UPDATE SET
+                title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                source_name = EXCLUDED.source_name,
+                published_at = EXCLUDED.published_at,
+                updated_at = CURRENT_TIMESTAMP
               RETURNING id
             `
           : `
-              INSERT IGNORE INTO rashifal_articles (source_url, title, description, published_at)
-              VALUES (?, ?, ?, ?)
+              INSERT INTO rashifal_articles (source_url, title, description, source_name, published_at)
+              VALUES (?, ?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                description = VALUES(description),
+                source_name = VALUES(source_name),
+                published_at = VALUES(published_at),
+                updated_at = CURRENT_TIMESTAMP
             `,
-        [item.source_url, item.title, item.description, item.published_at]
+        [item.source_url, item.title, item.description, "hindi-rashifal", item.published_at]
       );
 
       const inserted = Number(result.affectedRows || result.rowCount || 0) > 0 || Boolean(result.rows?.[0]?.id);
