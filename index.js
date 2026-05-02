@@ -78,6 +78,9 @@ const SCHEDULER_GOOGLE_RSS_ENABLED = !["false", "0", "no"].includes(
 const MPINFO_DISTRICT_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_ENABLED || "false").toLowerCase()
 );
+const MPINFO_DISTRICT_BROWSER_ENABLED = ["true", "1", "yes"].includes(
+  String(process.env.MPINFO_DISTRICT_BROWSER_ENABLED || "").toLowerCase()
+);
 const LEGACY_PUBLIC_ROUTES_ENABLED = ["true", "1", "yes"].includes(
   String(process.env.LEGACY_PUBLIC_ROUTES_ENABLED || "").toLowerCase()
 );
@@ -549,7 +552,8 @@ const aiSchedulerState = {
   categories: {},
 };
 const mpInfoDistrictSchedulerState = {
-  enabled: MPINFO_DISTRICT_SCHEDULER_ENABLED,
+  enabled: MPINFO_DISTRICT_SCHEDULER_ENABLED && MPINFO_DISTRICT_BROWSER_ENABLED,
+  browserEnabled: MPINFO_DISTRICT_BROWSER_ENABLED,
   intervalMs: MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS,
   limit: MPINFO_DISTRICT_SCHEDULER_LIMIT,
   districtScanLimit: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT,
@@ -3115,6 +3119,7 @@ function updateMpInfoDistrictSchedulerHeartbeat() {
 function getMpInfoDistrictSchedulerHealthSnapshot() {
   return {
     enabled: mpInfoDistrictSchedulerState.enabled,
+    browser_enabled: mpInfoDistrictSchedulerState.browserEnabled,
     healthy: !mpInfoDistrictSchedulerState.enabled
       || !isTimestampStale(
         mpInfoDistrictSchedulerState.lastTickAt,
