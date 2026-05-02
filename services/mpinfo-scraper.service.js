@@ -20,8 +20,8 @@ const DEFAULT_USER_AGENT =
   process.env.MPINFO_USER_AGENT ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36";
 const DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.MPINFO_TIMEOUT_MS || "30000", 10);
-const DEFAULT_DISTRICT_CONCURRENCY = Math.max(1, Number.parseInt(process.env.MPINFO_DISTRICT_CONCURRENCY || "2", 10));
-const DEFAULT_ARTICLE_CONCURRENCY = Math.max(1, Number.parseInt(process.env.MPINFO_ARTICLE_CONCURRENCY || "3", 10));
+const DEFAULT_DISTRICT_CONCURRENCY = Math.max(1, Number.parseInt(process.env.MPINFO_DISTRICT_CONCURRENCY || "1", 10));
+const DEFAULT_ARTICLE_CONCURRENCY = Math.max(1, Number.parseInt(process.env.MPINFO_ARTICLE_CONCURRENCY || "1", 10));
 const DEBUG_SNAPSHOT_DIR = path.resolve(__dirname, "..", "logs", "mpinfo-snapshots");
 
 const articleLinkPatterns = [
@@ -628,7 +628,10 @@ async function crawlAllDistricts(options = {}) {
 async function crawlLatest(options = {}) {
   const limit = Math.max(1, Number.parseInt(options.limit || 20, 10));
   const perDistrictLimit = Math.max(1, Math.ceil(limit / Math.max(1, Number.parseInt(options.districtBatch || "8", 10))));
-  const districts = (options.districts || getMpInfoDistricts()).slice(0, options.districtScanLimit || 12);
+  const allDistricts = options.districts || getMpInfoDistricts();
+  const scanLimit = Math.max(1, Math.min(Number.parseInt(options.districtScanLimit || "1", 10), allDistricts.length));
+  const startIndex = Math.max(0, Number.parseInt(options.districtStartIndex || "0", 10)) % Math.max(1, allDistricts.length);
+  const districts = Array.from({ length: scanLimit }, (_, offset) => allDistricts[(startIndex + offset) % allDistricts.length]);
   const result = await crawlAllDistricts({
     ...options,
     limit: perDistrictLimit,
@@ -640,6 +643,8 @@ async function crawlLatest(options = {}) {
     .sort((left, right) => new Date(right.publishDate || right.fetchedAt) - new Date(left.publishDate || left.fetchedAt))
     .slice(0, limit);
   result.fetchedCount = result.articles.length;
+  result.districtStartIndex = startIndex;
+  result.nextDistrictIndex = (startIndex + scanLimit) % Math.max(1, allDistricts.length);
   return result;
 }
 

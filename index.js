@@ -481,10 +481,10 @@ const MPINFO_DISTRICT_SCHEDULER_LIMIT = Math.max(
 );
 const MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT, 10) || 8, 55)
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT, 10) || 1, 55)
 );
 const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
-  String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "false").toLowerCase()
 );
 const MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN = ["true", "1", "yes"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "").toLowerCase()
@@ -558,6 +558,7 @@ const mpInfoDistrictSchedulerState = {
   limit: MPINFO_DISTRICT_SCHEDULER_LIMIT,
   districtScanLimit: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT,
   rewrite: MPINFO_DISTRICT_SCHEDULER_REWRITE,
+  nextDistrictIndex: 0,
   lastTickAt: null,
   lastRunAt: null,
   lastStatus: "Waiting",
@@ -3128,6 +3129,7 @@ function getMpInfoDistrictSchedulerHealthSnapshot() {
       interval_ms: mpInfoDistrictSchedulerState.intervalMs,
       limit: mpInfoDistrictSchedulerState.limit,
       district_scan_limit: mpInfoDistrictSchedulerState.districtScanLimit,
+      next_district_index: mpInfoDistrictSchedulerState.nextDistrictIndex,
       rewrite: mpInfoDistrictSchedulerState.rewrite,
     last_tick_at: mpInfoDistrictSchedulerState.lastTickAt,
     last_run_at: mpInfoDistrictSchedulerState.lastRunAt,
@@ -5371,6 +5373,7 @@ async function runMpInfoDistrictScheduledCycleUnlocked(triggerSource = "schedule
 }
 
 async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
+  const districtStartIndex = mpInfoDistrictSchedulerState.nextDistrictIndex;
   const logId = await createSchedulerRunLog({
     schedulerName: "main",
     runType: "mpinfo-districts",
@@ -5385,6 +5388,8 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
       crawlLatest({
         limit: mpInfoDistrictSchedulerState.limit,
         districtScanLimit: mpInfoDistrictSchedulerState.districtScanLimit,
+        districtStartIndex,
+        concurrency: 1,
         withContent: true,
         saveSnapshots: false,
       }),
@@ -5424,6 +5429,8 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
 
     const summary = {
       district_count: result.districtCount || 0,
+      district_start_index: result.districtStartIndex ?? districtStartIndex,
+      next_district_index: result.nextDistrictIndex ?? mpInfoDistrictSchedulerState.nextDistrictIndex,
       fetched_count: result.fetchedCount || 0,
       failed_district_count: result.failedDistrictCount || 0,
       saved_count: saved.filter((item) => item.status === "Success").length,
@@ -5431,6 +5438,9 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
       rewrite_success_count: rewritten.filter((item) => item.status === "Success").length,
       rewrite_failed_count: rewritten.filter((item) => item.status === "Error").length,
     };
+    if (Number.isInteger(result.nextDistrictIndex)) {
+      mpInfoDistrictSchedulerState.nextDistrictIndex = result.nextDistrictIndex;
+    }
 
     mpInfoDistrictSchedulerState.lastRunAt = new Date().toISOString();
     mpInfoDistrictSchedulerState.lastStatus = summary.failed_district_count > 0 ? "CompletedWithErrors" : "Success";

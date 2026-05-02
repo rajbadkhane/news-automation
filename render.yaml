@@ -32,6 +32,22 @@ services:
         value: true
       - key: AI_SCHEDULER_ENABLED
         value: true
+      - key: MPINFO_DISTRICT_SCHEDULER_ENABLED
+        value: true
+      - key: MPINFO_DISTRICT_BROWSER_ENABLED
+        value: true
+      - key: MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS
+        value: 1800000
+      - key: MPINFO_DISTRICT_SCHEDULER_LIMIT
+        value: 1
+      - key: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT
+        value: 1
+      - key: MPINFO_DISTRICT_SCHEDULER_REWRITE
+        value: false
+      - key: MPINFO_DISTRICT_CONCURRENCY
+        value: 1
+      - key: MPINFO_ARTICLE_CONCURRENCY
+        value: 1
       - key: LEGACY_PUBLIC_ROUTES_ENABLED
         value: false
       - key: MASTER_API_KEY
