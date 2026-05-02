@@ -69,6 +69,9 @@ const SCHEDULER_ENABLED = !["false", "0", "no"].includes(
 const AI_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
   String(process.env.AI_SCHEDULER_ENABLED || "true").toLowerCase()
 );
+const SCHEDULER_GOOGLE_RSS_ENABLED = !["false", "0", "no"].includes(
+  String(process.env.SCHEDULER_GOOGLE_RSS_ENABLED || "true").toLowerCase()
+);
 const MPINFO_DISTRICT_SCHEDULER_ENABLED = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_ENABLED || "true").toLowerCase()
 );
@@ -4926,8 +4929,12 @@ async function runScheduledCategoryFetch(category, options = {}) {
 }
 
 async function runScheduledCategoryFetchUnlocked(category, options = {}) {
-  const feedCount = RSS_FEEDS[category]?.length || 1;
+  const rssFeedCount = RSS_FEEDS[category]?.length || 0;
+  const googleSourceCount = SCHEDULER_GOOGLE_RSS_ENABLED ? 1 : 0;
+  const feedCount = Math.max(googleSourceCount + rssFeedCount, 1);
   const currentCursor = schedulerState.categories[category]?.sourceCursor || 0;
+  const shouldFetchGoogle = SCHEDULER_GOOGLE_RSS_ENABLED && currentCursor === 0;
+  const rssStartIndex = SCHEDULER_GOOGLE_RSS_ENABLED ? Math.max(0, currentCursor - 1) : currentCursor;
   const triggerSource = options.triggerSource || "schedule";
   const windowKey = options.windowKey || null;
   const logId = await createSchedulerRunLog({
@@ -4939,16 +4946,29 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
     requestedLimit: 1,
     message: `Fetching one story for ${category}.`,
   });
-  const { browser, page } = await createBrowserPage();
+  let browser = null;
 
   try {
-    const result = await withTimeout(
-      fetchArticlesForCategory(page, category, 1, {
-        startIndex: currentCursor,
-      }),
-      SCHEDULER_CATEGORY_TIMEOUT_MS,
-      `Scheduled category fetch for ${category}`
-    );
+    let result;
+
+    if (shouldFetchGoogle) {
+      result = await withTimeout(
+        saveGoogleRssNewsForCategory(category, 1),
+        SCHEDULER_CATEGORY_TIMEOUT_MS,
+        `Scheduled Google RSS fetch for ${category}`
+      );
+    } else {
+      const browserPage = await createBrowserPage();
+      browser = browserPage.browser;
+      result = await withTimeout(
+        fetchArticlesForCategory(browserPage.page, category, 1, {
+          startIndex: rssStartIndex,
+        }),
+        SCHEDULER_CATEGORY_TIMEOUT_MS,
+        `Scheduled category fetch for ${category}`
+      );
+    }
+
     schedulerState.categories[category] = {
       ...schedulerState.categories[category],
       lastRunAt: new Date().toISOString(),
@@ -4982,7 +5002,9 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
     });
     throw error;
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
   }
 }
 
