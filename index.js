@@ -4529,10 +4529,12 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
         message: articleError.message,
       });
     } finally {
-      try {
-        await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5000 });
-      } catch {
-        // Ignore page reset failures while continuing the batch.
+      if (page) {
+        try {
+          await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5000 });
+        } catch {
+          // Ignore page reset failures while continuing the batch.
+        }
       }
     }
   }
@@ -4572,34 +4574,54 @@ async function extractArticleMetadataForFeed(page, articleEntry) {
   const articleUrl = articleEntry.url;
 
   try {
-    return await extractBestImageFromArticle(page, articleUrl);
-  } catch (pageError) {
-    try {
-      const fallback = await extractBestImageFromArticleHttp(articleUrl, {
-        timeoutMs: RSS_REQUEST_TIMEOUT_MS,
-        retries: 0,
-      });
-      if (fallback.imageUrl) {
-        return {
-          title: articleEntry.title || articleUrl,
-          featuredImage: fallback.imageUrl,
-          imageSource: fallback.imageSource || "article-image",
-        };
-      }
-    } catch {
-      // Keep the original browser extraction error as the useful failure reason.
-    }
-
-    if (isGovernmentFeedSource(articleEntry.feed_source) && articleEntry.title) {
+    const fallback = await extractBestImageFromArticleHttp(articleUrl, {
+      timeoutMs: RSS_REQUEST_TIMEOUT_MS,
+      retries: 0,
+    });
+    if (fallback.imageUrl) {
       return {
-        title: articleEntry.title,
-        featuredImage: articleEntry.image_link || null,
-        imageSource: articleEntry.image_source || null,
+        title: articleEntry.title || articleUrl,
+        featuredImage: fallback.imageUrl,
+        imageSource: fallback.imageSource || "article-image",
       };
     }
-
-    throw pageError;
+  } catch {
+    // Fall through to RSS metadata or the heavier browser fallback.
   }
+
+  if (articleEntry.title) {
+    return {
+      title: articleEntry.title,
+      featuredImage: articleEntry.image_link || null,
+      imageSource: articleEntry.image_source || null,
+    };
+  }
+
+  if (page) {
+    try {
+      return await extractBestImageFromArticle(page, articleUrl);
+    } catch (pageError) {
+      if (isGovernmentFeedSource(articleEntry.feed_source)) {
+        return {
+          title: articleUrl,
+          featuredImage: articleEntry.image_link || null,
+          imageSource: articleEntry.image_source || null,
+        };
+      }
+
+      throw pageError;
+    }
+  }
+
+  if (isGovernmentFeedSource(articleEntry.feed_source)) {
+    return {
+      title: articleUrl,
+      featuredImage: articleEntry.image_link || null,
+      imageSource: articleEntry.image_source || null,
+    };
+  }
+
+  throw new Error("No article metadata could be extracted from the RSS item or article page.");
 }
 
 async function fetchAllCategories(page, limit) {
@@ -5038,10 +5060,8 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
       );
 
       if (rssFeedCount > 0) {
-        const browserPage = await createBrowserPage();
-        browser = browserPage.browser;
         const rssResult = await withTimeout(
-          fetchArticlesForCategory(browserPage.page, category, 1, {
+          fetchArticlesForCategory(null, category, 1, {
             startIndex: 0,
           }),
           SCHEDULER_CATEGORY_TIMEOUT_MS,
@@ -5052,10 +5072,8 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
         result = googleResult;
       }
     } else {
-      const browserPage = await createBrowserPage();
-      browser = browserPage.browser;
       result = await withTimeout(
-        fetchArticlesForCategory(browserPage.page, category, 1, {
+        fetchArticlesForCategory(null, category, 1, {
           startIndex: rssStartIndex,
         }),
         SCHEDULER_CATEGORY_TIMEOUT_MS,
@@ -5387,11 +5405,9 @@ async function runSchedulerTestCycle(limit = 1, options = {}) {
       requestedLimit: limit,
       message: `Manual scheduler run for ${slot.category}.`,
     });
-    const { browser, page } = await createBrowserPage();
-
     try {
       const result = await withTimeout(
-        fetchArticlesForCategory(page, slot.category, limit, {
+        fetchArticlesForCategory(null, slot.category, limit, {
           startIndex: schedulerState.categories[slot.category]?.sourceCursor || 0,
         }),
         SCHEDULER_CATEGORY_TIMEOUT_MS,
@@ -5437,8 +5453,6 @@ async function runSchedulerTestCycle(limit = 1, options = {}) {
         errorMessage: error.message,
       });
       throw error;
-    } finally {
-      await browser.close();
     }
   }
 
@@ -6603,32 +6617,26 @@ apiV1.get("/scheduler/logs", requireApiScope("logs:read"), async (req, res) => {
 apiV1.post("/sync/rss", requireApiScope("sync:write"), async (req, res) => {
   const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
   const limit = normalizeArticleLimit(req.query.limit || req.body?.limit || 5);
-  const { browser, page } = await createBrowserPage();
 
   try {
-    const result = await fetchArticlesForCategory(page, category, limit);
+    const result = await fetchArticlesForCategory(null, category, limit);
     return sendApiSuccess(res, result, { category, limit });
   } catch (error) {
     return sendApiError(res, "RSS_SYNC_FAILED", error.message, 500, { category, limit });
-  } finally {
-    await browser.close();
   }
 });
 
 apiV1.post("/sync/rss/all", requireApiScope("sync:write"), async (req, res) => {
   const total = req.query.total || req.body?.total ? normalizeTotalLimit(req.query.total || req.body?.total) : null;
   const limit = normalizeArticleLimit(req.query.limit || req.body?.limit || 5);
-  const { browser, page } = await createBrowserPage();
 
   try {
     const result = total
-      ? await fetchAllCategoriesByTotal(page, total)
-      : await fetchAllCategories(page, limit);
+      ? await fetchAllCategoriesByTotal(null, total)
+      : await fetchAllCategories(null, limit);
     return sendApiSuccess(res, result, { total, limit: total ? null : limit });
   } catch (error) {
     return sendApiError(res, "RSS_SYNC_ALL_FAILED", error.message, 500, { total, limit });
-  } finally {
-    await browser.close();
   }
 });
 
