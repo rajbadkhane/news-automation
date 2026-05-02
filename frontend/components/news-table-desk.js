@@ -277,8 +277,7 @@ async function downloadImage(item, setMessage) {
     URL.revokeObjectURL(url);
     setMessage("Image download started");
   } catch {
-    window.open(item.image_link, "_blank", "noopener,noreferrer");
-    setMessage("Direct image open kar di gayi.");
+    setMessage("Image download nahi ho paya.");
   }
 }
 
@@ -298,19 +297,14 @@ function ImageCell({ item, setMessage }) {
 
   return (
     <div className="flex w-[138px] flex-col items-center gap-1">
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          window.open(item.image_link, "_blank", "noopener,noreferrer");
-        }}
-        className="group h-[86px] w-[126px] overflow-hidden rounded border border-[#cfd8e3] bg-[#eef2f7] shadow-sm"
-        title="Open image preview"
+      <div
+        className="h-[86px] w-[126px] overflow-hidden rounded border border-[#cfd8e3] bg-[#eef2f7] shadow-sm"
+        title="Image preview"
       >
         <img
           src={imageSrc}
           alt={item.title || "News image"}
-          className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+          className="h-full w-full object-cover"
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => {
@@ -322,7 +316,7 @@ function ImageCell({ item, setMessage }) {
             setFailed(true);
           }}
         />
-      </button>
+      </div>
       <button
         type="button"
         onClick={(event) => {
