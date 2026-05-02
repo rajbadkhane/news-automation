@@ -40,7 +40,7 @@ const {
   extractBestImageFromArticle: extractBestImageFromArticleHttp,
 } = require("./google-rss-feed-fetcher");
 const { createMpInfoRoutes } = require("./routes/mpinfo.routes");
-const { crawlAllDistricts } = require("./services/mpinfo-scraper.service");
+const { crawlLatest } = require("./services/mpinfo-scraper.service");
 
 const app = express();
 app.disable("x-powered-by");
@@ -476,6 +476,10 @@ const MPINFO_DISTRICT_SCHEDULER_LIMIT = Math.max(
   1,
   Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_LIMIT, 10) || 1, 3)
 );
+const MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT, 10) || 8, 55)
+);
 const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
 );
@@ -548,6 +552,7 @@ const mpInfoDistrictSchedulerState = {
   enabled: MPINFO_DISTRICT_SCHEDULER_ENABLED,
   intervalMs: MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS,
   limit: MPINFO_DISTRICT_SCHEDULER_LIMIT,
+  districtScanLimit: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT,
   rewrite: MPINFO_DISTRICT_SCHEDULER_REWRITE,
   lastTickAt: null,
   lastRunAt: null,
@@ -3115,9 +3120,10 @@ function getMpInfoDistrictSchedulerHealthSnapshot() {
         mpInfoDistrictSchedulerState.lastTickAt,
         (mpInfoDistrictSchedulerState.intervalMs * 2) + 60_000
       ),
-    interval_ms: mpInfoDistrictSchedulerState.intervalMs,
-    limit: mpInfoDistrictSchedulerState.limit,
-    rewrite: mpInfoDistrictSchedulerState.rewrite,
+      interval_ms: mpInfoDistrictSchedulerState.intervalMs,
+      limit: mpInfoDistrictSchedulerState.limit,
+      district_scan_limit: mpInfoDistrictSchedulerState.districtScanLimit,
+      rewrite: mpInfoDistrictSchedulerState.rewrite,
     last_tick_at: mpInfoDistrictSchedulerState.lastTickAt,
     last_run_at: mpInfoDistrictSchedulerState.lastRunAt,
     last_status: mpInfoDistrictSchedulerState.lastStatus,
@@ -5309,8 +5315,9 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
 
   try {
     const result = await withTimeout(
-      crawlAllDistricts({
+      crawlLatest({
         limit: mpInfoDistrictSchedulerState.limit,
+        districtScanLimit: mpInfoDistrictSchedulerState.districtScanLimit,
         withContent: true,
         saveSnapshots: false,
       }),
