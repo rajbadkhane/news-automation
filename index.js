@@ -143,7 +143,13 @@ const INDIA_TIMEZONE = "Asia/Kolkata";
 const NEWS18_RSS_BASE = "https://www.news18.com/commonfeeds/v1/eng/rss";
 const EXPENSIVE_NEWS_SOURCES = new Set(["zee", "news18"]);
 const GOVERNMENT_NEWS_SOURCES = new Set(["dd", "pib", "mpinfo"]);
-const STATE_GOV_SOURCES = [
+const STATE_GOV_SOURCE_ALLOWLIST = new Set(
+  String(process.env.STATE_GOV_SOURCE_ALLOWLIST || "kerala-gov,haryana-gov,cg-gov")
+    .split(",")
+    .map((source) => source.trim())
+    .filter(Boolean)
+);
+const RAW_STATE_GOV_SOURCES = [
   { state: "उत्तर प्रदेश", source: "up-gov", url: "https://information.up.gov.in/en" },
   { state: "महाराष्ट्र", source: "maharashtra-gov", url: "https://dgipr.maharashtra.gov.in/" },
   { state: "गुजरात", source: "gujarat-gov", url: "https://gujaratindia.gov.in" },
@@ -159,7 +165,10 @@ const STATE_GOV_SOURCES = [
   { state: "हरियाणा", source: "haryana-gov", url: "https://lokbhavan.haryana.gov.in/" },
   { state: "छत्तीसगढ़", source: "cg-gov", url: "https://jansampark.cg.gov.in/" },
   { state: "ओडिशा", source: "odisha-gov", url: "https://odisha.gov.in/en/state-news" },
-].map((item) => ({ ...item, type: "state-gov" }));
+];
+const STATE_GOV_SOURCES = RAW_STATE_GOV_SOURCES
+  .filter((item) => STATE_GOV_SOURCE_ALLOWLIST.has("all") || STATE_GOV_SOURCE_ALLOWLIST.has(item.source))
+  .map((item) => ({ ...item, type: "state-gov" }));
 const RSS_FEEDS = {
   india: [
     { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
