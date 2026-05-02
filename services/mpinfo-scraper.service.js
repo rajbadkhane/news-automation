@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const puppeteer = require("puppeteer");
 const { chromium } = require("playwright");
 const { getMpInfoDistricts } = require("../config/mpinfo-districts");
 const {
@@ -63,6 +64,14 @@ async function withConcurrency(items, limit, worker) {
 async function createPlaywrightBrowser() {
   const chromeCandidates = [
     process.env.BROWSER_EXECUTABLE_PATH,
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    (() => {
+      try {
+        return puppeteer.executablePath();
+      } catch {
+        return null;
+      }
+    })(),
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
