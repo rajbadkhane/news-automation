@@ -35,7 +35,10 @@ const {
   listRashifal,
   syncRashifal,
 } = require("./rashifal");
-const { fetchGoogleRssFeed } = require("./google-rss-feed-fetcher");
+const {
+  fetchGoogleRssFeed,
+  extractBestImageFromArticle: extractBestImageFromArticleHttp,
+} = require("./google-rss-feed-fetcher");
 const { createMpInfoRoutes } = require("./routes/mpinfo.routes");
 const { crawlAllDistricts } = require("./services/mpinfo-scraper.service");
 
@@ -4476,7 +4479,7 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
         continue;
       }
 
-      const imageData = await extractBestImageFromArticle(page, articleUrl);
+      const imageData = await extractArticleMetadataForFeed(page, articleEntry);
       const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
       const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
       const title = imageData.title || articleEntry.title || articleUrl;
@@ -4554,6 +4557,49 @@ function mergeCategoryFetchResults(category, results) {
     skipped_count: normalizedResults.reduce((sum, item) => sum + (item.skipped_count || 0), 0),
     results: normalizedResults.flatMap((item) => item.results || []),
   };
+}
+
+function isGovernmentFeedSource(source) {
+  const normalized = String(source || "").toLowerCase();
+  return (
+    GOVERNMENT_NEWS_SOURCES.has(normalized) ||
+    normalized.endsWith("-gov") ||
+    normalized.startsWith("mpinfo-")
+  );
+}
+
+async function extractArticleMetadataForFeed(page, articleEntry) {
+  const articleUrl = articleEntry.url;
+
+  try {
+    return await extractBestImageFromArticle(page, articleUrl);
+  } catch (pageError) {
+    try {
+      const fallback = await extractBestImageFromArticleHttp(articleUrl, {
+        timeoutMs: RSS_REQUEST_TIMEOUT_MS,
+        retries: 0,
+      });
+      if (fallback.imageUrl) {
+        return {
+          title: articleEntry.title || articleUrl,
+          featuredImage: fallback.imageUrl,
+          imageSource: fallback.imageSource || "article-image",
+        };
+      }
+    } catch {
+      // Keep the original browser extraction error as the useful failure reason.
+    }
+
+    if (isGovernmentFeedSource(articleEntry.feed_source) && articleEntry.title) {
+      return {
+        title: articleEntry.title,
+        featuredImage: articleEntry.image_link || null,
+        imageSource: articleEntry.image_source || null,
+      };
+    }
+
+    throw pageError;
+  }
 }
 
 async function fetchAllCategories(page, limit) {
