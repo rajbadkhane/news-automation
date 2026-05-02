@@ -3,6 +3,14 @@ const DEFAULT_USER_AGENT =
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 10;
+const ARTICLE_IMAGE_FETCH_PROFILES = [
+  { userAgent: DEFAULT_USER_AGENT },
+  { userAgent: "Mozilla/5.0" },
+  {
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  },
+];
 const DEFAULT_LOCALE = {
   hl: "en-IN",
   gl: "IN",
@@ -279,6 +287,93 @@ function extractImageFromHtml(html, articleUrl) {
   return bestCandidate?.url || null;
 }
 
+function extractJsonLdImageUrl(html, articleUrl) {
+  const scripts = String(html || "").match(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+
+  function collectImage(value) {
+    if (!value) {
+      return null;
+    }
+
+    if (typeof value === "string") {
+      return absolutizeUrl(value, articleUrl);
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const imageUrl = collectImage(item);
+        if (imageUrl) {
+          return imageUrl;
+        }
+      }
+      return null;
+    }
+
+    if (typeof value === "object") {
+      return collectImage(value.url || value.contentUrl || value.thumbnailUrl);
+    }
+
+    return null;
+  }
+
+  for (const script of scripts) {
+    const json = script
+      .replace(/^<script\b[^>]*>/i, "")
+      .replace(/<\/script>$/i, "")
+      .trim();
+
+    try {
+      const parsed = JSON.parse(decodeHtmlEntities(json));
+      const records = Array.isArray(parsed) ? parsed : [parsed];
+      for (const record of records) {
+        const imageUrl = collectImage(record?.image || record?.thumbnailUrl || record?.primaryImageOfPage);
+        if (imageUrl && !isLikelyDecorativeImageUrl(imageUrl)) {
+          return imageUrl;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function extractBestImageFromHtml(html, articleUrl) {
+  const finalUrl = articleUrl;
+  const ogImage =
+    extractMetaContentFromHtml(html, "og:image") ||
+    extractMetaContentFromHtml(html, "og:image:secure_url") ||
+    extractMetaContentFromHtml(html, "og:image:url");
+  const twitterImage =
+    extractMetaContentFromHtml(html, "twitter:image") ||
+    extractMetaContentFromHtml(html, "twitter:image:src");
+  const linkImage = extractLinkHrefFromHtml(html, "image_src");
+  const jsonLdImage = extractJsonLdImageUrl(html, finalUrl);
+  const htmlImage = extractImageFromHtml(html, finalUrl);
+  const imageUrl =
+    absolutizeUrl(ogImage, finalUrl) ||
+    absolutizeUrl(twitterImage, finalUrl) ||
+    absolutizeUrl(linkImage, finalUrl) ||
+    jsonLdImage ||
+    htmlImage;
+
+  return {
+    imageUrl: imageUrl && !isLikelyDecorativeImageUrl(imageUrl) ? imageUrl : null,
+    imageSource: ogImage
+      ? "og:image"
+      : twitterImage
+        ? "twitter:image"
+        : linkImage
+          ? "link[rel=image_src]"
+          : jsonLdImage
+            ? "json-ld"
+            : htmlImage
+              ? "html-image"
+              : null,
+  };
+}
+
 async function resolveGoogleNewsLink(url, options = {}) {
   if (!url || !url.includes("news.google.com")) {
     return url;
@@ -425,51 +520,32 @@ async function extractBestImageFromArticle(articleUrl, options = {}) {
     return { imageUrl: null, imageSource: null };
   }
 
-  try {
-    const { response, text: html } = await withRetry(
-      () =>
-        fetchText(articleUrl, {
-          ...options,
-          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }),
-      options.retries ?? 1
-    );
+  for (const profile of ARTICLE_IMAGE_FETCH_PROFILES) {
+    try {
+      const { response, text: html } = await withRetry(
+        () =>
+          fetchText(articleUrl, {
+            ...options,
+            userAgent: profile.userAgent,
+            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          }),
+        options.retries ?? 1
+      );
 
-    if (!response?.ok) {
-      return { imageUrl: null, imageSource: null };
+      if (!response?.ok) {
+        continue;
+      }
+
+      const imageResult = extractBestImageFromHtml(html, response.url || articleUrl);
+      if (imageResult.imageUrl) {
+        return imageResult;
+      }
+    } catch {
+      continue;
     }
-
-    const finalUrl = response.url || articleUrl;
-    const ogImage =
-      extractMetaContentFromHtml(html, "og:image") ||
-      extractMetaContentFromHtml(html, "og:image:secure_url") ||
-      extractMetaContentFromHtml(html, "og:image:url");
-    const twitterImage =
-      extractMetaContentFromHtml(html, "twitter:image") ||
-      extractMetaContentFromHtml(html, "twitter:image:src");
-    const linkImage = extractLinkHrefFromHtml(html, "image_src");
-    const htmlImage = extractImageFromHtml(html, finalUrl);
-    const imageUrl =
-      absolutizeUrl(ogImage, finalUrl) ||
-      absolutizeUrl(twitterImage, finalUrl) ||
-      absolutizeUrl(linkImage, finalUrl) ||
-      htmlImage;
-
-    return {
-      imageUrl: imageUrl && !isLikelyDecorativeImageUrl(imageUrl) ? imageUrl : null,
-      imageSource: ogImage
-        ? "og:image"
-        : twitterImage
-          ? "twitter:image"
-          : linkImage
-            ? "link[rel=image_src]"
-            : htmlImage
-              ? "html-image"
-              : null,
-    };
-  } catch {
-    return { imageUrl: null, imageSource: null };
   }
+
+  return { imageUrl: null, imageSource: null };
 }
 
 function parseGoogleRssItems(xml, feedUrl, limit = DEFAULT_LIMIT) {
