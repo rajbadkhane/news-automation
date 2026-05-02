@@ -484,7 +484,7 @@ const MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT = Math.max(
   Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT, 10) || 1, 55)
 );
 const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
-  String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "false").toLowerCase()
+  String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
 );
 const MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN = ["true", "1", "yes"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN || "").toLowerCase()

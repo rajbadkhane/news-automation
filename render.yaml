@@ -43,7 +43,7 @@ services:
       - key: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT
         value: 1
       - key: MPINFO_DISTRICT_SCHEDULER_REWRITE
-        value: false
+        value: true
       - key: MPINFO_DISTRICT_CONCURRENCY
         value: 1
       - key: MPINFO_ARTICLE_CONCURRENCY
