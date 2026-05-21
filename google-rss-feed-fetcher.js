@@ -143,20 +143,26 @@ function extractRssImageUrl(itemXml, feedUrl) {
         continue;
       }
 
-      return absolutizeUrl(rawUrl, feedUrl) || rawUrl;
+      const imageUrl = sanitizeImageUrl(rawUrl, feedUrl);
+      if (imageUrl) {
+        return imageUrl;
+      }
     }
   }
 
   const imageTag = item.match(/<image\b[\s\S]*?<\/image>/i)?.[0] || "";
   const imageUrl = extractTagValue(imageTag, "url");
   if (imageUrl) {
-    return absolutizeUrl(imageUrl, feedUrl) || imageUrl;
+    const sanitizedImageUrl = sanitizeImageUrl(imageUrl, feedUrl);
+    if (sanitizedImageUrl) {
+      return sanitizedImageUrl;
+    }
   }
 
   const description = extractTagValue(item, "description");
   const descriptionImageTag = description.match(/<img\b[^>]*>/i)?.[0] || "";
   const descriptionImage = extractAttributesFromTag(descriptionImageTag).src;
-  return descriptionImage ? absolutizeUrl(descriptionImage, feedUrl) || descriptionImage : null;
+  return sanitizeImageUrl(descriptionImage, feedUrl);
 }
 
 function extractMetaContentFromHtml(html, metaKey) {
@@ -268,6 +274,24 @@ function isLikelyDecorativeImageUrl(value) {
     hostname.endsWith("twimg.com") ||
     hostname.endsWith("x.com") ||
     hostname.endsWith("twitter.com") ||
+    /(?:^|[/?&_.-])(?:logo|favicon|icon|placeholder|default|fallback|og-image|no-image|missing-image|image-not-available|brand|branding|insta|yt-feed|social-feed|attention|qrcode|qr-code|qr|wechat|weibo|follow|subscribe|advert|ads?|banner|rhs|promo|sponsor|newsletter|subscription)(?:[/?&_.=-]|$)/.test(normalized) ||
+    normalized.includes("img.etimg.com/photo/msid-") ||
+    normalized.includes("/theme-assets/") ||
+    normalized.includes("/attention/") ||
+    normalized.includes("attention.jpg") ||
+    normalized.includes("qrcode") ||
+    normalized.includes("qr-code") ||
+    normalized.includes("wechat") ||
+    normalized.includes("weibo") ||
+    normalized.includes("share_icon") ||
+    normalized.includes("newsletter") ||
+    normalized.includes("subscription") ||
+    normalized.includes("sponsor") ||
+    normalized.includes("advertorial") ||
+    normalized.includes("rhs-banner") ||
+    normalized.includes("about-news") ||
+    normalized.includes("gwab") ||
+    normalized.includes("resource/default/img/icon") ||
     normalized.includes("sprite") ||
     normalized.includes("avatar") ||
     /(?:^|[/?&_.-])ads?(?:[/?&_.=-]|$)/.test(normalized) ||
@@ -276,6 +300,7 @@ function isLikelyDecorativeImageUrl(value) {
     normalized.includes("share") ||
     normalized.includes("follow-us") ||
     normalized.includes("instagram") ||
+    normalized.includes("insta-feed") ||
     normalized.includes("cdninstagram") ||
     normalized.includes("fbcdn") ||
     normalized.includes("facebook.com") ||
@@ -284,6 +309,8 @@ function isLikelyDecorativeImageUrl(value) {
     normalized.includes("profile") ||
     normalized.includes("placeholder") ||
     normalized.includes("default-image") ||
+    normalized.includes("banner") ||
+    normalized.includes("promo") ||
     normalized.includes("google-play") ||
     normalized.includes("play-store") ||
     normalized.includes("app-store") ||
@@ -291,6 +318,11 @@ function isLikelyDecorativeImageUrl(value) {
     (!isLikelyContentUpload &&
       (normalized.includes("logo") || normalized.includes("icon") || normalized.includes("banner")))
   );
+}
+
+function sanitizeImageUrl(value, baseUrl) {
+  const imageUrl = absolutizeUrl(value, baseUrl);
+  return imageUrl && !isLikelyDecorativeImageUrl(imageUrl) ? imageUrl : null;
 }
 
 function extractImageFromHtml(html, articleUrl) {
@@ -323,6 +355,14 @@ function extractImageFromHtml(html, articleUrl) {
     const width = Number.parseInt(attributes.width, 10) || 0;
     const height = Number.parseInt(attributes.height, 10) || 0;
     const className = String(attributes.class || "").toLowerCase();
+    const altText = String(attributes.alt || "").toLowerCase();
+    if (
+      /logo|icon|share|social|avatar|author|profile|button|thumbnail|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|advert|ads?|banner|rhs|promo|sponsor|newsletter|subscription/.test(altText) ||
+      /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|advert|ads?|banner|rhs|promo|sponsor|newsletter|subscription/.test(className)
+    ) {
+      continue;
+    }
+
     const area = width * height;
     let score = area;
 
@@ -568,6 +608,8 @@ async function extractBestImageFromArticle(articleUrl, options = {}) {
     return { imageUrl: null, imageSource: null };
   }
 
+  let fallbackTitle = null;
+
   for (const profile of ARTICLE_IMAGE_FETCH_PROFILES) {
     try {
       const { response, text: html } = await withRetry(
@@ -585,15 +627,16 @@ async function extractBestImageFromArticle(articleUrl, options = {}) {
       }
 
       const imageResult = extractBestImageFromHtml(html, response.url || articleUrl);
-      if (imageResult.imageUrl || imageResult.title) {
+      if (imageResult.imageUrl) {
         return imageResult;
       }
+      fallbackTitle = fallbackTitle || imageResult.title || null;
     } catch {
       continue;
     }
   }
 
-  return { title: null, imageUrl: null, imageSource: null };
+  return { title: fallbackTitle, imageUrl: null, imageSource: null };
 }
 
 function parseGoogleRssItems(xml, feedUrl, limit = DEFAULT_LIMIT) {
@@ -638,6 +681,7 @@ function parseGoogleRssItems(xml, feedUrl, limit = DEFAULT_LIMIT) {
 async function fetchGoogleRssFeed(options = {}) {
   const query = options.query || "India news";
   const limit = Math.max(1, Number.parseInt(options.limit || DEFAULT_LIMIT, 10));
+  const deferArticleScrape = options.deferArticleScrape === true;
   const candidateLimit = Math.max(
     limit,
     Math.min(Number.parseInt(options.candidateLimit || limit * 8, 10) || limit * 8, 75)
@@ -673,16 +717,35 @@ async function fetchGoogleRssFeed(options = {}) {
       continue;
     }
 
+    const rssImageUrl = item.image_link && !isGoogleHostedImageUrl(item.image_link)
+      ? sanitizeImageUrl(item.image_link)
+      : null;
+
+    if (deferArticleScrape) {
+      resolvedItems.push({
+        ...item,
+        link: articleUrl,
+        image_link: rssImageUrl,
+        image_source: rssImageUrl ? item.image_source : null,
+      });
+      usableCount += 1;
+
+      if (usableCount >= limit) {
+        break;
+      }
+      continue;
+    }
+
     const articleImage = await extractBestImageFromArticle(articleUrl, options);
-    const rssImageUrl = item.image_link && !isGoogleHostedImageUrl(item.image_link) ? item.image_link : null;
-    const imageUrl = articleImage.imageUrl || rssImageUrl || null;
+    const articleImageUrl = sanitizeImageUrl(articleImage.imageUrl);
+    const imageUrl = articleImageUrl || rssImageUrl || null;
 
     resolvedItems.push({
       ...item,
       title: articleImage.title || item.title,
       link: articleUrl,
       image_link: imageUrl,
-      image_source: articleImage.imageUrl ? articleImage.imageSource : rssImageUrl ? item.image_source : null,
+      image_source: articleImageUrl ? articleImage.imageSource : rssImageUrl ? item.image_source : null,
     });
     usableCount += 1;
 

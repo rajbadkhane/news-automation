@@ -1,9 +1,9 @@
 import NewsTableDesk from "@/components/news-table-desk";
-import { getAdminMasterApiKey, getPublicApiBaseUrl } from "@/lib/runtime-env";
+import { getAdminMasterApiKey, getServerApiBaseUrl } from "@/lib/runtime-env";
 
 export const dynamic = "force-dynamic";
 
-const API_BASE_URL = getPublicApiBaseUrl();
+const API_BASE_URL = getServerApiBaseUrl();
 const ADMIN_MASTER_API_KEY = getAdminMasterApiKey();
 
 function normalizeSectionPayload(payload) {

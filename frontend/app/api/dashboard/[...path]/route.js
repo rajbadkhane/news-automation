@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { getAdminMasterApiKey, getPublicApiBaseUrl } from "@/lib/runtime-env";
+import { getAdminMasterApiKey, getServerApiBaseUrl } from "@/lib/runtime-env";
 
-const API_BASE_URL = getPublicApiBaseUrl();
+const API_BASE_URL = getServerApiBaseUrl();
 const ADMIN_MASTER_API_KEY = getAdminMasterApiKey();
 const DEFAULT_CACHE_SECONDS = 30;
 
@@ -30,6 +30,10 @@ function getCacheSeconds(pathname) {
 
   if (normalized.startsWith("/editorial/grouped") || normalized.startsWith("/rashifal/grouped")) {
     return 60;
+  }
+
+  if (normalized.startsWith("/sync/cliff-news")) {
+    return 0;
   }
 
   if (normalized.startsWith("/news/grouped") || normalized.startsWith("/news")) {
@@ -133,21 +137,36 @@ function normalizeDashboardJson(pathname, payload, status) {
         grouped_records: groups.map((group) => ({
           category: group.category,
           count: group.records?.length || group.published_count || group.count || 0,
-          records: (group.records || []).map((item) => ({
-            id: item.news_id || item.id,
-            rewrite_id: item.id,
-            category: item.category || group.category,
-            title: item.ui_hindi?.title || item.article?.headline || item.source?.title || "Untitled story",
-            source_url: item.link || item.source?.url || "",
-            image_link: item.ui_hindi?.image_url || item.media?.image_link || "",
-            image_source: item.media?.image_source || "article-image",
-            fetched_at: item.source?.fetched_at || item.published_at || item.updated_at,
-            feed_source: item.source?.feed_source || item.source?.title || "published",
-            feed_url: item.source?.feed_url || "",
-            ui_hindi: item.ui_hindi || null,
-            raw_articles: item.raw_articles || null,
-            article: item.article || null,
-          })),
+          records: (group.records || []).map((item) => {
+            const imageLink = item.media?.image_link || "";
+            const smartCategory = item.ui_hindi?.category || item.category || group.category;
+            return {
+              id: item.news_id || item.id,
+              rewrite_id: item.id,
+              category: smartCategory,
+              title: item.ui_hindi?.title || item.article?.headline || item.source?.title || "Untitled story",
+              source_url: item.link || item.source?.url || "",
+              image_link: imageLink,
+              image_caption:
+                item.media?.image_caption ||
+                item.media?.photo_caption ||
+                item.media?.caption ||
+                item.ui_hindi?.image_caption ||
+                item.ui_hindi?.photo_caption ||
+                item.ui_hindi?.caption ||
+                item.raw_articles?.image_caption ||
+                item.raw_articles?.photo_caption ||
+                item.raw_articles?.caption ||
+                "",
+              image_source: imageLink ? item.media?.image_source || "article-image" : null,
+              fetched_at: item.source?.fetched_at || item.published_at || item.updated_at,
+              feed_source: item.source?.feed_source || item.source?.title || "published",
+              feed_url: item.source?.feed_url || "",
+              ui_hindi: item.ui_hindi || null,
+              raw_articles: item.raw_articles || null,
+              article: item.article || null,
+            };
+          }),
         })),
         count: payload.meta?.count || 0,
         category_count: payload.meta?.category_count || groups.length,
@@ -176,12 +195,15 @@ function resolveBackendPath(pathname) {
     "/news/grouped",
     "/cron/status",
     "/scheduler/logs",
+    "/categories",
+    "/rss-feeds",
     "/ai/news/grouped",
     "/ai/cron/status",
     "/delivery/news/grouped",
     "/delivery/news",
     "/editorial/grouped",
     "/rashifal/grouped",
+    "/sync/cliff-news",
     "/sync/editorial",
     "/sync/rashifal",
   ];
@@ -207,7 +229,11 @@ async function proxyToBackend(request, { params }) {
     || request.method === "HEAD"
     || (
       request.method === "POST" &&
-      (backendPath === "/api/v1/sync/editorial" || backendPath === "/api/v1/sync/rashifal")
+      (
+        backendPath === "/api/v1/sync/editorial" ||
+        backendPath === "/api/v1/sync/rashifal" ||
+        backendPath === "/api/v1/sync/cliff-news"
+      )
     );
 
   if (!backendPath || !allowedMethod) {

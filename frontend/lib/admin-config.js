@@ -2,10 +2,10 @@ import {
   getAdminMasterApiKey,
   getAdminPanelPassword,
   getAdminSessionSecret,
-  getPublicApiBaseUrl,
+  getServerApiBaseUrl,
 } from "@/lib/runtime-env";
 
-export const ADMIN_API_BASE_URL = getPublicApiBaseUrl();
+export const ADMIN_API_BASE_URL = getServerApiBaseUrl();
 
 export const ADMIN_MASTER_API_KEY = getAdminMasterApiKey();
 

@@ -33,21 +33,37 @@ services:
       - key: AI_SCHEDULER_ENABLED
         value: true
       - key: SCHEDULER_ARTICLES_PER_CATEGORY_RUN
-        value: 2
+        value: 5
+      - key: SCHEDULER_PRIMARY_SOURCE_LIMIT
+        value: 4
+      - key: CLIFF_NEWS_DEFAULT_LIMIT
+        value: 200
+      - key: NEWS_MAX_AGE_HOURS
+        value: 24
+      - key: DASHBOARD_CACHE_TTL_SECONDS
+        value: 10
+      - key: FETCHED_NEWS_RETENTION_HOURS
+        value: 24
+      - key: AI_REWRITE_RETENTION_HOURS
+        value: 24
       - key: AI_REWRITE_CANDIDATE_LIMIT
         value: 10
       - key: MPINFO_DISTRICT_SCHEDULER_ENABLED
         value: true
       - key: MPINFO_DISTRICT_BROWSER_ENABLED
         value: true
+      - key: MPINFO_DISTRICT_CATEGORY
+        value: Madhyapradesh
       - key: MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS
-        value: 1800000
+        value: 2700000
       - key: MPINFO_DISTRICT_SCHEDULER_LIMIT
-        value: 1
+        value: 2
       - key: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT
-        value: 1
+        value: 2
       - key: MPINFO_DISTRICT_SCHEDULER_REWRITE
         value: true
+      - key: MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN
+        value: false
       - key: MPINFO_DISTRICT_CONCURRENCY
         value: 1
       - key: MPINFO_ARTICLE_CONCURRENCY

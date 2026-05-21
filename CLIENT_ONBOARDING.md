@@ -80,7 +80,7 @@ The recommended production feed for client websites is:
 
 Supported query parameters:
 
-- `category=india`
+- `category=National/State`
 - `language=english`
 - `language=hindi`
 - `language=both`
@@ -103,25 +103,17 @@ Important:
 
 Use grouped delivery when your website homepage or category sections need data like:
 
-- `india -> [articles]`
-- `world -> [articles]`
-- `sports -> [articles]`
+- `National/State -> [articles]`
+- `International -> [articles]`
+- `Sports -> [articles]`
 
 Default category order is stable for delivery responses:
 
-- `top_stories`
-- `india`
-- `world`
-- `states`
-- `asia`
-- `business`
-- `sports`
-- `technology`
-- `science_environment`
-- `health`
-- `entertainment`
-- `education`
-- `blogs`
+- `National/State`
+- `International`
+- `Business`
+- `Sports`
+- `Entertainment`
 
 ## Cron-Aligned Feed
 

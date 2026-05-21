@@ -2,16 +2,20 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { unicodeToChanakya } from "@/lib/chanakya-converter";
+import { unicodeTo4CGandhi } from "@/lib/gandhi-converter";
+import { unicodeToKrutidev } from "@/lib/krutidev-converter";
 
-const CACHE_KEY = "gts-news-table-cache-v1";
-const CACHE_TTL_MS = 10 * 60 * 1000;
-const REFRESH_INTERVAL_MS = 60 * 1000;
+const CACHE_KEY = "gts-news-table-cache-v2";
+const CACHE_TTL_MS = 20 * 1000;
+const REFRESH_INTERVAL_MS = 20 * 1000;
+const TABLE_RECORD_LIMIT = 500;
+const DEFAULT_PAGE_SIZE = 25;
 const SECTION_CONFIG = {
   news: {
     label: "News",
     pagePath: "/news-table",
-    listPath: "/delivery/news/grouped?language=hindi&limit=500",
-    syncPath: null,
+    listPath: `/delivery/news/grouped?language=hindi&limit=${TABLE_RECORD_LIMIT}`,
+    syncPath: "/sync/cliff-news?limit=200&language=ENGLISH&rewrite=true",
   },
   editorial: {
     label: "Editorial",
@@ -26,6 +30,26 @@ const SECTION_CONFIG = {
     syncPath: "/sync/rashifal?limit=50",
   },
 };
+const HEADER_FEATURES = [
+  { label: "FAST", symbol: "◷" },
+  { label: "ACCURATE", symbol: "✓" },
+  { label: "IMPARTIAL", symbol: "⚖" },
+  { label: "GLOBAL", symbol: "◎" },
+];
+
+function createEmptyPayload() {
+  return {
+    status: "Loading",
+    count: 0,
+    category_count: 0,
+    grouped_records: [],
+    loaded_at: new Date().toISOString(),
+  };
+}
+
+function hasPayloadRecords(payload) {
+  return (payload?.grouped_records || []).some((group) => (group.records || []).length > 0);
+}
 
 function getDashboardProxyPath(path) {
   const normalized = String(path || "").startsWith("/") ? path : `/${path}`;
@@ -43,6 +67,11 @@ function getDisplayImageUrl(imageUrl, quality = "high") {
 function isUsableImageUrl(imageUrl) {
   const value = String(imageUrl || "").trim();
   return /^https?:\/\//i.test(value);
+}
+
+function isRenderableImageSrc(imageSrc) {
+  const value = String(imageSrc || "").trim();
+  return /^https?:\/\//i.test(value) || value.startsWith("/");
 }
 
 function cleanText(value) {
@@ -95,6 +124,34 @@ function formatDate(value) {
   }).format(date);
 }
 
+function formatUploadAge(value, nowMs = Date.now()) {
+  if (!value) {
+    return "-";
+  }
+
+  const uploadedAt = new Date(value).getTime();
+  if (Number.isNaN(uploadedAt)) {
+    return "-";
+  }
+
+  const diffMinutes = Math.max(0, Math.floor((nowMs - uploadedAt) / 60000));
+  if (diffMinutes < 1) {
+    return "Just now";
+  }
+
+  if (diffMinutes < 60) {
+    return `${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+}
+
 function getRecordTime(record) {
   const timestamp = new Date(record?.fetched_at || record?.published_at || record?.updated_at || 0).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -115,30 +172,80 @@ function sortNewestFirst(records) {
   });
 }
 
+function stripPhotoCaption(value) {
+  return cleanText(value).replace(
+    /(?:^|\n+)\s*(?:photo\s*caption|image\s*caption|caption|फोटो\s*कैप्शन|इमेज\s*कैप्शन|चित्र\s*कैप्शन)\s*[:：-]\s*[\s\S]*$/i,
+    ""
+  ).trim();
+}
+
+function extractPhotoCaption(value) {
+  const text = cleanText(value);
+  const match = text.match(
+    /(?:^|\n+)\s*(?:photo\s*caption|image\s*caption|caption|फोटो\s*कैप्शन|इमेज\s*कैप्शन|चित्र\s*कैप्शन)\s*[:：-]\s*([\s\S]*)$/i
+  );
+
+  return cleanText(match?.[1] || "");
+}
+
+function getImageCaption(record, articleTexts) {
+  const directCaption = cleanText(
+    record.image_caption ||
+      record.photo_caption ||
+      record.caption ||
+      record.media?.image_caption ||
+      record.media?.photo_caption ||
+      record.media?.caption ||
+      record.raw_articles?.image_caption ||
+      record.raw_articles?.photo_caption ||
+      record.raw_articles?.caption ||
+      record.ui_hindi?.image_caption ||
+      record.ui_hindi?.photo_caption ||
+      record.ui_hindi?.caption
+  );
+
+  if (directCaption) {
+    return directCaption;
+  }
+
+  return extractPhotoCaption(articleTexts.short_100) ||
+    extractPhotoCaption(articleTexts.medium_300) ||
+    extractPhotoCaption(articleTexts.long_500);
+}
+
 function flattenPayload(payload, section = "news") {
   const records = (payload?.grouped_records || []).flatMap((group) =>
-    (group.records || []).map((record) => ({
-      ...record,
-      section,
-      fetched_at: record.fetched_at || record.published_at || record.updated_at || payload?.loaded_at || null,
-      category: record.category || group.category || "uncategorized",
-      title: record.ui_hindi?.title || record.title || "Untitled story",
-      state: record.ui_hindi?.state || record.state || "राष्ट्रीय",
-      district:
-        record.ui_hindi?.district ||
-        record.ui_hindi?.district_name ||
-        record.district ||
-        "",
-      short_100: cleanText(record.raw_articles?.words_100 || record.ui_hindi?.short_100 || record.summary),
-      medium_300: cleanText(record.raw_articles?.words_300 || record.ui_hindi?.medium_300 || record.summary),
-      long_500: cleanText(
-        record.raw_articles?.words_600 ||
-          record.raw_articles?.words_500 ||
-          record.ui_hindi?.long_500 ||
-          record.article ||
-          record.summary
-      ),
-    }))
+    (group.records || []).map((record) => {
+      const articleTexts = {
+        short_100: cleanText(record.raw_articles?.words_100 || record.ui_hindi?.short_100 || record.summary),
+        medium_300: cleanText(record.raw_articles?.words_300 || record.ui_hindi?.medium_300 || record.summary),
+        long_500: cleanText(
+          record.raw_articles?.words_600 ||
+            record.raw_articles?.words_500 ||
+            record.ui_hindi?.long_500 ||
+            record.article ||
+            record.summary
+        ),
+      };
+
+      return {
+        ...record,
+        section,
+        fetched_at: record.fetched_at || record.published_at || record.updated_at || payload?.loaded_at || null,
+        category: record.category || group.category || "uncategorized",
+        title: record.ui_hindi?.title || record.title || "Untitled story",
+        state: record.ui_hindi?.state || record.state || "राष्ट्रीय",
+        district:
+          record.ui_hindi?.district ||
+          record.ui_hindi?.district_name ||
+          record.district ||
+          "",
+        image_caption: getImageCaption(record, articleTexts),
+        short_100: stripPhotoCaption(articleTexts.short_100),
+        medium_300: stripPhotoCaption(articleTexts.medium_300),
+        long_500: stripPhotoCaption(articleTexts.long_500),
+      };
+    })
   );
 
   return sortNewestFirst(records);
@@ -157,6 +264,19 @@ function truncate(value, size) {
   }
 
   return `${text.slice(0, size).trim()}...`;
+}
+
+function splitPreviewParagraphs(value) {
+  const text = cleanText(value);
+
+  if (!text) {
+    return [];
+  }
+
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
 }
 
 function getSectionCacheKey(section, variant = "default") {
@@ -225,16 +345,46 @@ async function copyChanakyaText(text, setMessage) {
   }
 }
 
+async function copyKrutidevText(text, setMessage) {
+  const value = cleanText(text);
+  if (!value) {
+    setMessage("Krutidev copy ke liye content available nahi hai.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(unicodeToKrutidev(value));
+    setMessage("Krutidev text copied");
+  } catch {
+    setMessage("Clipboard permission nahi mili.");
+  }
+}
+
+async function copyGandhiText(text, setMessage) {
+  const value = cleanText(text);
+  if (!value) {
+    setMessage("4cGandhi copy ke liye content available nahi hai.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(unicodeTo4CGandhi(value));
+    setMessage("4cGandhi text copied");
+  } catch {
+    setMessage("Clipboard permission nahi mili.");
+  }
+}
+
 function CopyActions({ text, setMessage }) {
   return (
-    <div className="flex shrink-0 flex-col gap-1">
+    <div className="grid w-full min-w-0 grid-cols-1 gap-1">
       <button
         type="button"
         onClick={(event) => {
           event.stopPropagation();
           void copyText(text, setMessage);
         }}
-        className="rounded border border-[#b8c4d2] bg-white px-2 py-1 text-xs font-semibold text-[#26384c] hover:bg-[#edf6ff]"
+        className="w-full min-w-0 truncate rounded border border-[#b8c4d2] bg-white px-1.5 py-1 text-xs font-semibold text-[#26384c] hover:bg-[#edf6ff]"
         title="Copy normal Unicode text"
       >
         Copy
@@ -245,11 +395,198 @@ function CopyActions({ text, setMessage }) {
           event.stopPropagation();
           void copyChanakyaText(text, setMessage);
         }}
-        className="rounded border border-[#b68b35] bg-[#fff8e8] px-2 py-1 text-xs font-semibold text-[#7a4f00] hover:bg-[#ffefc2]"
+        className="w-full min-w-0 truncate rounded border border-[#b68b35] bg-[#fff8e8] px-1.5 py-1 text-xs font-semibold text-[#7a4f00] hover:bg-[#ffefc2]"
         title="Copy converted Chanakya font text"
       >
         Chanakya
       </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          void copyKrutidevText(text, setMessage);
+        }}
+        className="w-full min-w-0 truncate rounded border border-[#7857b8] bg-[#f6f1ff] px-1.5 py-1 text-xs font-semibold text-[#4e2c83] hover:bg-[#ede2ff]"
+        title="Copy converted Krutidev font text"
+      >
+        Krutidev
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          void copyGandhiText(text, setMessage);
+        }}
+        className="w-full min-w-0 truncate rounded border border-[#24845b] bg-[#effbf5] px-1.5 py-1 text-xs font-semibold text-[#176340] hover:bg-[#ddf7ea]"
+        title="Copy converted 4cGandhi font text"
+      >
+        4cGandhi
+      </button>
+    </div>
+  );
+}
+
+function PreviewModal({ preview, onClose, setPreview, setMessage }) {
+  const activeText = preview?.active === "caption"
+    ? preview.item.image_caption
+    : preview?.active === "300"
+    ? preview.item.medium_300
+    : preview?.active === "600"
+      ? preview.item.long_500
+      : preview?.item.short_100;
+  const paragraphs = splitPreviewParagraphs(activeText);
+  const options = [
+    { key: "caption", label: "Image Caption", text: preview?.item.image_caption },
+    { key: "100", label: "100 Words", text: preview?.item.short_100 },
+    { key: "300", label: "300 Words", text: preview?.item.medium_300 },
+    { key: "600", label: "600 Words", text: preview?.item.long_500 },
+  ];
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  if (!preview?.item) {
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end bg-black/55 p-3 sm:items-center sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label="News preview"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section className="max-h-[92vh] w-full overflow-hidden rounded-t-2xl border border-[#cbd7e3] bg-white shadow-[0_24px_90px_rgba(8,21,34,0.35)] sm:mx-auto sm:max-w-4xl sm:rounded-2xl">
+        <header className="border-b border-[#dfe6ee] bg-[#f4f7fa] px-4 py-4 sm:px-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#337ab7]">
+                {preview.active === "caption" ? "Image Caption Preview" : `${preview.active} Words Preview`}
+              </p>
+              <h2 className="mt-2 text-lg font-bold leading-7 text-[#123b61] sm:text-xl">
+                {preview.item.title || "Untitled story"}
+              </h2>
+              <p className="mt-1 text-xs text-[#687789]">
+                {preview.item.category || "-"} | {formatDate(preview.item.fetched_at)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#b8c4d2] bg-white text-xl font-bold leading-none text-[#26384c] hover:bg-[#edf6ff]"
+              aria-label="Close preview"
+            >
+              x
+            </button>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {options.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setPreview((current) => ({ ...current, active: option.key }))}
+                className={`rounded-full border px-4 py-2 text-xs font-bold ${preview.active === option.key ? "border-[#23527c] bg-[#337ab7] text-white" : "border-[#b8c4d2] bg-white text-[#26384c] hover:bg-[#edf6ff]"}`}
+              >
+                {option.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => void copyText(activeText, setMessage)}
+              className="rounded-full border border-[#b8c4d2] bg-white px-4 py-2 text-xs font-bold text-[#26384c] hover:bg-[#edf6ff]"
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyChanakyaText(activeText, setMessage)}
+              className="rounded-full border border-[#b68b35] bg-[#fff8e8] px-4 py-2 text-xs font-bold text-[#7a4f00] hover:bg-[#ffefc2]"
+            >
+              Copy in Chanakya
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyKrutidevText(activeText, setMessage)}
+              className="rounded-full border border-[#7857b8] bg-[#f6f1ff] px-4 py-2 text-xs font-bold text-[#4e2c83] hover:bg-[#ede2ff]"
+            >
+              Copy in Krutidev
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyGandhiText(activeText, setMessage)}
+              className="rounded-full border border-[#24845b] bg-[#effbf5] px-4 py-2 text-xs font-bold text-[#176340] hover:bg-[#ddf7ea]"
+            >
+              Copy in 4cGandhi
+            </button>
+          </div>
+        </header>
+
+        <div className="max-h-[62vh] overflow-y-auto px-4 py-5 sm:px-6">
+          {paragraphs.length ? (
+            <div className="space-y-4 text-[16px] leading-8 text-[#17293b]">
+              {paragraphs.map((paragraph, index) => (
+                <p key={`${index}-${paragraph.slice(0, 24)}`}>{paragraph}</p>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg border border-[#dfe6ee] bg-[#f8fafc] px-4 py-5 text-center text-sm text-[#6b7280]">
+              Preview content available nahi hai.
+            </p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PreviewTextCell({ item, type, text, previewSize, setPreview, setMessage }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setPreview({ item, active: type });
+        }}
+        className="min-h-[40px] w-full min-w-0 text-left leading-5 text-[#17293b] hover:text-[#0d6efd] hover:underline"
+        title={`Open ${type} words preview`}
+      >
+        {truncate(text, previewSize)}
+      </button>
+      <div className="grid w-full min-w-0 grid-cols-2 gap-1">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setPreview({ item, active: type });
+          }}
+          className="col-span-2 w-full rounded border border-[#337ab7] bg-[#edf6ff] px-1.5 py-1 text-xs font-semibold text-[#1f5f95] hover:bg-[#dff0ff]"
+        >
+          Preview/पूरी खबर पढ़ें
+        </button>
+        <div className="col-span-2">
+          <CopyActions text={text} setMessage={setMessage} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -282,15 +619,57 @@ async function downloadImage(item, setMessage) {
 }
 
 function ImageCell({ item, setMessage }) {
-  const [useDirectImage, setUseDirectImage] = useState(false);
-  const [failed, setFailed] = useState(false);
   const hasImage = isUsableImageUrl(item.image_link);
-  const imageSrc = useDirectImage ? item.image_link : getDisplayImageUrl(item.image_link);
+  const proxyImageSrc = hasImage ? getDisplayImageUrl(item.image_link) : "";
+  const [imageSrc, setImageSrc] = useState(proxyImageSrc);
+  const [failed, setFailed] = useState(false);
 
-  if (!hasImage || failed) {
+  useEffect(() => {
+    if (!hasImage) {
+      setImageSrc("");
+      setFailed(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const loadImage = (src) => new Promise((resolve, reject) => {
+      const probe = new Image();
+      probe.referrerPolicy = "no-referrer";
+      probe.onload = () => resolve(src);
+      probe.onerror = reject;
+      probe.src = src;
+    });
+
+    setFailed(false);
+    setImageSrc(proxyImageSrc);
+
+    loadImage(proxyImageSrc)
+      .then((src) => {
+        if (!cancelled) {
+          setImageSrc(src);
+        }
+      })
+      .catch(() => loadImage(item.image_link)
+        .then((src) => {
+          if (!cancelled) {
+            setImageSrc(src);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setFailed(true);
+          }
+        }));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasImage, item.image_link, proxyImageSrc]);
+
+  if (!hasImage || failed || !isRenderableImageSrc(imageSrc)) {
     return (
       <div className="flex h-[86px] w-[126px] items-center justify-center rounded border border-[#d6dde6] bg-[#f3f6f9] px-2 text-center text-xs text-[#6b7280]">
-        No image
+        {hasImage && !failed ? "Loading" : "No image"}
       </div>
     );
   }
@@ -308,8 +687,8 @@ function ImageCell({ item, setMessage }) {
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => {
-            if (!useDirectImage) {
-              setUseDirectImage(true);
+            if (imageSrc !== item.image_link) {
+              setImageSrc(item.image_link);
               return;
             }
 
@@ -331,20 +710,134 @@ function ImageCell({ item, setMessage }) {
   );
 }
 
+function NewsTableHeader({ activeSection }) {
+  return (
+    <header className="border-b border-[#d7dde6] bg-white">
+      <div className="relative overflow-hidden bg-[#030a18] text-white">
+        <div className="absolute inset-0 opacity-70">
+          <div className="absolute left-[38%] top-0 h-full w-[36%] bg-[radial-gradient(circle_at_center,rgba(28,84,142,0.42),transparent_58%)]" />
+          <div className="absolute inset-y-0 right-0 w-[45%] bg-[linear-gradient(115deg,transparent_0%,rgba(10,24,49,0.2)_34%,rgba(189,14,27,0.22)_35%,transparent_36%,transparent_58%,rgba(189,14,27,0.18)_59%,transparent_60%)]" />
+          <div className="absolute left-[42%] top-4 h-24 w-72 rounded-full border border-[#18355d] opacity-45" />
+          <div className="absolute left-[44%] top-7 h-14 w-[430px] bg-[radial-gradient(circle,#234c82_1px,transparent_1px)] [background-size:9px_9px] opacity-35" />
+        </div>
+
+        <div className="relative flex min-h-[118px] flex-col gap-5 px-5 py-5 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+          <div className="flex min-w-0 items-center gap-4">
+            <img
+              src="/images/logo.png"
+              alt="Gautam Enterprises"
+              className="h-[76px] w-[76px] shrink-0 object-contain"
+            />
+            <div className="min-w-0">
+              <div className="flex flex-col gap-1 md:flex-row md:items-end md:gap-5">
+                <div>
+                  <p className="font-serif text-[28px] font-bold uppercase leading-none tracking-[0.09em] text-white md:text-[34px]">
+                    Gautam
+                  </p>
+                  <p className="mt-1 border-y border-[#d01f2f] py-1 font-serif text-[18px] uppercase leading-none tracking-[0.18em] text-white md:text-[22px]">
+                    Enterprises
+                  </p>
+                </div>
+                <div className="hidden h-16 w-px bg-white/30 md:block" />
+                <div>
+                  <p className="text-[36px] font-black uppercase leading-none tracking-[0.11em] text-[#e31324] md:text-[44px]">
+                    Gen-H
+                  </p>
+                  <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.32em] text-white/80">
+                    A wired news agency
+                  </p>
+                </div>
+              </div>
+              <p className="mt-3 text-[11px] font-semibold uppercase tracking-[0.42em] text-white/75">
+                Fast . Accurate . Impartial . Global
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4 lg:items-end">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {HEADER_FEATURES.map((item) => (
+                <div key={item.label} className="flex items-center gap-2 border-l border-[#c61c2a]/55 pl-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full border border-white/45 text-lg text-white/90">
+                    {item.symbol}
+                  </span>
+                  <span className="text-xs font-bold uppercase tracking-[0.08em] text-white/90">
+                    {item.label}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <nav className="flex flex-wrap gap-2" aria-label="News sections">
+          {Object.entries(SECTION_CONFIG).map(([key, item]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => {
+                if (key === activeSection) {
+                  return;
+                }
+
+                window.location.href = item.pagePath;
+              }}
+              className={`rounded border px-4 py-2 text-sm font-bold shadow-sm ${activeSection === key ? "border-[#b30e1c] bg-[#c91522] text-white" : "border-[#cfd8e3] bg-white text-[#14243a] hover:bg-[#f4f7fb]"}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+
+        {activeSection === "news" ? (
+          <form action="/news-table/logout" method="POST">
+            <button
+              type="submit"
+              className="rounded border border-[#b8c4d2] bg-white px-5 py-2 text-xs font-bold uppercase tracking-[0.12em] text-[#14243a] shadow-sm hover:bg-[#f4f7fb]"
+            >
+              Logout
+            </button>
+          </form>
+        ) : null}
+      </div>
+    </header>
+  );
+}
+
 export default function NewsTableDesk({ initialPayload, initialSection = "news" }) {
   const activeSection = SECTION_CONFIG[initialSection] ? initialSection : "news";
-  const [payload, setPayload] = useState(initialPayload);
+  const [payload, setPayload] = useState(initialPayload || createEmptyPayload());
   const [filters, setFilters] = useState({
     category: "",
     state: "",
     district: "",
-    pageSize: 25,
+    pageSize: DEFAULT_PAGE_SIZE,
   });
+  const [currentPage, setCurrentPage] = useState(1);
   const [lastReloadAt, setLastReloadAt] = useState(initialPayload?.loaded_at || new Date().toISOString());
   const [message, setMessage] = useState("");
+  const [categoryCatalog, setCategoryCatalog] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [relativeNow, setRelativeNow] = useState(null);
 
   const records = useMemo(() => flattenPayload(payload, activeSection), [activeSection, payload]);
-  const categories = useMemo(() => uniqueValues(records, (item) => item.category), [records]);
+  const dynamicNewsCategories = useMemo(() => {
+    const categories =
+      categoryCatalog?.data?.final_categories ||
+      categoryCatalog?.final_categories ||
+      categoryCatalog?.data?.data?.final_categories ||
+      [];
+    return Array.isArray(categories) ? categories.filter(Boolean) : [];
+  }, [categoryCatalog]);
+  const categories = useMemo(() => {
+    if (activeSection === "news" && dynamicNewsCategories.length > 0) {
+      return dynamicNewsCategories;
+    }
+
+    return uniqueValues(records, (item) => item.category);
+  }, [activeSection, dynamicNewsCategories, records]);
   const states = useMemo(() => uniqueValues(records, (item) => item.state), [records]);
   const districts = useMemo(() => uniqueValues(records, (item) => item.district), [records]);
 
@@ -363,7 +856,23 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     });
   }, [filters.category, filters.state, filters.district, records]);
 
-  const visibleRecords = filteredRecords.slice(0, Number(filters.pageSize) || 25);
+  const pageSize = Number(filters.pageSize) || DEFAULT_PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const pageStartIndex = filteredRecords.length ? (safeCurrentPage - 1) * pageSize : 0;
+  const pageEndIndex = Math.min(pageStartIndex + pageSize, filteredRecords.length);
+  const visibleRecords = filteredRecords.slice(pageStartIndex, pageEndIndex);
+  const pageNumbers = Array.from({ length: totalPages }, (_, index) => index + 1);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filters.category, filters.state, filters.district, filters.pageSize, activeSection]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const refreshNews = useCallback(async ({ force = false, section = activeSection } = {}) => {
     const sectionConfig = SECTION_CONFIG[section] || SECTION_CONFIG.news;
@@ -378,25 +887,32 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
 
     try {
       if (force && sectionConfig.syncPath) {
-        await fetch(getDashboardProxyPath(sectionConfig.syncPath), {
+        setMessage(`${sectionConfig.label} sync chal raha hai...`);
+        const syncResponse = await fetch(getDashboardProxyPath(sectionConfig.syncPath), {
           method: "POST",
           cache: "no-store",
         });
+        const syncPayload = await syncResponse.json().catch(() => null);
+
+        if (!syncResponse.ok || syncPayload?.status === "Error" || syncPayload?.success === false) {
+          throw new Error(syncPayload?.message || syncPayload?.error?.message || `${sectionConfig.label} sync failed.`);
+        }
       }
 
       const response = await fetch(getDashboardProxyPath(sectionConfig.listPath), {
-        cache: force ? "reload" : "force-cache",
+        cache: "no-store",
       });
       const nextPayload = await response.json();
       if (response.ok && nextPayload.status !== "Error") {
         setPayload(nextPayload);
         setLastReloadAt(new Date().toISOString());
         writeSectionCache(section, nextPayload);
+        setMessage(`${sectionConfig.label} reload ho gaya.`);
       } else {
         setMessage(nextPayload.message || `${sectionConfig.label} load nahi ho paya.`);
       }
-    } catch {
-      setMessage("Backend connection wait kar raha hai; cached data dikhaya ja raha hai.");
+    } catch (error) {
+      setMessage(error.message || "Backend connection wait kar raha hai; cached data dikhaya ja raha hai.");
     }
   }, [activeSection]);
 
@@ -408,16 +924,36 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       return;
     }
 
-    setPayload(initialPayload);
+    setPayload(initialPayload || createEmptyPayload());
     setLastReloadAt(new Date().toISOString());
-    writeSectionCache(activeSection, initialPayload);
+    if (hasPayloadRecords(initialPayload)) {
+      writeSectionCache(activeSection, initialPayload);
+    }
   }, [activeSection, initialPayload]);
 
   useEffect(() => {
-    if (activeSection === "news") {
-      return;
+    let cancelled = false;
+
+    async function loadCategoryCatalog() {
+      try {
+        const response = await fetch(getDashboardProxyPath("/categories"), { cache: "no-store" });
+        const nextPayload = await response.json();
+        if (!cancelled && response.ok) {
+          setCategoryCatalog(nextPayload);
+        }
+      } catch {
+        // Fall back to categories present in the article payload.
+      }
     }
 
+    void loadCategoryCatalog();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     startTransition(() => {
       void refreshNews({ section: activeSection });
     });
@@ -452,35 +988,23 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     return () => window.clearTimeout(timeout);
   }, [message]);
 
-  return (
-    <main className="min-h-screen bg-white p-3 text-black">
-      <h1 className="mb-4 text-[22px] font-bold">News</h1>
-      <div className="mb-3 flex flex-wrap gap-2 border-b border-[#d8d8d8] pb-3">
-        {Object.entries(SECTION_CONFIG).map(([key, item]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => {
-              if (key === activeSection) {
-                return;
-              }
+  useEffect(() => {
+    setRelativeNow(Date.now());
+    const interval = window.setInterval(() => setRelativeNow(Date.now()), 60000);
+    return () => window.clearInterval(interval);
+  }, []);
 
-              window.location.href = item.pagePath;
-            }}
-            className={`border px-4 py-2 text-sm font-bold ${activeSection === key ? "border-[#23527c] bg-[#337ab7] text-white" : "border-[#c7c7c7] bg-white text-black"}`}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-      <div className="border-t border-[#e5e5e5] pt-3">
+  return (
+    <main className="min-h-screen bg-white text-black" style={{ zoom: "90%" }}>
+      <NewsTableHeader activeSection={activeSection} />
+      <div className="px-3 pt-3">
         <div className="grid gap-3 lg:grid-cols-4">
           <label className="block text-sm font-bold">
             Select Category :
             <select
               value={filters.category}
               onChange={(event) => setFilters((current) => ({ ...current, category: event.target.value }))}
-              className="mt-2 h-[34px] w-full border border-[#c7c7c7] bg-white px-3 text-center text-sm text-black"
+              className="mt-2 h-9 w-full border border-[#b7b7b7] bg-white px-3 text-center text-sm text-black"
             >
               <option value="">--Select Category--</option>
               {categories.map((category) => (
@@ -494,7 +1018,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
             <select
               value={filters.state}
               onChange={(event) => setFilters((current) => ({ ...current, state: event.target.value }))}
-              className="mt-2 h-[40px] w-full border border-[#aeb7c2] bg-[#f5f7f9] px-3 text-sm text-[#19324b]"
+              className="mt-2 h-9 w-full border border-[#b7b7b7] bg-white px-3 text-sm text-black"
             >
               <option value="">-- Select State / राज्य चुनें --</option>
               {states.map((state) => (
@@ -508,7 +1032,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
             <select
               value={filters.district}
               onChange={(event) => setFilters((current) => ({ ...current, district: event.target.value }))}
-              className="mt-2 h-[40px] w-full border border-[#aeb7c2] bg-[#f5f7f9] px-3 text-sm text-[#19324b]"
+              className="mt-2 h-9 w-full border border-[#b7b7b7] bg-white px-3 text-sm text-black"
             >
               <option value="">--Select District / जिला चुनें--</option>
               {districts.map((district) => (
@@ -522,7 +1046,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
           <div className="hidden lg:block" aria-hidden="true" />
         </div>
 
-        <div className="mt-4 text-center">
+        <div className="mt-3 text-center">
           <button
             type="button"
             onClick={() => void refreshNews({ force: true })}
@@ -533,7 +1057,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         </div>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-3 px-3 pb-4">
         <section className="min-w-0">
           <div className="grid gap-2 md:grid-cols-[1fr_auto_1fr] md:items-center">
             <h2 className="text-base font-bold">{SECTION_CONFIG[activeSection]?.label || "News"}/समाचार</h2>
@@ -547,34 +1071,79 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
             <h2 className="text-base font-bold">Content (समाचार)</h2>
           </div>
 
-          <div className="my-2 flex items-center gap-2">
-            <span>Show</span>
-            <select
-              value={filters.pageSize}
-              onChange={(event) => setFilters((current) => ({ ...current, pageSize: Number(event.target.value) }))}
-              className="h-[40px] border border-[#bfc9d4] px-3"
-            >
-              {[25, 50, 100, 300, 500].map((size) => (
-                <option key={size} value={size}>{size}</option>
+          <div className="my-2 flex flex-col gap-2 text-sm lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <span>Show</span>
+              <select
+                value={filters.pageSize}
+                onChange={(event) => setFilters((current) => ({ ...current, pageSize: Number(event.target.value) }))}
+                className="h-8 border border-[#999] bg-white px-2 text-sm text-black"
+              >
+                {[25, 50].map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+              <span>entries</span>
+              <span className="text-[#555]">Total entries: {filteredRecords.length}</span>
+              {message ? <span className="ml-3 text-sm text-[#0d6efd]">{message}</span> : null}
+            </div>
+
+            <nav className="flex flex-wrap items-center gap-1 lg:justify-end" aria-label="Table pagination">
+              <span className="mr-1 text-[#555]">Jump to page</span>
+              <select
+                value={safeCurrentPage}
+                onChange={(event) => setCurrentPage(Number(event.target.value))}
+                className="h-8 border border-[#999] bg-white px-2 text-sm text-black"
+              >
+                {pageNumbers.map((page) => (
+                  <option key={page} value={page}>
+                    {page}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={safeCurrentPage === 1}
+                className="border border-[#b7b7b7] bg-white px-3 py-1 text-sm text-black disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Previous
+              </button>
+              {pageNumbers.map((page) => (
+                <button
+                  key={page}
+                  type="button"
+                  onClick={() => setCurrentPage(page)}
+                  className={`border px-3 py-1 text-sm ${safeCurrentPage === page ? "border-[#333] bg-[#333] text-white" : "border-[#b7b7b7] bg-white text-black"}`}
+                  aria-current={safeCurrentPage === page ? "page" : undefined}
+                >
+                  {page}
+                </button>
               ))}
-            </select>
-            <span>entries</span>
-            {message ? <span className="ml-3 text-sm text-[#0d6efd]">{message}</span> : null}
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                disabled={safeCurrentPage === totalPages}
+                className="border border-[#b7b7b7] bg-white px-3 py-1 text-sm text-black disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Next
+              </button>
+            </nav>
           </div>
 
-          <div className="overflow-x-auto rounded border border-[#dfe6ee] bg-white shadow-sm">
-            <table className="w-full min-w-[1660px] border-collapse text-sm">
+          <div className="overflow-x-auto rounded border border-[#cfd8e3] bg-white">
+            <table className="w-full min-w-[1450px] table-fixed border-collapse text-[13px]">
               <thead>
-                <tr className="sticky top-0 border-b border-[#b9c6d4] bg-[#f4f7fa] text-left text-xs uppercase text-[#30445c]">
-                  <th className="w-[55px] border-r border-[#d8e0e8] px-3 py-3">#</th>
-                  <th className="w-[90px] border-r border-[#d8e0e8] px-3 py-3">Id</th>
-                  <th className="w-[105px] border-r border-[#d8e0e8] px-3 py-3">Category</th>
-                  <th className="w-[330px] border-r border-[#d8e0e8] px-3 py-3">Title</th>
-                  <th className="w-[155px] border-r border-[#d8e0e8] px-3 py-3 text-center">Image Preview</th>
-                  <th className="w-[230px] border-r border-[#d8e0e8] px-3 py-3">100 Words</th>
-                  <th className="w-[260px] border-r border-[#d8e0e8] px-3 py-3">300 Words</th>
-                  <th className="w-[280px] border-r border-[#d8e0e8] px-3 py-3">600 Words</th>
-                  <th className="w-[120px] px-3 py-3">Date</th>
+                <tr className="sticky top-0 border-b border-[#b9c6d4] bg-[#f5f5f5] text-left text-[11px] uppercase text-[#333]">
+                  <th className="w-[68px] border-r border-[#d8e0e8] px-2 py-2">Id</th>
+                  <th className="w-[110px] border-r border-[#d8e0e8] px-2 py-2">Category</th>
+                  <th className="w-[120px] border-r border-[#d8e0e8] px-2 py-2">Uploaded</th>
+                  <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title</th>
+                  <th className="w-[145px] border-r border-[#d8e0e8] px-2 py-2 text-center">Image</th>
+                  <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
+                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">100 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">300 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">600 Words</th>
                 </tr>
               </thead>
               <tbody>
@@ -583,44 +1152,91 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                     key={`${item.id}-${item.rewrite_id || index}`}
                     className={`border-b border-[#e8edf3] align-top transition-colors hover:bg-[#f2f8ff] ${index % 2 ? "bg-white" : "bg-[#fbfcfe]"}`}
                   >
-                    <td className="border-r border-[#e5eaf0] px-3 py-3 text-center font-semibold text-[#4b5b6d]">{index + 1}</td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3 text-center text-[#4b5b6d]">{item.id}</td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3 text-center">
-                      <span className="inline-flex rounded border border-[#d6dde6] bg-[#f7fafc] px-2 py-1 text-xs font-semibold text-[#334155]">
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center text-[#4b5b6d]">{item.id}</td>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center">
+                      <span className="inline-flex rounded border border-[#d6dde6] bg-white px-2 py-1 text-[11px] font-semibold text-[#334155]">
                         {item.category}
                       </span>
                     </td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3">
-                      <div className="flex items-start gap-2">
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center text-[#4b5b6d]" title={formatDate(item.fetched_at)}>
+                      {relativeNow ? formatUploadAge(item.fetched_at, relativeNow) : "-"}
+                    </td>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <div className="flex min-w-0 flex-col gap-2">
                         <div className="min-w-0 flex-1">
-                          <div className="font-bold leading-6 text-[#123b61]">{truncate(item.title, 105)}</div>
+                          <div className="font-bold leading-5 text-[#123b61]">{truncate(item.title, 75)}</div>
                           <div className="mt-1 text-xs text-[#687789]">{item.state || "-"}</div>
                         </div>
                         <CopyActions text={item.title} setMessage={setMessage} />
                       </div>
                     </td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3 text-center">
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center">
                       <ImageCell item={item} setMessage={setMessage} />
                     </td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3">
-                      <div className="flex items-start gap-2">
-                        <span className="flex-1">{truncate(item.short_100, 58)}</span>
-                        <CopyActions text={item.short_100} setMessage={setMessage} />
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <div className="flex min-w-0 flex-col gap-2">
+                        {item.image_caption ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setPreview({ item, active: "caption" });
+                            }}
+                            className="min-h-[40px] w-full min-w-0 text-left leading-5 text-[#17293b] hover:text-[#0d6efd] hover:underline"
+                            title="Open image caption preview"
+                          >
+                            {truncate(item.image_caption, 92)}
+                          </button>
+                        ) : (
+                          <span className="leading-5 text-[#687789]">Caption available nahi hai.</span>
+                        )}
+                        {item.image_caption ? (
+                          <div className="grid w-full min-w-0 grid-cols-1 gap-1">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setPreview({ item, active: "caption" });
+                              }}
+                              className="w-full rounded border border-[#337ab7] bg-[#edf6ff] px-1.5 py-1 text-xs font-semibold text-[#1f5f95] hover:bg-[#dff0ff]"
+                            >
+                              Preview
+                            </button>
+                            <CopyActions text={item.image_caption} setMessage={setMessage} />
+                          </div>
+                        ) : null}
                       </div>
                     </td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3">
-                      <div className="flex items-start gap-2">
-                        <span className="flex-1">{truncate(item.medium_300, 70)}</span>
-                        <CopyActions text={item.medium_300} setMessage={setMessage} />
-                      </div>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <PreviewTextCell
+                        item={item}
+                        type="100"
+                        text={item.short_100}
+                        previewSize={58}
+                        setPreview={setPreview}
+                        setMessage={setMessage}
+                      />
                     </td>
-                    <td className="border-r border-[#e5eaf0] px-3 py-3">
-                      <div className="flex items-start gap-2">
-                        <span className="flex-1">{truncate(item.long_500, 78)}</span>
-                        <CopyActions text={item.long_500} setMessage={setMessage} />
-                      </div>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <PreviewTextCell
+                        item={item}
+                        type="300"
+                        text={item.medium_300}
+                        previewSize={70}
+                        setPreview={setPreview}
+                        setMessage={setMessage}
+                      />
                     </td>
-                    <td className="px-3 py-3 text-center text-[#4b5b6d]">{formatDate(item.fetched_at)}</td>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <PreviewTextCell
+                        item={item}
+                        type="600"
+                        text={item.long_500}
+                        previewSize={78}
+                        setPreview={setPreview}
+                        setMessage={setMessage}
+                      />
+                    </td>
                   </tr>
                 ))}
                 {!visibleRecords.length ? (
@@ -635,8 +1251,22 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
               </tbody>
             </table>
           </div>
+
+          <div className="mt-3 flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-[#555]">
+              Showing {filteredRecords.length ? pageStartIndex + 1 : 0} to {pageEndIndex} of {filteredRecords.length} entries
+            </div>
+          </div>
         </section>
       </div>
+      {preview ? (
+        <PreviewModal
+          preview={preview}
+          setPreview={setPreview}
+          setMessage={setMessage}
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
     </main>
   );
 }

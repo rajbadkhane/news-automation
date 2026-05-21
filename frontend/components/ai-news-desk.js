@@ -41,6 +41,10 @@ function getDisplayImageUrl(imageUrl) {
   return `${getDashboardProxyPath("/image-proxy")}?url=${encodeURIComponent(imageUrl)}`;
 }
 
+function isUsableImageUrl(imageUrl) {
+  return /^https?:\/\//i.test(String(imageUrl || "").trim());
+}
+
 function cleanAiText(value) {
   return String(value || "")
     .replace(/\*\*/g, "")
@@ -316,7 +320,7 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload }) {
                   }`}
                 >
                   <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
-                    {item.news?.image_link ? (
+                    {isUsableImageUrl(item.news?.image_link) ? (
                       <img
                         src={getDisplayImageUrl(item.news.image_link)}
                         alt={cardLanguage.headline || item.news?.title}
@@ -394,7 +398,7 @@ export default function AiNewsDesk({ aiPayload, aiCronPayload }) {
             <div className="grid max-h-[92vh] overflow-y-auto lg:grid-cols-[0.85fr_1.15fr]">
               <article className="border-b border-white/10 bg-slate-950/40 lg:border-b-0 lg:border-r">
                 <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
-                  {selectedStory.news?.image_link ? (
+                  {isUsableImageUrl(selectedStory.news?.image_link) ? (
                     <img
                       src={getDisplayImageUrl(selectedStory.news.image_link)}
                       alt={englishBlock?.headline || selectedStory.news?.title}

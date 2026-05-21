@@ -97,6 +97,22 @@ export function getPublicApiBaseUrl() {
   return normalizeBaseUrl(requireEnv("NEXT_PUBLIC_API_BASE_URL", { defaultValue: fallback }), "NEXT_PUBLIC_API_BASE_URL");
 }
 
+export function getServerApiBaseUrl() {
+  const explicitValue = getEnvValue("API_BASE_URL")
+    || getEnvValue("INTERNAL_API_BASE_URL")
+    || getEnvValue("BACKEND_API_BASE_URL");
+
+  if (explicitValue) {
+    return normalizeBaseUrl(explicitValue, "API_BASE_URL");
+  }
+
+  if (isStrictProductionEnv()) {
+    return getPublicApiBaseUrl();
+  }
+
+  return normalizeBaseUrl("http://127.0.0.1:3000", "API_BASE_URL");
+}
+
 export function getAdminMasterApiKey() {
   const fallback = isStrictProductionEnv() ? "" : getEnvValue("MASTER_API_KEY") || "local-dev-key";
   return requireEnv("ADMIN_PANEL_MASTER_API_KEY", {

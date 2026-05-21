@@ -330,7 +330,10 @@ function scoreImageCandidate(candidate) {
   if (/news|article|photo|image|uploads|mpinfonew|todaysnews/.test(normalized)) {
     score += 1000;
   }
-  if (/logo|icon|sprite|social|share|banner|placeholder|default|facebook|twitter|youtube|whatsapp|vaccination|mahaabhiyan|abhiyan/.test(normalized)) {
+  if (
+    /logo|icon|sprite|social|share_icon|banner|placeholder|default|fallback|attention|qrcode|qr-code|wechat|weibo|follow|subscribe|rhs|promo|sponsor|newsletter|subscription|facebook|twitter|youtube|whatsapp|vaccination|mahaabhiyan|abhiyan/.test(normalized) ||
+    /(?:^|[/?&_.-])(?:ads?|advert|advertisement|advertorial)(?:[/?&_.=-]|$)/.test(normalized)
+  ) {
     score -= 3000;
   }
   if ((candidate.width && candidate.width < 180) || (candidate.height && candidate.height < 100)) {
@@ -393,7 +396,6 @@ async function extractImageData(page, sourceUrl, listingImageUrl) {
       data.twitterImage,
       data.jsonLdImages?.[0],
       data.linkImage,
-      listingImageUrl,
     ]
       .map((image) => resolveImageUrl(image, sourceUrl))
       .filter(Boolean);
@@ -401,7 +403,7 @@ async function extractImageData(page, sourceUrl, listingImageUrl) {
     const uniqueImages = uniqueBy(priorityImages.map((url) => ({ url })), (item) => item.url).map((item) => item.url);
     return {
       imageUrl: uniqueImages[0] || null,
-      fallbackImageUrl: uniqueImages.find((url) => url !== uniqueImages[0]) || null,
+      fallbackImageUrl: null,
     };
   });
 }
@@ -466,7 +468,9 @@ async function extractArticle(page, districtConfig, linkInfo) {
   const body = await extractArticleBody(page);
   const imageData = await extractImageData(page, sourceUrl, linkInfo.listingImageUrl);
   const hashTitle = getHeadlineFromUrlHash(sourceUrl);
-  const title = cleanHindiText(hashTitle || linkInfo.titleHint || metadata.title || "MP Info News");
+  const safeHashTitle = hashTitle && hashTitle !== "-" ? hashTitle : "";
+  const safeTitleHint = linkInfo.titleHint && linkInfo.titleHint !== "-" ? linkInfo.titleHint : "";
+  const title = cleanHindiText(safeHashTitle || safeTitleHint || metadata.title || "MP Info News");
   const subtitle = cleanHindiText(metadata.subtitle) || null;
   const contentHtml = cleanHtml(body.html);
   const contentText = cleanHindiText(body.text);

@@ -74,7 +74,10 @@ function isMeaningfulImageUrl(value = "") {
     return false;
   }
 
-  return !/tn-250921125347\.jpg|logo|icon|sprite|avatar|banner|advert|placeholder|default|facebook|twitter|instagram|youtube|whatsapp|vaccination|mahaabhiyan|abhiyan|\.svg(?:\?|$)/i.test(normalized);
+  return !(
+    /tn-250921125347\.jpg|logo|icon|sprite|avatar|banner|placeholder|default|fallback|attention|qrcode|qr-code|wechat|weibo|follow|subscribe|rhs|promo|sponsor|newsletter|subscription|facebook|twitter|instagram|youtube|whatsapp|vaccination|mahaabhiyan|abhiyan|\.svg(?:\?|$)/i.test(normalized) ||
+    /(?:^|[/?&_.-])(?:ads?|advert|advertisement|advertorial)(?:[/?&_.=-]|$)/i.test(normalized)
+  );
 }
 
 function resolveImageUrl(value, baseUrl) {
@@ -89,6 +92,66 @@ function normalizePublishDate(value, sourceUrl = "") {
 
   if (!candidate) {
     return null;
+  }
+
+  const monthMap = {
+    january: 0,
+    jan: 0,
+    "जनवरी": 0,
+    february: 1,
+    feb: 1,
+    "फरवरी": 1,
+    march: 2,
+    mar: 2,
+    "मार्च": 2,
+    april: 3,
+    apr: 3,
+    "अप्रैल": 3,
+    may: 4,
+    "मई": 4,
+    june: 5,
+    jun: 5,
+    "जून": 5,
+    july: 6,
+    jul: 6,
+    "जुलाई": 6,
+    august: 7,
+    aug: 7,
+    "अगस्त": 7,
+    september: 8,
+    sep: 8,
+    sept: 8,
+    "सितंबर": 8,
+    "सितम्बर": 8,
+    october: 9,
+    oct: 9,
+    "अक्टूबर": 9,
+    november: 10,
+    nov: 10,
+    "नवंबर": 10,
+    "नवम्बर": 10,
+    december: 11,
+    dec: 11,
+    "दिसंबर": 11,
+    "दिसम्बर": 11,
+  };
+
+  const namedMonthMatch = candidate.match(
+    /([A-Za-z\u0900-\u097F]+)\s+(\d{1,2}),?\s+(\d{4})(?:,?\s+(\d{1,2}):(\d{2}))?/i
+  );
+  if (namedMonthMatch) {
+    const [, monthName, dayValue, yearValue, hourValue = "0", minuteValue = "0"] = namedMonthMatch;
+    const monthIndex = monthMap[monthName.toLowerCase()] ?? monthMap[monthName];
+    if (Number.isInteger(monthIndex)) {
+      const utcMs = Date.UTC(
+        Number.parseInt(yearValue, 10),
+        monthIndex,
+        Number.parseInt(dayValue, 10),
+        Number.parseInt(hourValue, 10),
+        Number.parseInt(minuteValue, 10)
+      ) - (candidate.toLowerCase().includes("ist") ? 330 * 60 * 1000 : 0);
+      return new Date(utcMs).toISOString();
+    }
   }
 
   const slashMatch = candidate.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);

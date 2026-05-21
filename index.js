@@ -41,6 +41,14 @@ const {
 } = require("./google-rss-feed-fetcher");
 const { createMpInfoRoutes } = require("./routes/mpinfo.routes");
 const { crawlLatest } = require("./services/mpinfo-scraper.service");
+const {
+  DEFAULT_UNIFIED_CATEGORY,
+  UNIFIED_NEWS_CATEGORIES,
+  createUnifiedNewsArticle,
+  getCategoryDisplayName: getUnifiedCategoryDisplayName,
+  getCategorySearchQuery,
+  normalizeCategory: normalizeUnifiedCategory,
+} = require("./config/news-categories");
 
 const app = express();
 app.disable("x-powered-by");
@@ -59,6 +67,26 @@ const IMAGE_PROXY_JPEG_QUALITY = Math.max(40, Math.min(Number.parseInt(process.e
 const IMAGE_PROXY_HIGH_MAX_WIDTH = Math.max(IMAGE_PROXY_MAX_WIDTH, Number.parseInt(process.env.IMAGE_PROXY_HIGH_MAX_WIDTH || "1920", 10) || 1920);
 const IMAGE_PROXY_HIGH_WEBP_QUALITY = Math.max(80, Math.min(Number.parseInt(process.env.IMAGE_PROXY_HIGH_WEBP_QUALITY || "92", 10) || 92, 95));
 const IMAGE_PROXY_HIGH_JPEG_QUALITY = Math.max(80, Math.min(Number.parseInt(process.env.IMAGE_PROXY_HIGH_JPEG_QUALITY || "94", 10) || 94, 95));
+const IMAGE_PROXY_TIMEOUT_MS = Math.max(
+  3_000,
+  Number.parseInt(process.env.IMAGE_PROXY_TIMEOUT_MS || "12000", 10) || 12_000
+);
+const IMAGE_PROXY_EXTRA_HOSTS = new Set(
+  String(
+    process.env.IMAGE_PROXY_EXTRA_HOSTS ||
+      "c.ndtvimg.com,drop.ndtv.com,images.ctfassets.net,island.lk,www.island.lk,thecliffnews.in,www.thecliffnews.in,cliff-news-backend.onrender.com,static-cdn.toi-media.com,dailypioneer.com,www.dailypioneer.com,pxl-tcdie.terminalfour.net,thehindu.com,www.thehindu.com,cdn.britannica.com"
+  )
+    .split(",")
+    .map((host) => host.trim().toLowerCase().replace(/^www\./, ""))
+    .filter(Boolean)
+);
+const IMAGE_PROXY_EXTRA_HOST_SUFFIXES = String(
+  process.env.IMAGE_PROXY_EXTRA_HOST_SUFFIXES ||
+    "ndtvimg.com,ctfassets.net,island.lk,thecliffnews.in,toi-media.com,dailypioneer.com,terminalfour.net,thehindu.com,britannica.com,espncdn.com,upstox.com,weforum.org,nvidia.com,arcpublishing.com,buzzrx.com,cnet.com,cpr.org,dailyfarmer.in,financialexpressdigital.com,gizbot.com,icc-cricket.com,moneycontrol.com,theconversation.com,jagranimages.com,kotaku.com,livemint.com,economictimes.com,futurism.com,geographical.co.uk,imgix.net,cnn.com,licdn.com,medicaldialogues.in,theverge.com,yimg.com,ytimg.com,b-cdn.net,91mobiles.com,thenewsmill.com,cgtn.com,cfr.org,wikimedia.org,aljazeera.com"
+)
+  .split(",")
+  .map((host) => host.trim().toLowerCase().replace(/^www\./, ""))
+  .filter(Boolean);
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = process.env.DB_USER || "root";
@@ -111,6 +139,50 @@ const RSS_REQUEST_TIMEOUT_MS = Math.max(
   5_000,
   Number.parseInt(process.env.RSS_REQUEST_TIMEOUT_MS, 10) || 15_000
 );
+const ARTICLE_METADATA_TIMEOUT_MS = Math.max(
+  RSS_REQUEST_TIMEOUT_MS,
+  Number.parseInt(process.env.ARTICLE_METADATA_TIMEOUT_MS, 10) || 30_000
+);
+const ARTICLE_IMAGE_RENDER_WAIT_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.ARTICLE_IMAGE_RENDER_WAIT_MS, 10) || 6_000
+);
+const CLIFF_NEWS_API_URL = String(
+  process.env.CLIFF_NEWS_API_URL || "https://cliff-news-backend.onrender.com/api/articles"
+).trim();
+const CLIFF_NEWS_PUBLIC_BASE_URL = String(
+  process.env.CLIFF_NEWS_PUBLIC_BASE_URL || "https://www.thecliffnews.in"
+).trim().replace(/\/+$/, "");
+const CLIFF_NEWS_LANGUAGE = String(process.env.CLIFF_NEWS_LANGUAGE || "ENGLISH").trim().toUpperCase();
+const CLIFF_NEWS_PRIMARY_ENABLED = !["false", "0", "no"].includes(
+  String(process.env.CLIFF_NEWS_PRIMARY_ENABLED || "true").toLowerCase()
+);
+const CLIFF_NEWS_DEFAULT_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.CLIFF_NEWS_DEFAULT_LIMIT || "100", 10) || 100, 500)
+);
+const NEWS_MAX_AGE_HOURS = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.NEWS_MAX_AGE_HOURS || "24", 10) || 24, 168)
+);
+const NEWS_REQUIRE_PUBLISHED_DATE = !["false", "0", "no"].includes(
+  String(process.env.NEWS_REQUIRE_PUBLISHED_DATE || "true").toLowerCase()
+);
+const CLIFF_NEWS_REQUEST_TIMEOUT_MS = Math.max(
+  5_000,
+  Number.parseInt(process.env.CLIFF_NEWS_REQUEST_TIMEOUT_MS, 10) || RSS_REQUEST_TIMEOUT_MS
+);
+const CLIFF_NEWS_CATEGORY_ENDPOINTS = String(process.env.CLIFF_NEWS_CATEGORY_ENDPOINTS || "")
+  .split(",")
+  .map((endpoint) => endpoint.trim())
+  .filter(Boolean);
+const THENEWSAPI_CATEGORIES = String(
+  process.env.THENEWSAPI_CATEGORIES ||
+    "general,science,sports,business,health,entertainment,tech,politics,food,travel"
+)
+  .split(",")
+  .map((category) => category.trim())
+  .filter(Boolean);
 const ARTICLE_CANDIDATE_MULTIPLIER = Math.max(1, Number.parseInt(process.env.ARTICLE_CANDIDATE_MULTIPLIER, 10) || 2);
 const ARTICLE_CANDIDATE_CAP = Math.max(4, Number.parseInt(process.env.ARTICLE_CANDIDATE_CAP, 10) || 10);
 const FEED_QUEUE_MULTIPLIER = Math.max(1, Number.parseInt(process.env.FEED_QUEUE_MULTIPLIER, 10) || 1);
@@ -147,11 +219,15 @@ const AVAILABLE_API_SCOPES = [
   "logs:read",
   "admin:clients",
 ];
-const DEFAULT_CATEGORY = "india";
+const DEFAULT_CATEGORY = DEFAULT_UNIFIED_CATEGORY;
+const MPINFO_DISTRICT_CATEGORY = normalizeUnifiedCategory(
+  process.env.MPINFO_DISTRICT_CATEGORY || "Madhyapradesh"
+);
 const INDIA_TIMEZONE = "Asia/Kolkata";
-const NEWS18_RSS_BASE = "https://www.news18.com/commonfeeds/v1/eng/rss";
-const EXPENSIVE_NEWS_SOURCES = new Set(["zee", "news18"]);
+const EXPENSIVE_NEWS_SOURCES = new Set();
 const GOVERNMENT_NEWS_SOURCES = new Set(["dd", "pib", "mpinfo"]);
+const PRIMARY_RSS_SOURCES = ["dd", "mpinfo"];
+const PRIMARY_NEWS_SOURCE_STRATEGY = ["cliff-news", "google-rss", ...PRIMARY_RSS_SOURCES];
 const STATE_GOV_SOURCE_ALLOWLIST = new Set(
   String(process.env.STATE_GOV_SOURCE_ALLOWLIST || "kerala-gov,haryana-gov,cg-gov")
     .split(",")
@@ -177,117 +253,71 @@ const RAW_STATE_GOV_SOURCES = [
 ];
 const STATE_GOV_SOURCES = RAW_STATE_GOV_SOURCES
   .filter((item) => STATE_GOV_SOURCE_ALLOWLIST.has("all") || STATE_GOV_SOURCE_ALLOWLIST.has(item.source))
-  .map((item) => ({ ...item, type: "state-gov" }));
-const RSS_FEEDS = {
-  india: [
-    { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
-    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
-    { source: "zee", url: "https://zeenews.india.com/rss/india-national-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/india.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/national/feed/" },
-  ],
-  world: [
-    { source: "zee", url: "https://zeenews.india.com/rss/world-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/world.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/international/feed/" },
-  ],
-  states: [
-    { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
-    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
-    { source: "zee", url: "https://zeenews.india.com/rss/india-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/politics.xml` },
-    ...STATE_GOV_SOURCES,
-  ],
-  asia: [
-    { source: "zee", url: "https://zeenews.india.com/rss/asia-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/world.xml` },
-  ],
-  business: [
-    { source: "zee", url: "https://zeenews.india.com/rss/business.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/business.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/business-economy/feed/" },
-  ],
-  sports: [
-    { source: "zee", url: "https://zeenews.india.com/rss/sports-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/sports.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/cricket.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/football.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/sports/feed/" },
-  ],
-  science_environment: [
-    { source: "zee", url: "https://zeenews.india.com/rss/science-environment-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/tech.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/explainers.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/science-tech/feed/" },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/environment/feed/" },
-  ],
-  entertainment: [
-    { source: "zee", url: "https://zeenews.india.com/rss/entertainment-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/entertainment.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/movies.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/viral.xml` },
-  ],
-  health: [
-    { source: "zee", url: "https://zeenews.india.com/rss/health-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/lifestyle.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/health/feed/" },
-  ],
-  blogs: [
-    { source: "zee", url: "https://zeenews.india.com/rss/blog-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/opinion.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/explainers.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/opinion/feed/" },
-  ],
-  technology: [
-    { source: "zee", url: "https://zeenews.india.com/rss/technology-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/tech.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/auto.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/science-tech/feed/" },
-  ],
-  education: [
-    { source: "zee", url: "https://zeenews.india.com/rss/education-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/education-career.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/education/feed/" },
-  ],
-  top_stories: [
-    { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1" },
-    { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" },
-    { source: "zee", url: "https://zeenews.india.com/rss/india-national-news.xml" },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/india.xml` },
-    { source: "news18", url: `${NEWS18_RSS_BASE}/politics.xml` },
-    { source: "dd", url: "https://ddnews.gov.in/en/category/top-stories/feed/" },
-  ],
-};
-const CATEGORY_FEED_GROUPS = {
-  india: ["top_stories", "states"],
-  world: ["top_stories", "india"],
-  states: ["india", "top_stories"],
-  asia: ["world", "top_stories"],
-  business: ["top_stories", "india"],
-  sports: ["top_stories", "india"],
-  science_environment: ["technology", "top_stories"],
-  entertainment: ["top_stories", "india"],
-  health: ["top_stories", "india"],
-  blogs: ["top_stories", "india"],
-  technology: ["science_environment", "top_stories"],
-  education: ["india", "top_stories"],
-  top_stories: ["india", "states"],
-};
-const DELIVERY_CATEGORY_ORDER = [
-  "top_stories",
-  "india",
-  "world",
-  "states",
-  "asia",
-  "business",
-  "sports",
-  "technology",
-  "science_environment",
-  "health",
-  "entertainment",
-  "education",
-  "blogs",
+  .map((item) => ({ ...item, type: "state-gov", source_category: "state", source_state: item.state }));
+
+const RSS_SOURCE_FEEDS = [
+  { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1", source_category: "national" },
+  { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml", source_category: "mpinfo" },
+  { source: "dd", url: "https://ddnews.gov.in/en/category/national/feed/" },
+  { source: "dd", url: "https://ddnews.gov.in/en/category/top-stories/feed/" },
+  { source: "dd", url: "https://ddnews.gov.in/en/category/international/feed/" },
+  { source: "dd", url: "https://ddnews.gov.in/en/category/business-economy/feed/" },
+  { source: "dd", url: "https://ddnews.gov.in/en/category/sports/feed/" },
+  ...STATE_GOV_SOURCES,
 ];
+
+function extractSourceCategoryFromUrl(feedUrl) {
+  try {
+    const parsed = new URL(feedUrl);
+    const segments = parsed.pathname
+      .split("/")
+      .map((segment) => decodeURIComponent(segment).trim())
+      .filter(Boolean);
+    const categoryIndex = segments.findIndex((segment) => segment.toLowerCase() === "category");
+    if (categoryIndex >= 0 && segments[categoryIndex + 1]) {
+      return segments[categoryIndex + 1];
+    }
+
+    const signal = segments.find((segment) => /news|national|international|business|economy|sports|entertainment|state|top/i.test(segment));
+    return signal || "";
+  } catch {
+    return "";
+  }
+}
+
+function getFeedSourceCategory(feedConfig) {
+  return String(
+    feedConfig?.source_category ||
+      feedConfig?.category ||
+      extractSourceCategoryFromUrl(feedConfig?.url) ||
+      feedConfig?.source ||
+      DEFAULT_CATEGORY
+  ).trim();
+}
+
+function buildRssFeedsByCategory(feedConfigs = RSS_SOURCE_FEEDS) {
+  return feedConfigs.reduce((accumulator, feedConfig) => {
+    const sourceCategory = getFeedSourceCategory(feedConfig);
+    const normalizedCategory = normalizeUnifiedCategory(sourceCategory, {
+      source: feedConfig?.source || "rss",
+      logger: console,
+    });
+    if (!accumulator[normalizedCategory]) {
+      accumulator[normalizedCategory] = [];
+    }
+
+    accumulator[normalizedCategory].push({
+      ...feedConfig,
+      source_category: sourceCategory,
+      normalized_category: normalizedCategory,
+    });
+    return accumulator;
+  }, Object.fromEntries(UNIFIED_NEWS_CATEGORIES.map((category) => [category, []])));
+}
+
+const RSS_FEEDS = buildRssFeedsByCategory();
+const CATEGORY_FEED_GROUPS = Object.fromEntries(UNIFIED_NEWS_CATEGORIES.map((category) => [category, []]));
+const DELIVERY_CATEGORY_ORDER = UNIFIED_NEWS_CATEGORIES;
 const RSS_REQUEST_PROFILES = [
   {
     "User-Agent":
@@ -307,22 +337,6 @@ const RSS_REQUEST_PROFILES = [
   },
 ];
 const sourceThrottleState = new Map();
-const ZEE_SECTION_FALLBACKS = {
-  india: "https://zeenews.india.com/india",
-  world: "https://zeenews.india.com/world",
-  states: "https://zeenews.india.com/india",
-  asia: "https://zeenews.india.com/world",
-  business: "https://zeenews.india.com/business",
-  sports: "https://zeenews.india.com/sports",
-  science_environment: "https://zeenews.india.com/science",
-  entertainment: "https://zeenews.india.com/entertainment",
-  health: "https://zeenews.india.com/health",
-  blogs: "https://zeenews.india.com/blogs",
-  technology: "https://zeenews.india.com/technology",
-  education: "https://zeenews.india.com/education",
-  top_stories: "https://zeenews.india.com/",
-};
-
 function isExpensiveNewsSource(feedConfig) {
   return EXPENSIVE_NEWS_SOURCES.has(feedConfig?.source);
 }
@@ -414,11 +428,11 @@ function getExpensiveSourceThrottlePayload() {
 function getFeedPriority(feedConfig) {
   const source = String(feedConfig?.source || "").toLowerCase();
 
-  if (source === "mpinfo") {
+  if (source === "dd") {
     return 0;
   }
 
-  if (source === "dd") {
+  if (source === "mpinfo") {
     return 1;
   }
 
@@ -448,13 +462,638 @@ function sortFeedsByPriority(feedConfigs) {
   });
 }
 
+function normalizeFeedSourceList(values = []) {
+  return Array.isArray(values)
+    ? values
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+    : [];
+}
+
+function buildEmptyCategoryFetchResult(category) {
+  return {
+    category,
+    fetched_count: 0,
+    saved_count: 0,
+    failed_count: 0,
+    skipped_count: 0,
+    results: [],
+  };
+}
+
+function buildFetchStepErrorResult(category, feedSource, error) {
+  return {
+    category,
+    fetched_count: 0,
+    saved_count: 0,
+    failed_count: 1,
+    skipped_count: 0,
+    results: [
+      {
+        status: "Error",
+        category,
+        feed_source: feedSource,
+        feed_url: null,
+        source: null,
+        message: error.message,
+      },
+    ],
+  };
+}
+
+function compactText(value = "") {
+  return decodeHtmlEntities(String(value || ""))
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeArticleBodyText(value = "") {
+  return compactText(value)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/[*_`>]+/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function truncateForStorage(value, maxLength) {
+  const text = compactText(value);
+  if (!maxLength || text.length <= maxLength) {
+    return text;
+  }
+
+  return text.slice(0, maxLength).trim();
+}
+
+function parseNullableDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizeStoredSourceUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      const normalizedKey = key.toLowerCase();
+      if (
+        normalizedKey.startsWith("utm_") ||
+        ["fbclid", "gclid", "gbraid", "wbraid", "mc_cid", "mc_eid", "ref", "ref_src"].includes(normalizedKey)
+      ) {
+        parsed.searchParams.delete(key);
+      }
+    }
+    parsed.hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.href;
+  } catch {
+    return raw.replace(/[?#].*$/, "").replace(/\/+$/, "");
+  }
+}
+
+function normalizeNewsTitleSignature(value) {
+  const normalized = normalizeRssText(value)
+    .toLowerCase()
+    .replace(/\s*[-|:]\s*(breaking news|latest news|live updates?|news|the cliff news|google news)\s*$/gi, "")
+    .replace(/['"`’‘“”]/g, "")
+    .replace(/[^a-z0-9\u0900-\u097f]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized.length >= 24 ? normalized.slice(0, 220) : "";
+}
+
+function isFreshPublishedDate(value, maxAgeHours = NEWS_MAX_AGE_HOURS) {
+  const publishedAt = value instanceof Date ? value : parseNullableDate(value);
+  if (!publishedAt) {
+    return {
+      fresh: !NEWS_REQUIRE_PUBLISHED_DATE,
+      publishedAt: null,
+      known: false,
+      ageHours: null,
+      reason: NEWS_REQUIRE_PUBLISHED_DATE ? "missing-published-date" : null,
+    };
+  }
+
+  const ageMs = Date.now() - publishedAt.getTime();
+  if (ageMs < 0) {
+    return { fresh: true, publishedAt, known: true };
+  }
+
+  const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+  return {
+    fresh: ageMs <= maxAgeMs,
+    publishedAt,
+    known: true,
+    ageHours: Math.floor(ageMs / (60 * 60 * 1000)),
+  };
+}
+
+function buildFreshnessSkipMessage(freshness) {
+  if (!freshness?.known) {
+    return `Article skipped because it has no publish date; latest-only mode requires a date within ${NEWS_MAX_AGE_HOURS}h.`;
+  }
+
+  return `Old article skipped (${freshness.ageHours}h old; max ${NEWS_MAX_AGE_HOURS}h).`;
+}
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeArticleImageUrl(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || !isHttpUrl(normalized) || isLikelyDecorativeImageUrl(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function getBlockedArticleImageReason(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+
+  if (
+    normalized.includes("overlay-base64=") ||
+    normalized.includes("overlay-width=") ||
+    normalized.includes("overlay-align=") ||
+    normalized.includes("/overlays/") ||
+    normalized.includes("tg-live.png") ||
+    /(?:^|[/?&_.-])(?:live|logo|watermark|brand|branding)(?:[/?&_.=-]|$)/.test(normalized)
+  ) {
+    return "logo/watermark overlay image";
+  }
+
+  return "";
+}
+
+function isBlockedArticleImageUrl(value) {
+  return Boolean(getBlockedArticleImageReason(value));
+}
+
+function getNestedString(source, paths = []) {
+  for (const path of paths) {
+    const value = path
+      .split(".")
+      .reduce((current, key) => (current && current[key] !== undefined ? current[key] : undefined), source);
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+
+  return "";
+}
+
+function getNestedValue(source, paths = []) {
+  for (const path of paths) {
+    const value = path
+      .split(".")
+      .reduce((current, key) => (current && current[key] !== undefined ? current[key] : undefined), source);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function extractImageUrlValue(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value).trim();
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const imageUrl = extractImageUrlValue(item);
+      if (imageUrl) {
+        return imageUrl;
+      }
+    }
+    return "";
+  }
+
+  if (typeof value === "object") {
+    return extractImageUrlValue(
+      value.url
+        || value.src
+        || value.secure_url
+        || value.imageUrl
+        || value.image
+        || value.original
+        || value.large
+        || value.medium
+        || value.thumbnail
+    );
+  }
+
+  return "";
+}
+
+function normalizeCliffNewsCategory(article) {
+  const rawCategory = getNestedString(article, [
+    "category.slug",
+    "category.name",
+    "categoryName",
+    "categorySlug",
+    "category",
+  ]);
+  return normalizeUnifiedCategory(rawCategory, { source: "cliff-news", logger: console });
+}
+
+function shouldIncludeCliffNewsArticle(article, requestedCategory) {
+  if (!requestedCategory) {
+    return true;
+  }
+
+  const articleCategory = normalizeCliffNewsCategory(article);
+  return articleCategory === requestedCategory;
+}
+
+function getCliffNewsArticleUrl(article) {
+  const directUrl = getNestedString(article, [
+    "url",
+    "link",
+    "canonicalUrl",
+    "sourceUrl",
+    "publicUrl",
+  ]);
+  if (isHttpUrl(directUrl)) {
+    return directUrl;
+  }
+
+  const slug = getNestedString(article, ["slug", "articleSlug"]);
+  if (slug && CLIFF_NEWS_PUBLIC_BASE_URL) {
+    const languageSegment = String(article?.language || CLIFF_NEWS_LANGUAGE).toUpperCase() === "HINDI" ? "hi" : "en";
+    return `${CLIFF_NEWS_PUBLIC_BASE_URL}/${languageSegment}/article/${encodeURIComponent(slug)}`;
+  }
+
+  const articleId = getNestedString(article, ["id", "_id"]);
+  return articleId ? `${CLIFF_NEWS_API_URL.replace(/\/+$/, "")}/${encodeURIComponent(articleId)}` : "";
+}
+
+function getCliffNewsImageUrl(article) {
+  const imageValue = getNestedValue(article, [
+    "featuredImage",
+    "ogImage",
+    "meta.ogImage",
+    "meta.image",
+    "seo.ogImage",
+    "seo.image",
+    "image",
+    "imageUrl",
+    "coverImage",
+    "cover.image",
+    "heroImage",
+    "hero.image",
+    "thumbnail",
+    "media.image",
+    "media.url",
+    "media",
+    "images",
+  ]);
+  const imageUrl = extractImageUrlValue(imageValue);
+
+  return sanitizeArticleImageUrl(imageUrl) || "";
+}
+
+function normalizeCliffNewsArticle(article) {
+  const title = getNestedString(article, ["title", "headline", "name"]);
+  const articleUrl = getCliffNewsArticleUrl(article);
+  if (!title || !articleUrl) {
+    return null;
+  }
+
+  const contentText = normalizeArticleBodyText(
+    getNestedString(article, ["content", "body", "article", "markdown", "description"])
+  );
+  const explicitExcerpt = getNestedString(article, [
+    "excerpt",
+    "summary",
+    "metaDescription",
+    "description",
+    "shortDescription",
+  ]);
+  const excerpt = truncateForStorage(explicitExcerpt || contentText, 1000);
+  const category = normalizeCliffNewsCategory(article);
+  const imageUrl = getCliffNewsImageUrl(article);
+  const publishedAt = parseNullableDate(
+    getNestedString(article, [
+      "publishedAt",
+      "published_at",
+      "publishDate",
+      "publish_date",
+      "publishedDate",
+      "published_date",
+      "publishedOn",
+      "published_on",
+      "date",
+      "createdAt",
+      "created_at",
+    ])
+  );
+
+  return {
+    sourceId: getNestedString(article, ["id", "_id", "sourceArticleId", "slug"]),
+    category,
+    title,
+    articleUrl,
+    imageUrl,
+    imageSource: imageUrl ? (article?.featuredImage ? "cliff-featured-image" : article?.ogImage ? "cliff-og-image" : "cliff-image") : null,
+    excerpt,
+    contentText,
+    publishedAt,
+  };
+}
+
+function normalizeCliffNewsPage(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) || parsed < 1 ? 1 : parsed;
+}
+
+function buildCliffNewsApiRequestUrl({ limit = CLIFF_NEWS_DEFAULT_LIMIT, language = CLIFF_NEWS_LANGUAGE, page = 1 } = {}) {
+  const requestUrl = new URL(CLIFF_NEWS_API_URL);
+  requestUrl.searchParams.set("limit", String(Math.max(1, Math.min(Number.parseInt(limit, 10) || CLIFF_NEWS_DEFAULT_LIMIT, 500))));
+  requestUrl.searchParams.set("page", String(normalizeCliffNewsPage(page)));
+  if (language) {
+    requestUrl.searchParams.set("language", String(language).trim().toUpperCase());
+  }
+
+  return requestUrl.href;
+}
+
+async function fetchCliffNewsApiArticles({ limit = CLIFF_NEWS_DEFAULT_LIMIT, language = CLIFF_NEWS_LANGUAGE, page = 1 } = {}) {
+  const requestUrl = buildCliffNewsApiRequestUrl({ limit, language, page });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CLIFF_NEWS_REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(requestUrl, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Cliff News API request failed with status ${response.status}.`);
+    }
+
+    const payload = await response.json();
+    const articles = Array.isArray(payload?.articles)
+      ? payload.articles
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload)
+          ? payload
+          : [];
+
+    return {
+      request_url: requestUrl,
+      payload_count: articles.length,
+      pagination: payload?.pagination || null,
+      articles,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildCliffCategoryEndpointCandidates() {
+  if (CLIFF_NEWS_CATEGORY_ENDPOINTS.length) {
+    return CLIFF_NEWS_CATEGORY_ENDPOINTS;
+  }
+
+  try {
+    const apiUrl = new URL(CLIFF_NEWS_API_URL);
+    const basePath = apiUrl.pathname.replace(/\/articles\/?$/i, "").replace(/\/+$/, "");
+    return [
+      new URL(`${basePath}/categories`, apiUrl.origin).href,
+      new URL(`${basePath}/category`, apiUrl.origin).href,
+      new URL(`${basePath}/article-categories`, apiUrl.origin).href,
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function extractSourceCategoryStrings(value, output = new Set()) {
+  if (!value) {
+    return output;
+  }
+
+  if (typeof value === "string") {
+    if (value.trim()) {
+      output.add(value.trim());
+    }
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractSourceCategoryStrings(item, output);
+    }
+    return output;
+  }
+
+  if (typeof value === "object") {
+    const directValue = value.slug || value.name || value.category || value.categorySlug || value.categoryName;
+    if (typeof directValue === "string" && directValue.trim()) {
+      output.add(directValue.trim());
+    }
+
+    for (const key of ["categories", "data", "items", "results", "articles"]) {
+      if (value[key]) {
+        extractSourceCategoryStrings(value[key], output);
+      }
+    }
+  }
+
+  return output;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = CLIFF_NEWS_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Category endpoint returned status ${response.status}.`);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function discoverCliffNewsSourceCategories() {
+  const discovered = new Set();
+  const endpoints = buildCliffCategoryEndpointCandidates();
+  const endpointResults = [];
+
+  for (const endpoint of endpoints) {
+    try {
+      const payload = await fetchJsonWithTimeout(endpoint);
+      extractSourceCategoryStrings(payload, discovered);
+      endpointResults.push({ endpoint, status: "Success" });
+      if (discovered.size > 0) {
+        break;
+      }
+    } catch (error) {
+      endpointResults.push({ endpoint, status: "Error", message: error.message });
+    }
+  }
+
+  if (discovered.size === 0) {
+    try {
+      const sample = await fetchCliffNewsApiArticles({
+        limit: Math.min(CLIFF_NEWS_DEFAULT_LIMIT, 100),
+        language: CLIFF_NEWS_LANGUAGE,
+        page: 1,
+      });
+      for (const article of sample.articles || []) {
+        extractSourceCategoryStrings(
+          getNestedValue(article, [
+            "category.slug",
+            "category.name",
+            "categoryName",
+            "categorySlug",
+            "category",
+          ]),
+          discovered
+        );
+      }
+      endpointResults.push({ endpoint: sample.request_url, status: "SampledArticles", count: discovered.size });
+    } catch (error) {
+      endpointResults.push({ endpoint: CLIFF_NEWS_API_URL, status: "Error", message: error.message });
+    }
+  }
+
+  return {
+    source: "cliff-news",
+    endpoint_results: endpointResults,
+    source_categories: Array.from(discovered).sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+function buildSourceCategoryEntry(source, sourceCategory, detail = {}) {
+  return {
+    source,
+    source_category: sourceCategory,
+    normalized_category: normalizeUnifiedCategory(sourceCategory, { source }),
+    ...detail,
+  };
+}
+
+async function buildCategoryCatalogPayload() {
+  const rssEntries = RSS_SOURCE_FEEDS.map((feed) => buildSourceCategoryEntry(
+    feed.source || "rss",
+    getFeedSourceCategory(feed),
+    { feed_url: feed.url || null, source_state: feed.source_state || null }
+  ));
+  const theNewsEntries = THENEWSAPI_CATEGORIES.map((category) => buildSourceCategoryEntry("thenewsapi", category));
+  const cliffDiscovery = await discoverCliffNewsSourceCategories();
+  const cliffEntries = cliffDiscovery.source_categories.map((category) => buildSourceCategoryEntry("cliff-news", category));
+  const sourceCategories = [...rssEntries, ...theNewsEntries, ...cliffEntries];
+  const grouped = Object.fromEntries(UNIFIED_NEWS_CATEGORIES.map((category) => [category, []]));
+
+  for (const item of sourceCategories) {
+    grouped[item.normalized_category].push({
+      source: item.source,
+      source_category: item.source_category,
+      feed_url: item.feed_url || null,
+      source_state: item.source_state || null,
+    });
+  }
+
+  return {
+    status: "Success",
+    final_categories: UNIFIED_NEWS_CATEGORIES,
+    default_category: DEFAULT_CATEGORY,
+    grouped_source_categories: grouped,
+    source_categories: sourceCategories,
+    discovery: {
+      cliff_news: cliffDiscovery,
+      thenewsapi: {
+        source: "thenewsapi",
+        note: "TheNewsAPI exposes supported categories as API filter values; configure THENEWSAPI_CATEGORIES to override.",
+        source_categories: THENEWSAPI_CATEGORIES,
+      },
+      rss: {
+        source: "rss",
+        source_categories: rssEntries,
+      },
+    },
+  };
+}
+
 let dbPool;
 const DEFAULT_ARTICLE_LIMIT = 5;
 const MAX_ARTICLE_LIMIT = 500;
 const DEFAULT_TOTAL_LIMIT = 200;
 const MAX_TOTAL_LIMIT = 5000;
-const QUIET_HOUR_START = 0;
-const QUIET_HOUR_END = 5;
+const DAILY_NEWS_FETCH_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.DAILY_NEWS_FETCH_LIMIT || "450", 10) || 450, 1000)
+);
+const SCHEDULER_ACTIVE_START_HOUR = Math.max(
+  0,
+  Math.min(Number.parseInt(process.env.SCHEDULER_ACTIVE_START_HOUR || "0", 10) || 0, 23)
+);
+const SCHEDULER_ACTIVE_END_HOUR = Math.max(
+  0,
+  Math.min(Number.parseInt(process.env.SCHEDULER_ACTIVE_END_HOUR || "0", 10) || 0, 23)
+);
+const QUIET_HOUR_START = SCHEDULER_ACTIVE_END_HOUR;
+const QUIET_HOUR_END = SCHEDULER_ACTIVE_START_HOUR;
+const SCHEDULER_PEAK_WINDOWS = [
+  { startHour: 9, endHour: 15 },
+  { startHour: 18, endHour: 24 },
+];
+const SCHEDULER_PEAK_WEIGHT = Math.max(1, Number.parseFloat(process.env.SCHEDULER_PEAK_WEIGHT || "4") || 4);
 const SCHEDULER_TICK_MS = 30 * 1000;
 const AI_SCHEDULER_TICK_MS = 30 * 1000;
 const SCHEDULER_CATEGORY_TIMEOUT_MS = Math.max(
@@ -463,7 +1102,11 @@ const SCHEDULER_CATEGORY_TIMEOUT_MS = Math.max(
 );
 const SCHEDULER_ARTICLES_PER_CATEGORY_RUN = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.SCHEDULER_ARTICLES_PER_CATEGORY_RUN, 10) || 2, 5)
+  Math.min(Number.parseInt(process.env.SCHEDULER_ARTICLES_PER_CATEGORY_RUN, 10) || 5, 5)
+);
+const SCHEDULER_PRIMARY_SOURCE_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.SCHEDULER_PRIMARY_SOURCE_LIMIT, 10) || 3, 5)
 );
 const STALE_SCHEDULER_RUN_MS = Math.max(
   5 * 60_000,
@@ -808,6 +1451,72 @@ async function invalidateDashboardCaches() {
   await invalidateCachePrefixes(getCachePrefixes());
 }
 
+async function normalizeStoredCategoryColumns(pool) {
+  const targets = [
+    { table: "fetched_news", column: "category" },
+    { table: "ai_news_rewrites", column: "ui_category" },
+  ];
+
+  for (const target of targets) {
+    try {
+      const [rows] = await pool.query(`
+        SELECT DISTINCT ${target.column} AS category
+        FROM ${target.table}
+        WHERE ${target.column} IS NOT NULL AND ${target.column} <> ''
+      `);
+
+      for (const row of rows || []) {
+        const originalCategory = row.category;
+        const normalizedCategory = normalizeUnifiedCategory(originalCategory, {
+          source: `${target.table}.${target.column}`,
+          logger: console,
+        });
+
+        if (normalizedCategory === originalCategory) {
+          continue;
+        }
+
+        await pool.execute(
+          `UPDATE ${target.table} SET ${target.column} = ? WHERE ${target.column} = ?`,
+          [normalizedCategory, originalCategory]
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[category-normalizer] Could not normalize stored categories for ${target.table}.${target.column}: ${error.message}`
+      );
+    }
+  }
+}
+
+async function backfillFetchedNewsSignatures(pool) {
+  try {
+    const [rows] = await pool.query(`
+      SELECT id, title, source_url
+      FROM fetched_news
+      WHERE source_url_signature IS NULL OR source_url_signature = '' OR title_signature IS NULL OR title_signature = ''
+      ORDER BY id DESC
+      LIMIT 5000
+    `);
+
+    for (const row of rows || []) {
+      const sourceUrlSignature = normalizeStoredSourceUrl(row.source_url);
+      const titleSignature = normalizeNewsTitleSignature(row.title) || null;
+      await pool.execute(
+        `
+          UPDATE fetched_news
+          SET source_url_signature = ?, title_signature = ?
+          WHERE id = ?
+            AND (source_url_signature IS NULL OR source_url_signature = '' OR title_signature IS NULL OR title_signature = '')
+        `,
+        [sourceUrlSignature || null, titleSignature, row.id]
+      );
+    }
+  } catch (error) {
+    console.warn(`[news-dedupe] Could not backfill fetched_news signatures: ${error.message}`);
+  }
+}
+
 async function initializeDatabase() {
   dbPool = await createDatabasePool();
 
@@ -821,8 +1530,13 @@ async function initializeDatabase() {
         search_query VARCHAR(500) NOT NULL,
         title TEXT,
         source_url TEXT NOT NULL UNIQUE,
+        source_url_signature TEXT NULL,
+        title_signature VARCHAR(255) NULL,
         image_link TEXT,
         image_source VARCHAR(100),
+        source_excerpt TEXT,
+        source_content TEXT,
+        source_published_at TIMESTAMPTZ NULL,
         fetched_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -836,8 +1550,13 @@ async function initializeDatabase() {
         search_query VARCHAR(500) NOT NULL,
         title TEXT,
         source_url TEXT NOT NULL,
+        source_url_signature TEXT NULL,
+        title_signature VARCHAR(255) NULL,
         image_link TEXT,
         image_source VARCHAR(100),
+        source_excerpt MEDIUMTEXT,
+        source_content LONGTEXT,
+        source_published_at TIMESTAMP NULL DEFAULT NULL,
         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -867,9 +1586,55 @@ async function initializeDatabase() {
     }
   }
 
+  const fetchedNewsSourceColumnStatements = dbPool.dialect === "postgres"
+    ? [
+        "ALTER TABLE fetched_news ADD COLUMN source_excerpt TEXT",
+        "ALTER TABLE fetched_news ADD COLUMN source_content TEXT",
+        "ALTER TABLE fetched_news ADD COLUMN source_published_at TIMESTAMPTZ NULL",
+        "ALTER TABLE fetched_news ADD COLUMN source_url_signature TEXT NULL",
+        "ALTER TABLE fetched_news ADD COLUMN title_signature VARCHAR(255) NULL",
+      ]
+    : [
+        "ALTER TABLE fetched_news ADD COLUMN source_excerpt MEDIUMTEXT",
+        "ALTER TABLE fetched_news ADD COLUMN source_content LONGTEXT",
+        "ALTER TABLE fetched_news ADD COLUMN source_published_at TIMESTAMP NULL DEFAULT NULL",
+        "ALTER TABLE fetched_news ADD COLUMN source_url_signature TEXT NULL",
+        "ALTER TABLE fetched_news ADD COLUMN title_signature VARCHAR(255) NULL",
+      ];
+
+  for (const statement of fetchedNewsSourceColumnStatements) {
+    try {
+      await dbPool.query(statement);
+    } catch (error) {
+      if (!isDuplicateColumnError(error, dbPool.dialect)) {
+        throw error;
+      }
+    }
+  }
+
+  if (dbPool.dialect === "postgres") {
+    await dbPool.query("CREATE INDEX IF NOT EXISTS idx_fetched_news_url_signature ON fetched_news (source_url_signature)");
+    await dbPool.query("CREATE INDEX IF NOT EXISTS idx_fetched_news_title_signature ON fetched_news (title_signature)");
+  } else {
+    for (const statement of [
+      "CREATE INDEX idx_fetched_news_url_signature ON fetched_news (source_url_signature(255))",
+      "CREATE INDEX idx_fetched_news_title_signature ON fetched_news (title_signature)",
+    ]) {
+      try {
+        await dbPool.query(statement);
+      } catch (error) {
+        if (!String(error?.message || "").toLowerCase().includes("duplicate")) {
+          throw error;
+        }
+      }
+    }
+  }
+
   await initializeAiRewriteStorage(dbPool);
   await initializeEditorialStorage(dbPool);
   await initializeRashifalStorage(dbPool);
+  await normalizeStoredCategoryColumns(dbPool);
+  await backfillFetchedNewsSignatures(dbPool);
 
   if (dbPool.dialect === "postgres") {
     await dbPool.query(`
@@ -1054,32 +1819,108 @@ async function saveNewsRecord({
   articleUrl,
   imageLink,
   imageSource,
+  sourceExcerpt = null,
+  sourceContent = null,
+  sourcePublishedAt = null,
 }) {
   if (!dbPool) {
     throw new Error("Database pool is not initialized.");
   }
 
+  const sourceFreshness = isFreshPublishedDate(sourcePublishedAt);
+  if (!sourceFreshness.fresh) {
+    return null;
+  }
+
+  const dailyQuota = await getDailyNewsQuota();
+  if (dailyQuota.remaining <= 0) {
+    return null;
+  }
+
+  const normalizedSourceUrl = normalizeStoredSourceUrl(articleUrl);
+  const titleSignature = normalizeNewsTitleSignature(title);
+  const safeImageLink = sanitizeArticleImageUrl(imageLink);
+  const safeImageSource = safeImageLink ? imageSource : null;
+  const unifiedArticle = createUnifiedNewsArticle({
+    title,
+    description: sourceExcerpt || "",
+    source: feedSource,
+    category,
+    publishedAt: sourcePublishedAt || "",
+    url: articleUrl,
+    image: safeImageLink || "",
+  });
+  const normalizedCategory = unifiedArticle.normalizedCategory;
+
+  const duplicateRecord = await findNewsRecordDuplicate({
+    articleUrl,
+    sourceUrlSignature: normalizedSourceUrl,
+    titleSignature,
+  });
+  if (duplicateRecord) {
+    return null;
+  }
+
   const [result] = await dbPool.execute(
     dbPool.dialect === "postgres"
       ? `
-          INSERT INTO fetched_news (category, feed_source, feed_url, search_query, title, source_url, image_link, image_source)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO fetched_news (
+            category, feed_source, feed_url, search_query, title, source_url, source_url_signature, title_signature, image_link, image_source,
+            source_excerpt, source_content, source_published_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (source_url) DO NOTHING
           RETURNING id
         `
       : `
-          INSERT INTO fetched_news (category, feed_source, feed_url, search_query, title, source_url, image_link, image_source)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?
+          INSERT INTO fetched_news (
+            category, feed_source, feed_url, search_query, title, source_url, source_url_signature, title_signature, image_link, image_source,
+            source_excerpt, source_content, source_published_at
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           FROM DUAL
           WHERE NOT EXISTS (
             SELECT 1
             FROM fetched_news
             WHERE source_url = ?
+              OR (source_url_signature IS NOT NULL AND source_url_signature <> '' AND source_url_signature = ?)
+              OR (title_signature IS NOT NULL AND title_signature <> '' AND title_signature = ?)
           )
         `,
     dbPool.dialect === "postgres"
-      ? [category, feedSource, feedUrl, query, title, articleUrl, imageLink, imageSource]
-      : [category, feedSource, feedUrl, query, title, articleUrl, imageLink, imageSource, articleUrl]
+      ? [
+          normalizedCategory,
+          feedSource,
+          feedUrl,
+          query,
+          title,
+          articleUrl,
+          normalizedSourceUrl,
+          titleSignature || null,
+          safeImageLink,
+          safeImageSource,
+          sourceExcerpt,
+          sourceContent,
+          sourcePublishedAt,
+        ]
+      : [
+          normalizedCategory,
+          feedSource,
+          feedUrl,
+          query,
+          title,
+          articleUrl,
+          normalizedSourceUrl,
+          titleSignature || null,
+          safeImageLink,
+          safeImageSource,
+          sourceExcerpt,
+          sourceContent,
+          sourcePublishedAt,
+          articleUrl,
+          normalizedSourceUrl,
+          titleSignature || null,
+        ]
   );
 
   if (dbPool.dialect === "postgres" && result.rows?.[0]?.id) {
@@ -1100,14 +1941,48 @@ async function findNewsRecordByUrl(articleUrl) {
     throw new Error("Database pool is not initialized.");
   }
 
+  const normalizedSourceUrl = normalizeStoredSourceUrl(articleUrl);
   const [rows] = await dbPool.execute(
     `
       SELECT id, category, source_url, fetched_at
       FROM fetched_news
       WHERE source_url = ?
+        OR (source_url_signature IS NOT NULL AND source_url_signature <> '' AND source_url_signature = ?)
       LIMIT 1
     `,
-    [articleUrl]
+    [articleUrl, normalizedSourceUrl]
+  );
+
+  return rows[0] || null;
+}
+
+async function findNewsRecordDuplicate({ articleUrl, sourceUrlSignature, titleSignature }) {
+  if (!dbPool) {
+    throw new Error("Database pool is not initialized.");
+  }
+
+  const conditions = ["source_url = ?"];
+  const params = [articleUrl];
+  const normalizedSourceUrl = sourceUrlSignature || normalizeStoredSourceUrl(articleUrl);
+
+  if (normalizedSourceUrl) {
+    conditions.push("(source_url_signature IS NOT NULL AND source_url_signature <> '' AND source_url_signature = ?)");
+    params.push(normalizedSourceUrl);
+  }
+
+  if (titleSignature) {
+    conditions.push("(title_signature IS NOT NULL AND title_signature <> '' AND title_signature = ?)");
+    params.push(titleSignature);
+  }
+
+  const [rows] = await dbPool.execute(
+    `
+      SELECT id, category, title, source_url, fetched_at
+      FROM fetched_news
+      WHERE ${conditions.join(" OR ")}
+      LIMIT 1
+    `,
+    params
   );
 
   return rows[0] || null;
@@ -1120,7 +1995,9 @@ async function findFullNewsRecordById(newsId) {
 
   const [rows] = await dbPool.execute(
     `
-      SELECT id, category, feed_source, feed_url, search_query, title, source_url, image_link, image_source, fetched_at
+      SELECT
+        id, category, feed_source, feed_url, search_query, title, source_url, image_link, image_source,
+        source_excerpt, source_content, source_published_at, fetched_at
       FROM fetched_news
       WHERE id = ?
       LIMIT 1
@@ -1136,17 +2013,97 @@ async function findFullNewsRecordByUrl(articleUrl) {
     throw new Error("Database pool is not initialized.");
   }
 
+  const normalizedSourceUrl = normalizeStoredSourceUrl(articleUrl);
   const [rows] = await dbPool.execute(
     `
-      SELECT id, category, feed_source, feed_url, search_query, title, source_url, image_link, image_source, fetched_at
+      SELECT
+        id, category, feed_source, feed_url, search_query, title, source_url, image_link, image_source,
+        source_excerpt, source_content, source_published_at, fetched_at
       FROM fetched_news
       WHERE source_url = ?
+        OR (source_url_signature IS NOT NULL AND source_url_signature <> '' AND source_url_signature = ?)
       LIMIT 1
     `,
-    [articleUrl]
+    [articleUrl, normalizedSourceUrl]
   );
 
   return rows[0] || null;
+}
+
+async function backfillNewsRecordImage(newsId, imageLink, imageSource) {
+  if (!dbPool || !newsId) {
+    return false;
+  }
+
+  const safeImageLink = sanitizeArticleImageUrl(imageLink);
+  if (!safeImageLink) {
+    return false;
+  }
+
+  const safeImageSource = imageSource || "article-image";
+  const [result] = await dbPool.execute(
+    `
+      UPDATE fetched_news
+      SET image_link = ?, image_source = ?
+      WHERE id = ?
+        AND (image_link IS NULL OR image_link = '')
+    `,
+    [safeImageLink, safeImageSource, newsId]
+  );
+
+  await dbPool.execute(
+    `
+      UPDATE ai_news_rewrites
+      SET ui_image_url = NULL, ui_image_prompt = NULL
+      WHERE news_id = ?
+    `,
+    [newsId]
+  );
+
+  if ((result.affectedRows || result.rowCount || 0) > 0) {
+    await invalidateDashboardCaches();
+    return true;
+  }
+
+  return false;
+}
+
+async function replaceNewsRecordImage(newsId, imageLink, imageSource) {
+  if (!dbPool || !newsId) {
+    return false;
+  }
+
+  const safeImageLink = sanitizeArticleImageUrl(imageLink);
+  if (!safeImageLink) {
+    return false;
+  }
+
+  const safeImageSource = imageSource || "article-image";
+  const [result] = await dbPool.execute(
+    `
+      UPDATE fetched_news
+      SET image_link = ?, image_source = ?
+      WHERE id = ?
+        AND (image_link IS NULL OR image_link = '' OR image_link <> ? OR image_source IS NULL OR image_source = '')
+    `,
+    [safeImageLink, safeImageSource, newsId, safeImageLink]
+  );
+
+  await dbPool.execute(
+    `
+      UPDATE ai_news_rewrites
+      SET ui_image_url = NULL, ui_image_prompt = NULL
+      WHERE news_id = ?
+    `,
+    [newsId]
+  );
+
+  if ((result.affectedRows || result.rowCount || 0) > 0) {
+    await invalidateDashboardCaches();
+    return true;
+  }
+
+  return false;
 }
 
 async function createSchedulerRunLog({
@@ -1285,23 +2242,32 @@ async function listSchedulerRuns({ schedulerName = null, limit = 50 } = {}) {
 }
 
 async function getCachedRssFeedsPayload() {
-  return withJsonCache("cache:rss-feeds", RSS_FEED_CACHE_TTL_SECONDS, async () => ({
-    status: "Success",
-    source: "Configured RSS feeds",
-    count: Object.keys(RSS_FEEDS).length,
-    feeds: RSS_FEEDS,
-    expensive_source_throttle: getExpensiveSourceThrottlePayload(),
-    category_feed_pools: Object.fromEntries(
-      Object.keys(RSS_FEEDS).map((category) => [
-        category,
-        {
-          direct_feeds: RSS_FEEDS[category],
-          related_categories: CATEGORY_FEED_GROUPS[category] || [],
-          combined_feed_pool: getCategoryFeedPool(category),
-        },
-      ])
-    ),
-  }));
+  return withJsonCache("cache:rss-feeds", RSS_FEED_CACHE_TTL_SECONDS, async () => {
+    const categoryCatalog = await buildCategoryCatalogPayload();
+    return {
+      status: "Success",
+      source: "Configured RSS feeds",
+      count: Object.keys(RSS_FEEDS).length,
+      final_categories: UNIFIED_NEWS_CATEGORIES,
+      feeds: RSS_FEEDS,
+      source_category_catalog: categoryCatalog,
+      expensive_source_throttle: getExpensiveSourceThrottlePayload(),
+      category_feed_pools: Object.fromEntries(
+        UNIFIED_NEWS_CATEGORIES.map((category) => [
+          category,
+          {
+            direct_feeds: RSS_FEEDS[category] || [],
+            related_categories: CATEGORY_FEED_GROUPS[category] || [],
+            combined_feed_pool: getCategoryFeedPool(category),
+          },
+        ])
+      ),
+    };
+  });
+}
+
+async function getCachedCategoryCatalogPayload() {
+  return withJsonCache("cache:source-category-catalog", RSS_FEED_CACHE_TTL_SECONDS, buildCategoryCatalogPayload);
 }
 
 async function getCachedGroupedNewsPayload(limit = 500) {
@@ -1325,24 +2291,40 @@ async function getCachedGroupedNewsPayload(limit = 500) {
 }
 
 async function getCachedCronStatusPayload() {
-  return withJsonCache("cache:cron:status", STATUS_CACHE_TTL_SECONDS, async () => ({
-    status: "Success",
-    scheduler: {
-      enabled: schedulerState.enabled,
-      timezone: INDIA_TIMEZONE,
-      tick_ms: SCHEDULER_TICK_MS,
-      quiet_hours: schedulerState.quietHours,
-      last_tick_at: schedulerState.lastTickAt,
-      last_run_at: schedulerState.lastRunAt,
-      last_window_key: schedulerState.lastWindowKey,
-      manual_run: schedulerState.manualRun,
-      coordination: schedulerState.coordination,
-      categories: schedulerState.categories,
-      schedule: schedulerState.schedule || getCategorySchedule(),
-      mpinfo_districts: getMpInfoDistrictSchedulerHealthSnapshot(),
-      retention_cleanup: getRetentionCleanupHealthSnapshot(),
-    },
-  }));
+  return withJsonCache("cache:cron:status", STATUS_CACHE_TTL_SECONDS, async () => {
+    const dailyQuota = await getDailyNewsQuota();
+    return {
+      status: "Success",
+      scheduler: {
+        enabled: schedulerState.enabled,
+        timezone: INDIA_TIMEZONE,
+        tick_ms: SCHEDULER_TICK_MS,
+        primary_sources: PRIMARY_NEWS_SOURCE_STRATEGY,
+        primary_source_limit: SCHEDULER_PRIMARY_SOURCE_LIMIT,
+        daily_quota: dailyQuota,
+        latest_only: {
+          max_age_hours: NEWS_MAX_AGE_HOURS,
+          require_published_date: NEWS_REQUIRE_PUBLISHED_DATE,
+        },
+        active_hours: {
+          start_hour: SCHEDULER_ACTIVE_START_HOUR,
+          end_hour: SCHEDULER_ACTIVE_END_HOUR,
+          peak_windows: SCHEDULER_PEAK_WINDOWS,
+          peak_weight: SCHEDULER_PEAK_WEIGHT,
+        },
+        quiet_hours: schedulerState.quietHours,
+        last_tick_at: schedulerState.lastTickAt,
+        last_run_at: schedulerState.lastRunAt,
+        last_window_key: schedulerState.lastWindowKey,
+        manual_run: schedulerState.manualRun,
+        coordination: schedulerState.coordination,
+        categories: schedulerState.categories,
+        schedule: schedulerState.schedule || getCategorySchedule(),
+        mpinfo_districts: getMpInfoDistrictSchedulerHealthSnapshot(),
+        retention_cleanup: getRetentionCleanupHealthSnapshot(),
+      },
+    };
+  });
 }
 
 async function getCachedSchedulerLogsPayload({ schedulerName = null, limit = 20 } = {}) {
@@ -1388,8 +2370,10 @@ function buildApiDocs() {
       { method: "GET", path: `${API_BASE_PATH}/delivery/news/:idOrSlug`, description: "Fetch one published AI-written article by id or slug." },
       { method: "GET", path: `${API_BASE_PATH}/delivery/feed`, description: "Cron-aware published news feed for client websites." },
       { method: "GET", path: `${API_BASE_PATH}/rss-feeds`, description: "Configured RSS feed catalog." },
+      { method: "GET", path: `${API_BASE_PATH}/categories`, description: "Dynamic source category catalog merged into final categories." },
       { method: "POST", path: `${API_BASE_PATH}/sync/rss`, description: "Fetch RSS stories for one category." },
       { method: "POST", path: `${API_BASE_PATH}/sync/rss/all`, description: "Fetch RSS stories for all categories." },
+      { method: "POST", path: `${API_BASE_PATH}/sync/cliff-news`, description: "Fetch English stories from the Cliff News API and optionally create 100/300/600-word AI rewrites." },
       { method: "POST", path: `${API_BASE_PATH}/sync/sources-ai`, description: "Fetch Google RSS plus configured news sources and optionally create 100/300/600-word AI rewrites." },
       { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo`, description: "Fetch MP Info stories." },
       { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo-districts`, description: "Fetch MP Info district stories." },
@@ -1411,15 +2395,15 @@ function buildOpenApiSpec(req) {
   const baseUrl = `${req.protocol}://${req.get("host")}`;
   const exampleNewsRecord = {
     id: 48,
-    category: "entertainment",
-    search_query: "entertainment",
+    category: "Entertainment",
+    search_query: "Entertainment",
     title: "Sample entertainment headline",
     source_url: "https://example.com/story",
     image_link: "https://example.com/image.jpg",
     image_source: "og:image",
     fetched_at: "2026-04-04T16:46:26.000Z",
-    feed_source: "zee",
-    feed_url: "https://example.com/rss.xml",
+    feed_source: "dd",
+    feed_url: "https://ddnews.gov.in/en/category/top-stories/feed/",
   };
   const exampleAiRecord = {
     id: 44,
@@ -1450,7 +2434,7 @@ function buildOpenApiSpec(req) {
   const exampleDeliveredArticle = {
     id: 44,
     slug: "english-ai-headline-44",
-    category: "entertainment",
+    category: "Entertainment",
     publication_status: "published",
     published_at: "2026-04-04T18:00:00.000Z",
     updated_at: "2026-04-04T18:00:00.000Z",
@@ -1459,8 +2443,8 @@ function buildOpenApiSpec(req) {
     source: {
       title: "Sample source title",
       url: "https://example.com/story",
-      feed_source: "zee",
-      feed_url: "https://example.com/rss.xml",
+      feed_source: "dd",
+      feed_url: "https://ddnews.gov.in/en/category/top-stories/feed/",
       fetched_at: "2026-04-04T16:46:26.000Z",
     },
     media: {
@@ -1609,6 +2593,13 @@ function buildOpenApiSpec(req) {
         responses: { 200: { description: "Feed catalog.", content: { "application/json": { schema: { $ref: "#/components/schemas/ApiSuccessGeneric" } } } } },
       },
     },
+    [`${API_BASE_PATH}/categories`]: {
+      get: {
+        summary: "Get dynamic source category catalog",
+        security: [{ ApiKeyAuth: [] }],
+        responses: { 200: { description: "Source categories merged into final categories.", content: { "application/json": { schema: { $ref: "#/components/schemas/ApiSuccessGeneric" } } } } },
+      },
+    },
     [`${API_BASE_PATH}/sync/rss`]: {
       post: {
         summary: "Fetch RSS stories for a single category",
@@ -1636,7 +2627,7 @@ function buildOpenApiSpec(req) {
         summary: "Fetch MP Info stories",
         security: [{ ApiKeyAuth: [] }],
         parameters: [
-          { name: "category", in: "query", schema: { type: "string", default: "states" } },
+          { name: "category", in: "query", schema: { type: "string", default: DEFAULT_CATEGORY } },
           { name: "limit", in: "query", schema: { type: "integer", default: 5, minimum: 1, maximum: 500 } },
         ],
         responses: { 200: { description: "MP Info sync result.", content: { "application/json": { schema: { $ref: "#/components/schemas/ApiSuccessGeneric" } } } } },
@@ -1800,8 +2791,8 @@ function buildOpenApiSpec(req) {
           type: "object",
           properties: {
             id: { type: "integer", example: 48 },
-            category: { type: "string", example: "entertainment" },
-            search_query: { type: "string", example: "entertainment" },
+            category: { type: "string", example: "Entertainment" },
+            search_query: { type: "string", example: "Entertainment" },
             title: { type: "string", example: "Sample entertainment headline" },
             source_url: { type: "string", format: "uri" },
             image_link: { type: "string", format: "uri", nullable: true },
@@ -1814,7 +2805,7 @@ function buildOpenApiSpec(req) {
         GroupedNewsRecord: {
           type: "object",
           properties: {
-            category: { type: "string", example: "entertainment" },
+            category: { type: "string", example: "Entertainment" },
             count: { type: "integer", example: 1 },
             records: {
               type: "array",
@@ -2261,6 +3252,8 @@ function getSchedulerHealthSnapshot() {
       enabled: schedulerState.enabled,
       healthy: !schedulerState.enabled || !isTimestampStale(schedulerState.lastTickAt, SCHEDULER_HEALTH_THRESHOLD_MS),
       tick_ms: SCHEDULER_TICK_MS,
+      primary_sources: PRIMARY_NEWS_SOURCE_STRATEGY,
+      primary_source_limit: SCHEDULER_PRIMARY_SOURCE_LIMIT,
       last_tick_at: schedulerState.lastTickAt,
       last_run_at: schedulerState.lastRunAt,
       last_window_key: schedulerState.lastWindowKey,
@@ -2309,12 +3302,16 @@ function buildDeliveryCategoryState(category) {
 function groupDeliveryRecordsByCategory(records) {
   return Object.entries(
     records.reduce((accumulator, record) => {
-      const key = record.category || "uncategorized";
+      const key = normalizeCategory(record.ui_hindi?.category || record.category || DEFAULT_CATEGORY);
       if (!accumulator[key]) {
         accumulator[key] = [];
       }
 
-      accumulator[key].push(record);
+      accumulator[key].push({
+        ...record,
+        category: key,
+        ui_hindi: record.ui_hindi ? { ...record.ui_hindi, category: key } : record.ui_hindi,
+      });
       return accumulator;
     }, {})
   )
@@ -2326,11 +3323,23 @@ function groupDeliveryRecordsByCategory(records) {
     }));
 }
 
+function isFreshDeliveryRecord(record) {
+  const sourceTime = record?.source?.fetched_at || record?.updated_at || record?.published_at;
+  const deliveredImageUrl = record?.media?.image_link || record?.news?.image_link || record?.source?.image_link || "";
+  if (isBlockedArticleImageUrl(deliveredImageUrl)) {
+    return false;
+  }
+
+  return isFreshPublishedDate(sourceTime).fresh;
+}
+
 async function buildCronAwareDeliveryFeed({ category = null, language = "both", limit = 24, grouped = true } = {}) {
-  const records = await listDeliveredAiRewrites(dbPool, { category, language, limit });
+  const records = (await listDeliveredAiRewrites(dbPool, { category, language, limit: Math.min(limit * 3, 200) }))
+    .filter(isFreshDeliveryRecord)
+    .slice(0, limit);
   const categories = category
     ? [category]
-    : Array.from(new Set(records.map((record) => record.category).filter(Boolean))).sort(compareCategories);
+    : Array.from(new Set(records.map((record) => record.ui_hindi?.category || record.category).filter(Boolean))).sort(compareCategories);
 
   return {
     delivery_mode: "cron_aligned_published_feed",
@@ -2355,6 +3364,7 @@ async function listNewsRecords({ category = null, limit = 100 } = {}) {
   const queryText = category
     ? `
       SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at, feed_source, feed_url
+      , source_excerpt, source_published_at
       FROM fetched_news
       WHERE category = ?
       ORDER BY id DESC
@@ -2362,13 +3372,17 @@ async function listNewsRecords({ category = null, limit = 100 } = {}) {
     `
     : `
       SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at, feed_source, feed_url
+      , source_excerpt, source_published_at
       FROM fetched_news
       ORDER BY id DESC
       LIMIT ?
     `;
 
   const [rows] = await dbPool.query(queryText, category ? [category, limit] : [limit]);
-  return rows;
+  return rows.map((row) => ({
+    ...row,
+    category: normalizeCategory(row.category || DEFAULT_CATEGORY),
+  }));
 }
 
 async function listGroupedNewsRecords(limit = 500) {
@@ -2900,12 +3914,7 @@ function normalizeTotalLimit(value) {
 }
 
 function normalizeCategory(value) {
-  if (typeof value !== "string") {
-    return DEFAULT_CATEGORY;
-  }
-
-  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return normalized || DEFAULT_CATEGORY;
+  return normalizeUnifiedCategory(value, { logger: console });
 }
 
 function normalizeDeliveryLanguage(value) {
@@ -2914,20 +3923,7 @@ function normalizeDeliveryLanguage(value) {
 }
 
 function getCategoryDisplayName(category) {
-  const normalized = String(category || "uncategorized").trim().toLowerCase();
-  const aliases = {
-    top_stories: "Top Stories",
-    science_environment: "Science & Environment",
-  };
-
-  if (aliases[normalized]) {
-    return aliases[normalized];
-  }
-
-  return normalized
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  return getUnifiedCategoryDisplayName(category);
 }
 
 function getIndiaTimeParts(now = new Date()) {
@@ -2962,7 +3958,15 @@ function getIndiaTimeParts(now = new Date()) {
 
 function isQuietHours(now = new Date()) {
   const indiaNow = getIndiaTimeParts(now);
-  return indiaNow.hour >= QUIET_HOUR_START && indiaNow.hour < QUIET_HOUR_END;
+  if (QUIET_HOUR_START === QUIET_HOUR_END) {
+    return false;
+  }
+
+  if (QUIET_HOUR_START < QUIET_HOUR_END) {
+    return indiaNow.hour >= QUIET_HOUR_START && indiaNow.hour < QUIET_HOUR_END;
+  }
+
+  return indiaNow.hour >= QUIET_HOUR_START || indiaNow.hour < QUIET_HOUR_END;
 }
 
 function buildWindowKey(now = new Date()) {
@@ -2987,6 +3991,134 @@ function getWindowSecond(now = new Date()) {
   const indiaNow = getIndiaTimeParts(now);
   const minuteInWindow = indiaNow.minute % 30;
   return minuteInWindow * 60 + indiaNow.second;
+}
+
+function indiaDateTimeToUtcDate({ year, month, day, hour = 0, minute = 0, second = 0 }) {
+  return new Date(Date.UTC(year, month - 1, day, hour - 5, minute - 30, second));
+}
+
+function getSchedulerDailyWindow(now = new Date()) {
+  const indiaNow = getIndiaTimeParts(now);
+  let startAt = indiaDateTimeToUtcDate({
+    year: indiaNow.year,
+    month: indiaNow.month,
+    day: indiaNow.day,
+    hour: SCHEDULER_ACTIVE_START_HOUR,
+  });
+
+  if (indiaNow.hour < SCHEDULER_ACTIVE_START_HOUR) {
+    startAt = new Date(startAt.getTime() - 24 * 60 * 60 * 1000);
+  }
+
+  return {
+    startAt,
+    endAt: new Date(startAt.getTime() + 24 * 60 * 60 * 1000),
+  };
+}
+
+function getSchedulerActiveHours() {
+  if (SCHEDULER_ACTIVE_END_HOUR > SCHEDULER_ACTIVE_START_HOUR) {
+    return SCHEDULER_ACTIVE_END_HOUR - SCHEDULER_ACTIVE_START_HOUR;
+  }
+
+  return (24 - SCHEDULER_ACTIVE_START_HOUR) + SCHEDULER_ACTIVE_END_HOUR;
+}
+
+function isHourInPeakWindow(hour) {
+  return SCHEDULER_PEAK_WINDOWS.some(({ startHour, endHour }) => (
+    hour >= startHour && hour < endHour
+  ));
+}
+
+function getSchedulerPaceBudget(now = new Date()) {
+  const { startAt } = getSchedulerDailyWindow(now);
+  const activeHours = getSchedulerActiveHours();
+  const elapsedHours = Math.max(0, Math.min((now.getTime() - startAt.getTime()) / (60 * 60 * 1000), activeHours));
+  const stepMinutes = 5;
+  const elapsedSteps = Math.floor((elapsedHours * 60) / stepMinutes);
+  const totalSteps = activeHours * (60 / stepMinutes);
+  let elapsedWeight = 0;
+  let totalWeight = 0;
+
+  for (let step = 0; step < totalSteps; step += 1) {
+    const relativeHour = (step * stepMinutes) / 60;
+    const clockHour = (SCHEDULER_ACTIVE_START_HOUR + Math.floor(relativeHour)) % 24;
+    const weight = isHourInPeakWindow(clockHour) ? SCHEDULER_PEAK_WEIGHT : 1;
+    totalWeight += weight;
+    if (step < elapsedSteps) {
+      elapsedWeight += weight;
+    }
+  }
+
+  if (elapsedSteps > 0 && elapsedSteps < totalSteps) {
+    const partialMinutes = (elapsedHours * 60) - (elapsedSteps * stepMinutes);
+    const relativeHour = (elapsedSteps * stepMinutes) / 60;
+    const clockHour = (SCHEDULER_ACTIVE_START_HOUR + Math.floor(relativeHour)) % 24;
+    elapsedWeight += (isHourInPeakWindow(clockHour) ? SCHEDULER_PEAK_WEIGHT : 1) * (partialMinutes / stepMinutes);
+  }
+
+  return Math.max(0, Math.min(DAILY_NEWS_FETCH_LIMIT, Math.floor((DAILY_NEWS_FETCH_LIMIT * elapsedWeight) / totalWeight)));
+}
+
+async function countSavedNewsInSchedulerWindow(now = new Date()) {
+  if (!dbPool) {
+    return 0;
+  }
+
+  const { startAt, endAt } = getSchedulerDailyWindow(now);
+  const [rows] = await dbPool.execute(
+    `
+      SELECT COUNT(*) AS saved_count
+      FROM fetched_news
+      WHERE fetched_at >= ?
+        AND fetched_at < ?
+    `,
+    [startAt, endAt]
+  );
+  return Number(rows?.[0]?.saved_count || 0);
+}
+
+async function getDailyNewsQuota(now = new Date()) {
+  const savedCount = await countSavedNewsInSchedulerWindow(now);
+  const paceBudget = getSchedulerPaceBudget(now);
+  const { startAt, endAt } = getSchedulerDailyWindow(now);
+
+  return {
+    limit: DAILY_NEWS_FETCH_LIMIT,
+    savedCount,
+    remaining: Math.max(0, DAILY_NEWS_FETCH_LIMIT - savedCount),
+    paceBudget,
+    paceRemaining: Math.max(0, paceBudget - savedCount),
+    windowStart: startAt.toISOString(),
+    windowEnd: endAt.toISOString(),
+    timezone: INDIA_TIMEZONE,
+    activeStartHour: SCHEDULER_ACTIVE_START_HOUR,
+    activeEndHour: SCHEDULER_ACTIVE_END_HOUR,
+    peakWindows: SCHEDULER_PEAK_WINDOWS,
+  };
+}
+
+function buildDailyQuotaSkippedFetchResult(category, source, quota) {
+  return {
+    category: category || "all",
+    source,
+    fetched_count: 0,
+    matched_count: 0,
+    saved_count: 0,
+    existing_count: 0,
+    failed_count: 0,
+    skipped_count: 1,
+    results: [
+      {
+        status: "Skipped",
+        category: category || "all",
+        feed_source: source,
+        message: `Daily news limit reached (${quota.savedCount}/${quota.limit}).`,
+      },
+    ],
+    rewriteCandidates: [],
+    daily_quota: quota,
+  };
 }
 
 function resolveBrowserExecutablePath() {
@@ -3043,6 +4175,10 @@ async function withTimeout(promise, timeoutMs, label) {
       clearTimeout(timeoutId);
     }
   }
+}
+
+function waitForMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function updateSchedulerHeartbeat() {
@@ -3237,12 +4373,15 @@ function compareCategories(left, right) {
 function groupRecordsByCategory(records) {
   return Object.entries(
     records.reduce((accumulator, record) => {
-      const key = record.category || "uncategorized";
+      const key = normalizeCategory(record.ui_hindi?.category || record.category || DEFAULT_CATEGORY);
       if (!accumulator[key]) {
         accumulator[key] = [];
       }
 
-      accumulator[key].push(record);
+      accumulator[key].push({
+        ...record,
+        category: key,
+      });
       return accumulator;
     }, {})
   )
@@ -3298,22 +4437,6 @@ function getFallbackSectionUrl(feedConfig, category) {
     return feedConfig.url;
   }
 
-  if (feedConfig.source === "zee") {
-    return ZEE_SECTION_FALLBACKS[category] || "https://zeenews.india.com/";
-  }
-
-  if (feedConfig.source === "news18") {
-    try {
-      const parsed = new URL(feedConfig.url);
-      const slug = parsed.pathname.split("/").pop()?.replace(/\.xml$/i, "").trim();
-      if (slug) {
-        return `https://www.news18.com/${slug}/`;
-      }
-    } catch {
-      return null;
-    }
-  }
-
   return null;
 }
 
@@ -3353,68 +4476,6 @@ function extractArticleUrlsFromHtml(html, baseUrl, predicate, limit) {
   return urls;
 }
 
-function isLikelyArticleUrl(feedConfig, candidateUrl) {
-  try {
-    const parsed = new URL(candidateUrl);
-    const hostname = parsed.hostname.toLowerCase();
-    const pathname = parsed.pathname.toLowerCase();
-
-    if (feedConfig.source === "news18") {
-      return (
-        ["news18.com", "www.news18.com"].includes(hostname) &&
-        pathname.endsWith(".html") &&
-        !pathname.startsWith("/amp/") &&
-        !pathname.includes("/page-") &&
-        !pathname.startsWith("/commonfeeds/")
-      );
-    }
-
-    if (feedConfig.source === "zee") {
-      return (
-        ["zeenews.india.com", "www.zeenews.india.com"].includes(hostname) &&
-        pathname.endsWith(".html") &&
-        /\-\d+\.html$/i.test(pathname) &&
-        !pathname.startsWith("/tags/") &&
-        !pathname.startsWith("/photos/") &&
-        !pathname.startsWith("/video/")
-      );
-    }
-
-    return candidateUrl.startsWith("http");
-  } catch {
-    return false;
-  }
-}
-
-function getNews18SectionKeywords(feedConfig) {
-  try {
-    const parsed = new URL(feedConfig.url);
-    const slug = parsed.pathname.split("/").pop()?.replace(/\.xml$/i, "").trim().toLowerCase();
-    const aliases = {
-      "education-career": ["education-career", "education-and-career"],
-      entertainment: ["entertainment"],
-      movies: ["movies", "bollywood"],
-      viral: ["viral"],
-      sports: ["sports"],
-      cricket: ["cricket"],
-      football: ["football"],
-      tech: ["tech"],
-      explainers: ["explainers", "explainer"],
-      business: ["business", "markets"],
-      lifestyle: ["lifestyle"],
-      opinion: ["opinion"],
-      auto: ["auto"],
-      politics: ["politics"],
-      india: ["india"],
-      world: ["world"],
-    };
-
-    return aliases[slug] || (slug ? [slug] : []);
-  } catch {
-    return [];
-  }
-}
-
 function createSectionUrlPredicate(feedConfig, sectionUrl) {
   const sectionHref = String(sectionUrl || "").replace(/\/+$/, "");
 
@@ -3435,55 +4496,6 @@ function createSectionUrlPredicate(feedConfig, sectionUrl) {
           !isRejectedGovernmentUrl(candidateUrl) &&
           !/\.(jpg|jpeg|png|webp|gif|svg|css|js)(?:[?#].*)?$/i.test(pathname) &&
           hasNewsSignal
-        );
-      } catch {
-        return false;
-      }
-    };
-  }
-
-  if (feedConfig.source === "zee") {
-    return (candidateUrl) => {
-      try {
-        const parsed = new URL(candidateUrl);
-        const hostname = parsed.hostname.toLowerCase();
-        const pathname = parsed.pathname.toLowerCase();
-
-        return (
-          ["zeenews.india.com", "www.zeenews.india.com"].includes(hostname) &&
-          !pathname.startsWith("/rss/") &&
-          pathname !== "/" &&
-          pathname.split("/").filter(Boolean).length >= 2 &&
-          !/\.(xml|jpg|jpeg|png|webp|gif|svg)$/i.test(pathname) &&
-          isLikelyArticleUrl(feedConfig, candidateUrl) &&
-          candidateUrl.replace(/\/+$/, "") !== sectionHref
-        );
-      } catch {
-        return false;
-      }
-    };
-  }
-
-  if (feedConfig.source === "news18") {
-    const sectionKeywords = getNews18SectionKeywords(feedConfig);
-    return (candidateUrl) => {
-      try {
-        const parsed = new URL(candidateUrl);
-        const hostname = parsed.hostname.toLowerCase();
-        const pathname = parsed.pathname.toLowerCase();
-        const matchesSection = sectionKeywords.some((keyword) => {
-          return pathname.includes(`/${keyword}/`) || pathname.includes(`/photogallery/${keyword}/`);
-        });
-
-        return (
-          ["news18.com", "www.news18.com"].includes(hostname) &&
-          !pathname.startsWith("/commonfeeds/") &&
-          pathname !== "/" &&
-          pathname.split("/").filter(Boolean).length >= 2 &&
-          !/\.(xml|jpg|jpeg|png|webp|gif|svg)$/i.test(pathname) &&
-          matchesSection &&
-          isLikelyArticleUrl(feedConfig, candidateUrl) &&
-          candidateUrl.replace(/\/+$/, "") !== sectionHref
         );
       } catch {
         return false;
@@ -3664,11 +4676,17 @@ async function getArticleUrlsFromFeed(feedConfig, category, limit) {
 
     seen.add(url);
     const rssImageUrl = extractRssImageUrl(itemXml, feedConfig.url);
+    const publishedAt =
+      extractRssTagValue(itemXml, "pubDate") ||
+      extractRssTagValue(itemXml, "published") ||
+      extractRssTagValue(itemXml, "updated") ||
+      extractRssTagValue(itemXml, "dc:date");
     articles.push({
       url,
       title: extractRssTagValue(itemXml, "title"),
       image_link: rssImageUrl,
       image_source: rssImageUrl ? "rss-image" : null,
+      published_at: publishedAt || null,
     });
 
     if (articles.length >= limit) {
@@ -3761,6 +4779,7 @@ async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
           title: typeof article === "object" ? article.title || null : null,
           image_link: typeof article === "object" ? article.image_link || null : null,
           image_source: typeof article === "object" ? article.image_source || null : null,
+          published_at: typeof article === "object" ? article.published_at || null : null,
         });
         madeProgress = true;
         break;
@@ -3775,13 +4794,32 @@ async function getArticleUrlsFromFeeds(feedConfigs, limit, options = {}) {
   return results;
 }
 
-function getCategoryFeedPool(category) {
-  const directFeeds = RSS_FEEDS[category] || [];
-  const relatedCategories = CATEGORY_FEED_GROUPS[category] || [];
+function getCategoryFeedPool(category, options = {}) {
+  const normalizedCategory = normalizeCategory(category);
+  const directFeeds = RSS_FEEDS[normalizedCategory] || [];
+  const relatedCategories = CATEGORY_FEED_GROUPS[normalizedCategory] || [];
+  const includeSources = new Set(normalizeFeedSourceList(options.includeSources));
+  const excludeSources = new Set(normalizeFeedSourceList(options.excludeSources));
   const seenFeeds = new Set();
   const feedPool = [];
+  const shouldIncludeFeed = (feed) => {
+    const source = String(feed?.source || "").trim().toLowerCase();
+    if (excludeSources.has(source)) {
+      return false;
+    }
+
+    if (includeSources.size > 0 && !includeSources.has(source)) {
+      return false;
+    }
+
+    return true;
+  };
 
   for (const feed of directFeeds) {
+    if (!shouldIncludeFeed(feed)) {
+      continue;
+    }
+
     const key = `${feed.source}:${feed.url}`;
     if (!seenFeeds.has(key)) {
       seenFeeds.add(key);
@@ -3792,6 +4830,10 @@ function getCategoryFeedPool(category) {
   for (const relatedCategory of relatedCategories) {
     const relatedFeeds = RSS_FEEDS[relatedCategory] || [];
     for (const feed of relatedFeeds) {
+      if (!shouldIncludeFeed(feed)) {
+        continue;
+      }
+
       const key = `${feed.source}:${feed.url}`;
       if (!seenFeeds.has(key)) {
         seenFeeds.add(key);
@@ -3804,9 +4846,19 @@ function getCategoryFeedPool(category) {
 }
 
 function getSchedulerSourceCount(category) {
-  const rssSourceCount = getCategoryFeedPool(category).length;
-  const googleSourceCount = SCHEDULER_GOOGLE_RSS_ENABLED ? 1 : 0;
-  return Math.max(googleSourceCount + rssSourceCount, 1);
+  const fallbackRssSourceCount = getCategoryFeedPool(category, {
+    excludeSources: PRIMARY_RSS_SOURCES,
+  }).length;
+  return Math.max(fallbackRssSourceCount, 1);
+}
+
+function normalizePrimarySourceLimit(value, fallback = SCHEDULER_PRIMARY_SOURCE_LIMIT) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(parsed, 5);
 }
 
 function isAllowedImageHost(value) {
@@ -3852,56 +4904,7 @@ function isAllowedImageHost(value) {
       return false;
     }
 
-    const exactHosts = [
-      "ddnews.gov.in",
-      "www.ddnews.gov.in",
-      "zeenews.india.com",
-      "www.zeenews.india.com",
-      "english.cdn.zeenews.com",
-      "cdn.zeenews.com",
-      "mpinfo.org",
-      "www.mpinfo.org",
-      "mpinfonew.org",
-      "www.mpinfonew.org",
-      "news18.com",
-      "www.news18.com",
-      "images.news18.com",
-      "static.news18.com",
-      "pib.gov.in",
-      "www.pib.gov.in",
-      "static.pib.gov.in",
-      "static.toiimg.com",
-      "static.dw.com",
-      "ichef.bbci.co.uk",
-      "image.cnbcfm.com",
-      "img.etimg.com",
-      "etimg.etb2bimg.com",
-      "akm-img-a-in.tosshub.com",
-      "cdn1.wionews.com",
-      "images.indianexpress.com",
-      "bl-i.thgim.com",
-      "asset.peoplematters.in",
-    ];
-
-    if (exactHosts.includes(hostname)) {
-      return true;
-    }
-
-    return (
-      hostname.endsWith(".news18.com") ||
-      hostname.endsWith(".zeenews.com") ||
-      hostname.endsWith(".gov.in") ||
-      hostname.endsWith(".toiimg.com") ||
-      hostname.endsWith(".indiatimes.com") ||
-      hostname.endsWith(".dw.com") ||
-      hostname.endsWith(".bbci.co.uk") ||
-      hostname.endsWith(".cnbcfm.com") ||
-      hostname.endsWith(".tosshub.com") ||
-      hostname.endsWith(".wionews.com") ||
-      hostname.endsWith(".indianexpress.com") ||
-      hostname.endsWith(".thgim.com") ||
-      hostname.endsWith(".peoplematters.in")
-    );
+    return true;
   } catch {
     return false;
   }
@@ -4024,10 +5027,16 @@ function extractRssImageUrl(itemXml, feedUrl) {
         continue;
       }
 
-      try {
-        return new URL(rawUrl, feedUrl).href;
-      } catch {
-        return rawUrl;
+      const resolvedUrl = (() => {
+        try {
+          return new URL(rawUrl, feedUrl).href;
+        } catch {
+          return rawUrl;
+        }
+      })();
+      const safeImageUrl = sanitizeArticleImageUrl(resolvedUrl);
+      if (safeImageUrl) {
+        return safeImageUrl;
       }
     }
   }
@@ -4036,10 +5045,16 @@ function extractRssImageUrl(itemXml, feedUrl) {
   for (const imageTag of imageTags) {
     const rawUrl = extractRssTagValue(imageTag, "url");
     if (rawUrl) {
-      try {
-        return new URL(rawUrl, feedUrl).href;
-      } catch {
-        return rawUrl;
+      const resolvedUrl = (() => {
+        try {
+          return new URL(rawUrl, feedUrl).href;
+        } catch {
+          return rawUrl;
+        }
+      })();
+      const safeImageUrl = sanitizeArticleImageUrl(resolvedUrl);
+      if (safeImageUrl) {
+        return safeImageUrl;
       }
     }
   }
@@ -4127,6 +5142,53 @@ function extractTitleFromHtml(html) {
   return titleMatch ? decodeHtmlEntities(titleMatch[1]).replace(/\s+/g, " ").trim() : null;
 }
 
+function extractPreferredArticleImageFromHtml(html, articleUrl) {
+  const sourceHtml = String(html || "");
+  const preferredRegions = [
+    /<figure\b[^>]*class\s*=\s*["'][^"']*(?:featured-media|post-thumbnail|wp-post-image)[^"']*["'][^>]*>[\s\S]*?<\/figure>/gi,
+    /<div\b[^>]*class\s*=\s*["'][^"']*(?:featured-media|post-thumbnail|postTypeListItem)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
+  ];
+
+  for (const pattern of preferredRegions) {
+    const regions = sourceHtml.match(pattern) || [];
+    for (const region of regions) {
+      const imageTags = region.match(/<img\b[^>]*>/gi) || [];
+      for (const tag of imageTags) {
+        const attributes = extractAttributesFromTag(tag);
+        const srcsetCandidate = pickBestSrcsetCandidate(
+          attributes.srcset
+            || attributes["data-srcset"]
+            || attributes["data-original-set"]
+            || attributes["data-lazy-srcset"]
+            || "",
+          articleUrl
+        );
+        const rawSrc = srcsetCandidate
+          || attributes.src
+          || attributes["data-src"]
+          || attributes["data-lazy-src"]
+          || attributes["data-original"]
+          || attributes["data-img-url"];
+
+        if (!rawSrc) {
+          continue;
+        }
+
+        try {
+          const safeImageUrl = sanitizeArticleImageUrl(new URL(rawSrc, articleUrl).href);
+          if (safeImageUrl) {
+            return safeImageUrl;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 function isLikelyDecorativeImageUrl(value) {
   const normalized = String(value || "").toLowerCase();
   let hostname = "";
@@ -4148,18 +5210,41 @@ function isLikelyDecorativeImageUrl(value) {
 
   return (
     !normalized
+    || isBlockedArticleImageUrl(normalized)
     || isSocialMediaImageHost
     || normalized.includes("logo")
     || normalized.includes("icon")
+    || normalized.includes("favicon")
+    || normalized.includes("/theme-assets/")
+    || normalized.includes("img.etimg.com/photo/msid-")
+    || normalized.includes("/attention/")
+    || normalized.includes("attention.jpg")
+    || normalized.includes("qrcode")
+    || normalized.includes("qr-code")
+    || normalized.includes("/qr/")
+    || normalized.includes("wechat")
+    || normalized.includes("weibo")
+    || normalized.includes("share_icon")
+    || normalized.includes("newsletter")
+    || normalized.includes("subscription")
+    || normalized.includes("sponsor")
+    || normalized.includes("advertorial")
+    || normalized.includes("rhs-banner")
+    || normalized.includes("about-news")
+    || normalized.includes("gwab")
+    || normalized.includes("resource/default/img/icon")
     || normalized.includes("sprite")
     || normalized.includes("avatar")
+    || normalized.includes("brand")
+    || normalized.includes("branding")
     || normalized.includes("banner")
-    || normalized.includes("ads")
-    || normalized.includes("advert")
+    || /(?:^|[/?&_.-])(?:ads?|advert|advertisement|advertorial)(?:[/?&_.=-]|$)/.test(normalized)
+    || normalized.includes("fallback")
     || normalized.includes("youtube.svg")
     || normalized.includes("facebook")
     || normalized.includes("twitter")
     || normalized.includes("instagram")
+    || normalized.includes("insta")
     || normalized.includes("cdninstagram")
     || normalized.includes("fbcdn")
     || normalized.includes("facebook.com")
@@ -4179,12 +5264,16 @@ function isLikelyDecorativeImageUrl(value) {
     || normalized.includes("badge-google")
     || normalized.includes("badge-app")
     || normalized.includes("tn-250921125347.jpg")
-    || normalized.includes("social")
-    || normalized.includes("share")
     || normalized.includes("follow-us")
     || normalized.includes("feed")
+    || normalized.includes("yt-feed")
     || normalized.includes("placeholder")
+    || normalized.includes("no-image")
+    || normalized.includes("missing-image")
+    || normalized.includes("image-not-available")
     || normalized.includes("default-image")
+    || normalized.includes("default-img")
+    || normalized.includes("default-photo")
     || normalized.includes("whatsapp")
     || normalized.endsWith(".svg")
   );
@@ -4200,8 +5289,8 @@ function scoreImageCandidate({ src, altText = "", className = "", width = 0, hei
   }
 
   if (
-    /logo|icon|share|social|avatar|author|profile|button|emoji|thumbnail|google play|play store|app store|download app|get it on/.test(normalizedAlt)
-    || /logo|icon|share|social|avatar|author|profile|button|widget|thumb|thumbnail|gallery|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass)
+    /logo|icon|favicon|share|social|avatar|author|profile|button|emoji|thumbnail|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|advert|ads?|banner|rhs|promo|sponsor|newsletter|subscription|google play|play store|app store|download app|get it on/.test(normalizedAlt)
+    || /logo|icon|favicon|share|social|avatar|author|profile|button|widget|thumb|thumbnail|gallery|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|advert|ads?|banner|rhs|promo|sponsor|newsletter|subscription|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass)
   ) {
     return Number.NEGATIVE_INFINITY;
   }
@@ -4226,7 +5315,7 @@ function scoreImageCandidate({ src, altText = "", className = "", width = 0, hei
     score += 80;
   }
 
-  if (/insta|social|share|feed|icon|logo|author|avatar|thumb|thumbnail|youtube/.test(normalizedSrc)) {
+  if (/insta|feed|icon|logo|favicon|author|avatar|thumb|thumbnail|placeholder|default|fallback|attention|qrcode|qr-code|wechat|weibo|advert|ads?|banner|rhs|promo|sponsor|newsletter|subscription|youtube/.test(normalizedSrc)) {
     score -= 240;
   }
 
@@ -4234,6 +5323,11 @@ function scoreImageCandidate({ src, altText = "", className = "", width = 0, hei
 }
 
 function extractImageFromHtml(html, articleUrl) {
+  const preferredImage = extractPreferredArticleImageFromHtml(html, articleUrl);
+  if (preferredImage) {
+    return preferredImage;
+  }
+
   const imageTags = String(html || "").match(/<img\b[^>]*>/gi) || [];
   let bestCandidate = null;
 
@@ -4278,8 +5372,12 @@ function extractImageFromHtml(html, articleUrl) {
 
     try {
       const absoluteUrl = new URL(rawSrc, articleUrl).href;
+      const safeImageUrl = sanitizeArticleImageUrl(absoluteUrl);
+      if (!safeImageUrl) {
+        continue;
+      }
       if (!bestCandidate || score > bestCandidate.score) {
-        bestCandidate = { href: absoluteUrl, score };
+        bestCandidate = { href: safeImageUrl, score };
       }
     } catch {
       continue;
@@ -4329,13 +5427,16 @@ async function extractArticleMetadataFromHtml(articleUrl) {
       continue;
     }
 
-    try {
-      featuredImage = new URL(candidate.rawUrl, articleUrl).href;
-    } catch {
-      featuredImage = candidate.rawUrl;
-    }
+    const resolvedImage = (() => {
+      try {
+        return new URL(candidate.rawUrl, articleUrl).href;
+      } catch {
+        return candidate.rawUrl;
+      }
+    })();
+    featuredImage = sanitizeArticleImageUrl(resolvedImage);
 
-    if (featuredImage && !isLikelyDecorativeImageUrl(featuredImage)) {
+    if (featuredImage) {
       imageSource = candidate.source;
       break;
     }
@@ -4348,22 +5449,16 @@ async function extractArticleMetadataFromHtml(articleUrl) {
   };
 }
 
-async function extractBestImageFromArticle(page, articleUrl) {
-  let htmlMetadata = null;
-
+function isGoogleNewsPageUrl(value) {
   try {
-    htmlMetadata = await extractArticleMetadataFromHtml(articleUrl);
-    if (htmlMetadata?.featuredImage && htmlMetadata.imageSource !== "html-image") {
-      return htmlMetadata;
-    }
-  } catch (error) {
-    console.warn(`HTML-first extraction failed for ${articleUrl}: ${error.message}`);
+    return new URL(value).hostname.toLowerCase() === "news.google.com";
+  } catch {
+    return false;
   }
+}
 
-  await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
-  await page.waitForSelector("body", { timeout: 8008 });
-
-  const pageMetadata = await page.evaluate(() => {
+async function extractBestImageFromLoadedPage(page) {
+  return page.evaluate(() => {
     const makeAbsolute = (value) => {
       if (!value) {
         return null;
@@ -4401,7 +5496,7 @@ async function extractBestImageFromArticle(page, articleUrl) {
         hostname.endsWith("twimg.com") ||
         hostname.endsWith("x.com") ||
         hostname.endsWith("twitter.com") ||
-        /logo|icon|sprite|avatar|youtube|insta|instagram|cdninstagram|fbcdn|facebook|twitter|twimg|social|share|feed|profile|placeholder|default-image|google-play|play-store|app-store|appstore|get-it-on|download-app|mobile-app|app-badge|store-badge|badge-google|badge-app/.test(normalized)
+        /logo|icon|favicon|theme-assets|img\.etimg\.com\/photo\/msid-|attention|qrcode|qr-code|wechat|weibo|share_icon|newsletter|subscription|sponsor|advertorial|rhs-banner|about-news|gwab|resource\/default\/img\/icon|sprite|avatar|youtube|insta|instagram|cdninstagram|fbcdn|facebook|twitter|twimg|social|feed|profile|placeholder|default-image|default-img|default-photo|default-thumbnail|fallback|og-image|brand|branding|no-image|missing-image|image-not-available|google-play|play-store|app-store|appstore|get-it-on|download-app|mobile-app|app-badge|store-badge|badge-google|badge-app|(?:^|[/?&_.-])(?:ads?|advert|advertisement)(?:[/?&_.=-]|$)|banner|rhs|promo|sponsor/.test(normalized)
       );
     };
 
@@ -4425,6 +5520,22 @@ async function extractBestImageFromArticle(page, articleUrl) {
         source: "link[rel=image_src]",
       },
     ].filter((candidate) => candidate.src && !isBlockedImage(candidate.src));
+
+    const preferredArticleImages = Array.from(
+      document.querySelectorAll(
+        "figure.featured-media img, .featured-media img, .post-thumbnail img, .postTypeListItem img, img.wp-post-image"
+      )
+    )
+      .map((img) => ({
+        src: makeAbsolute(
+          img.currentSrc ||
+            img.getAttribute("src") ||
+            img.getAttribute("data-src") ||
+            img.getAttribute("data-lazy-src")
+        ),
+        source: "featured-media",
+      }))
+      .filter((candidate) => candidate.src && !isBlockedImage(candidate.src));
 
     const imageCandidates = Array.from(document.images)
       .map((img) => {
@@ -4459,8 +5570,8 @@ async function extractBestImageFromArticle(page, articleUrl) {
             !normalizedSrc ||
             !normalizedSrc.startsWith("http") ||
             isBlockedImage(normalizedSrc) ||
-            /logo|icon|share|social|avatar|author|profile|button|thumbnail|google play|play store|app store|download app|get it on/.test(normalizedAlt) ||
-            /logo|icon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|instagram|insta|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass) ||
+            /logo|icon|favicon|share|social|avatar|author|profile|button|thumbnail|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|(?:^|[/?&_. -])(?:ads?|advert|advertisement)(?:[/?&_. =-]|$)|banner|rhs|promo|sponsor|newsletter|subscription|google play|play store|app store|download app|get it on/.test(normalizedAlt) ||
+            /logo|icon|favicon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|(?:^|[/?&_. -])(?:ads?|advert|advertisement)(?:[/?&_. =-]|$)|banner|rhs|promo|sponsor|newsletter|subscription|instagram|insta|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass) ||
             img.width < 320 ||
             img.height < 180
           ) {
@@ -4490,25 +5601,146 @@ async function extractBestImageFromArticle(page, articleUrl) {
 
     return {
       title,
-      featuredImage: imageCandidates[0]?.src || metaCandidates[0]?.src || null,
-      imageSource: imageCandidates[0] ? "article-image" : metaCandidates[0]?.source || null,
+      featuredImage: preferredArticleImages[0]?.src || metaCandidates[0]?.src || imageCandidates[0]?.src || null,
+      imageSource: preferredArticleImages[0]
+        ? preferredArticleImages[0].source
+        : metaCandidates[0]
+          ? metaCandidates[0].source
+          : imageCandidates[0]
+            ? "article-image"
+            : null,
     };
   });
+}
 
-  if (pageMetadata?.featuredImage) {
-    return pageMetadata;
+async function extractBestImageFromArticle(page, articleUrl) {
+  let htmlMetadata = null;
+
+  try {
+    htmlMetadata = await extractArticleMetadataFromHtml(articleUrl);
+    if (htmlMetadata?.featuredImage && htmlMetadata.imageSource !== "html-image") {
+      return htmlMetadata;
+    }
+  } catch (error) {
+    console.warn(`HTML-first extraction failed for ${articleUrl}: ${error.message}`);
+  }
+
+  await page.goto(articleUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
+  await page.waitForSelector("body", { timeout: 8008 });
+  try {
+    await page.waitForFunction(
+      () => Array.from(document.images || []).some((img) => {
+        const src = String(img.currentSrc || img.src || img.getAttribute("src") || "").toLowerCase();
+        const label = `${src} ${img.alt || ""} ${img.className || ""}`.toLowerCase();
+        const width = img.naturalWidth || img.width || 0;
+        const height = img.naturalHeight || img.height || 0;
+        return (
+          width >= 300 &&
+          height >= 160 &&
+          src.startsWith("http") &&
+          !/logo|icon|favicon|theme-assets|img\.etimg\.com\/photo\/msid-|attention|qrcode|qr-code|wechat|weibo|share_icon|newsletter|subscription|sponsor|advertorial|rhs-banner|about-news|gwab|resource\/default\/img\/icon|sprite|avatar|youtube|insta|instagram|cdninstagram|fbcdn|facebook|twitter|twimg|social|feed|profile|placeholder|default-image|default-img|default-photo|default-thumbnail|fallback|og-image|brand|branding|no-image|missing-image|image-not-available|google-play|play-store|app-store|appstore|get-it-on|download-app|mobile-app|app-badge|store-badge|badge-google|badge-app|(?:^|[/?&_. -])(?:ads?|advert|advertisement)(?:[/?&_. =-]|$)|banner|rhs|promo|sponsor/.test(label)
+        );
+      }),
+      { timeout: ARTICLE_IMAGE_RENDER_WAIT_MS }
+    );
+  } catch {
+    await waitForMs(1200);
+  }
+  const pageMetadata = await extractBestImageFromLoadedPage(page);
+
+  const pageImage = sanitizeArticleImageUrl(pageMetadata?.featuredImage);
+  if (pageImage) {
+    return {
+      ...pageMetadata,
+      featuredImage: pageImage,
+    };
   }
 
   return htmlMetadata || pageMetadata;
 }
 
+async function openGoogleRssArticleAndExtract(page, googleUrl, fallbackArticleUrl = null) {
+  const fallbackUrl = fallbackArticleUrl && !isGoogleNewsPageUrl(fallbackArticleUrl)
+    ? fallbackArticleUrl
+    : null;
+  let fallbackMetadata = null;
+
+  if (fallbackUrl) {
+    try {
+      fallbackMetadata = await extractArticleMetadataFromHtml(fallbackUrl);
+    } catch (error) {
+      console.warn(`Google RSS fallback metadata extraction failed for ${fallbackUrl}: ${error.message}`);
+    }
+  }
+
+  const openPage = async (url) => {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+    await page.waitForSelector("body", { timeout: 8008 });
+  };
+
+  const initialUrl = googleUrl || fallbackUrl;
+  if (!initialUrl) {
+    return {
+      articleUrl: null,
+      title: fallbackMetadata?.title || null,
+      featuredImage: fallbackMetadata?.featuredImage || null,
+      imageSource: fallbackMetadata?.imageSource || null,
+    };
+  }
+
+  try {
+    await openPage(initialUrl);
+  } catch (error) {
+    if (!fallbackUrl || fallbackUrl === initialUrl) {
+      throw error;
+    }
+
+    await openPage(fallbackUrl);
+  }
+
+  try {
+    await page.waitForFunction(() => !window.location.hostname.includes("news.google.com"), { timeout: 10000 });
+  } catch {
+    // Some Google News links do not auto-redirect. Fall back to the resolved publisher URL below.
+  }
+
+  let finalUrl = page.url() || fallbackUrl || googleUrl;
+  if (isGoogleNewsPageUrl(finalUrl) && fallbackUrl) {
+    await openPage(fallbackUrl);
+    finalUrl = page.url() || fallbackUrl;
+  }
+
+  await waitForMs(1500);
+  const pageMetadata = await extractBestImageFromLoadedPage(page);
+
+  return {
+    articleUrl: finalUrl,
+    title: pageMetadata?.title || fallbackMetadata?.title || null,
+    featuredImage: pageMetadata?.featuredImage || fallbackMetadata?.featuredImage || null,
+    imageSource: pageMetadata?.featuredImage ? pageMetadata.imageSource : fallbackMetadata?.imageSource || null,
+  };
+}
+
 async function fetchArticlesForCategory(page, category, limit, options = {}) {
+  const dailyQuota = await getDailyNewsQuota();
+  if (dailyQuota.remaining <= 0) {
+    return buildDailyQuotaSkippedFetchResult(category, "configured-rss", dailyQuota);
+  }
+
+  const requestedLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || DEFAULT_ARTICLE_LIMIT, dailyQuota.remaining));
   const candidateLimit = Math.min(
-    Math.max(limit * ARTICLE_CANDIDATE_MULTIPLIER, limit),
+    Math.max(requestedLimit * ARTICLE_CANDIDATE_MULTIPLIER, requestedLimit),
     ARTICLE_CANDIDATE_CAP
   );
-  const feedConfigs = getCategoryFeedPool(category);
+  const feedConfigs = getCategoryFeedPool(category, {
+    includeSources: options.includeSources,
+    excludeSources: options.excludeSources,
+  });
   if (!feedConfigs?.length) {
+    if (options.allowEmpty) {
+      return buildEmptyCategoryFetchResult(category);
+    }
+
     throw new Error(
       `No RSS feed is configured for category "${category}". Available categories: ${Object.keys(RSS_FEEDS).join(", ")}`
     );
@@ -4524,7 +5756,7 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
   let successCount = 0;
 
   for (const articleEntry of articleEntries) {
-    if (successCount >= limit) {
+    if (successCount >= requestedLimit) {
       break;
     }
 
@@ -4532,6 +5764,20 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
     console.log(`Opening article for ${category} from ${articleEntry.feed_source}: ${articleUrl}`);
 
     try {
+      const freshness = isFreshPublishedDate(articleEntry.published_at);
+      if (!freshness.fresh) {
+        results.push({
+          status: "Skipped",
+          category,
+          feed_source: articleEntry.feed_source,
+          feed_url: articleEntry.feed_url,
+          source: articleUrl,
+          title: articleEntry.title || null,
+          message: buildFreshnessSkipMessage(freshness),
+        });
+        continue;
+      }
+
       const existingRecord = await findNewsRecordByUrl(articleUrl);
       if (existingRecord) {
         results.push({
@@ -4546,9 +5792,41 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
       }
 
       const imageData = await extractArticleMetadataForFeed(page, articleEntry);
-      const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
-      const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
+      const blockedMetadataImageReason = getBlockedArticleImageReason(imageData.featuredImage);
+      if (blockedMetadataImageReason) {
+        results.push({
+          status: "Skipped",
+          category,
+          feed_source: articleEntry.feed_source,
+          feed_url: articleEntry.feed_url,
+          source: articleUrl,
+          title: imageData.title || articleEntry.title || null,
+          message: `Article skipped because image has ${blockedMetadataImageReason}.`,
+        });
+        continue;
+      }
+
+      const metadataImage = sanitizeArticleImageUrl(imageData.featuredImage);
+      const featuredImage = metadataImage || null;
+      const imageSource = metadataImage ? imageData.imageSource || "article-image" : null;
       const title = imageData.title || articleEntry.title || articleUrl;
+      const duplicateRecord = await findNewsRecordDuplicate({
+        articleUrl,
+        titleSignature: normalizeNewsTitleSignature(title),
+      });
+      if (duplicateRecord) {
+        results.push({
+          status: "Skipped",
+          category,
+          feed_source: articleEntry.feed_source,
+          feed_url: articleEntry.feed_url,
+          source: articleUrl,
+          title,
+          message: `Duplicate article already saved as id ${duplicateRecord.id}.`,
+          existing_id: duplicateRecord.id,
+        });
+        continue;
+      }
 
       const recordId = await saveNewsRecord({
         category,
@@ -4559,6 +5837,7 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
         articleUrl,
         imageLink: featuredImage,
         imageSource,
+        sourcePublishedAt: freshness.publishedAt,
       });
 
       if (!recordId) {
@@ -4615,6 +5894,153 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
   };
 }
 
+async function fetchPrimaryNewsForCategory(page, category, limit, options = {}) {
+  const results = [];
+  let remaining = limit;
+  let lastError = null;
+  const includeCliff = options.includeCliff !== false && CLIFF_NEWS_PRIMARY_ENABLED;
+  const includeGoogle = options.includeGoogle !== false;
+  const runAllPrimarySources = options.runAllPrimarySources === true;
+  const primarySourceLimit = normalizePrimarySourceLimit(options.primarySourceLimit);
+
+  if (runAllPrimarySources) {
+    if (includeCliff) {
+      try {
+        results.push(await saveCliffNewsForCategory(category, primarySourceLimit, {
+          language: options.cliffLanguage || CLIFF_NEWS_LANGUAGE,
+          includeExisting: options.includeExisting,
+        }));
+      } catch (error) {
+        lastError = error;
+        results.push(buildFetchStepErrorResult(category, "cliff-news", error));
+      }
+    }
+
+    if (includeGoogle) {
+      try {
+        results.push(await saveGoogleRssNewsForCategory(category, primarySourceLimit, {
+          query: options.googleQuery,
+          timeoutMs: options.timeoutMs,
+          includeExisting: options.includeExisting,
+        }));
+      } catch (error) {
+        lastError = error;
+        results.push(buildFetchStepErrorResult(category, "google-rss", error));
+      }
+    }
+
+    for (const rssSource of PRIMARY_RSS_SOURCES) {
+      try {
+        results.push(await fetchArticlesForCategory(page, category, primarySourceLimit, {
+          includeSources: [rssSource],
+          allowEmpty: true,
+        }));
+      } catch (error) {
+        lastError = error;
+        results.push(buildFetchStepErrorResult(category, rssSource, error));
+      }
+    }
+
+    const primarySavedCount = results.reduce((sum, item) => sum + (item.saved_count || 0), 0);
+    remaining = Math.max(0, limit - primarySavedCount);
+
+    if (remaining > 0) {
+      try {
+        const fallbackRssResult = await fetchArticlesForCategory(page, category, remaining, {
+          excludeSources: PRIMARY_RSS_SOURCES,
+          allowEmpty: true,
+          startIndex: options.fallbackStartIndex || 0,
+        });
+        results.push(fallbackRssResult);
+      } catch (error) {
+        lastError = error;
+        results.push(buildFetchStepErrorResult(category, "fallback-rss", error));
+      }
+    }
+
+    const mergedResult = mergeCategoryFetchResults(category, results);
+    if (mergedResult.results.length === 0 && lastError) {
+      throw lastError;
+    }
+
+    return {
+      ...mergedResult,
+      source_strategy: "automatic-primary-cliff-news-google-rss-dd-mpinfo",
+      primary_sources: PRIMARY_NEWS_SOURCE_STRATEGY,
+      primary_source_limit: primarySourceLimit,
+    };
+  }
+
+  if (includeCliff && remaining > 0) {
+    try {
+      const cliffResult = await saveCliffNewsForCategory(category, remaining, {
+        language: options.cliffLanguage || CLIFF_NEWS_LANGUAGE,
+        includeExisting: options.includeExisting,
+      });
+      results.push(cliffResult);
+      remaining = Math.max(0, remaining - cliffResult.saved_count);
+    } catch (error) {
+      lastError = error;
+      results.push(buildFetchStepErrorResult(category, "cliff-news", error));
+    }
+  }
+
+  if (includeGoogle && remaining > 0) {
+    try {
+      const googleResult = await saveGoogleRssNewsForCategory(category, remaining, {
+        query: options.googleQuery,
+        timeoutMs: options.timeoutMs,
+        includeExisting: options.includeExisting,
+      });
+      results.push(googleResult);
+      remaining = Math.max(0, remaining - googleResult.saved_count);
+    } catch (error) {
+      lastError = error;
+      results.push(buildFetchStepErrorResult(category, "google-rss", error));
+    }
+  }
+
+  if (remaining > 0) {
+    try {
+      const primaryRssResult = await fetchArticlesForCategory(page, category, remaining, {
+        includeSources: PRIMARY_RSS_SOURCES,
+        allowEmpty: true,
+      });
+      results.push(primaryRssResult);
+      remaining = Math.max(0, remaining - primaryRssResult.saved_count);
+    } catch (error) {
+      lastError = error;
+      results.push(buildFetchStepErrorResult(category, "primary-rss", error));
+    }
+  }
+
+  if (remaining > 0) {
+    try {
+      const fallbackRssResult = await fetchArticlesForCategory(page, category, remaining, {
+        excludeSources: PRIMARY_RSS_SOURCES,
+        allowEmpty: true,
+        startIndex: options.fallbackStartIndex || 0,
+      });
+      results.push(fallbackRssResult);
+      remaining = Math.max(0, remaining - fallbackRssResult.saved_count);
+    } catch (error) {
+      lastError = error;
+      results.push(buildFetchStepErrorResult(category, "fallback-rss", error));
+    }
+  }
+
+  const mergedResult = mergeCategoryFetchResults(category, results);
+  if (mergedResult.results.length === 0 && lastError) {
+    throw lastError;
+  }
+
+  return {
+    ...mergedResult,
+    source_strategy: "fill-primary-cliff-news-google-rss-dd-mpinfo",
+    primary_sources: PRIMARY_NEWS_SOURCE_STRATEGY,
+  };
+}
+
 function mergeCategoryFetchResults(category, results) {
   const normalizedResults = results.filter(Boolean);
   return {
@@ -4641,37 +6067,38 @@ async function extractArticleMetadataForFeed(page, articleEntry) {
 
   try {
     const fallback = await extractBestImageFromArticleHttp(articleUrl, {
-      timeoutMs: RSS_REQUEST_TIMEOUT_MS,
-      retries: 0,
+      timeoutMs: ARTICLE_METADATA_TIMEOUT_MS,
+      retries: 1,
     });
-    if (fallback.imageUrl) {
+    const fallbackImage = sanitizeArticleImageUrl(fallback.imageUrl);
+    if (fallbackImage) {
       return {
         title: articleEntry.title || articleUrl,
-        featuredImage: fallback.imageUrl,
+        featuredImage: fallbackImage,
         imageSource: fallback.imageSource || "article-image",
       };
     }
   } catch {
-    // Fall through to RSS metadata or the heavier browser fallback.
-  }
-
-  if (articleEntry.title) {
-    return {
-      title: articleEntry.title,
-      featuredImage: articleEntry.image_link || null,
-      imageSource: articleEntry.image_source || null,
-    };
+    // Fall through to the heavier browser extraction.
   }
 
   if (page) {
     try {
-      return await extractBestImageFromArticle(page, articleUrl);
+      const pageMetadata = await extractBestImageFromArticle(page, articleUrl);
+      const pageImage = sanitizeArticleImageUrl(pageMetadata?.featuredImage);
+      if (pageImage || pageMetadata?.title) {
+        return {
+          title: pageMetadata?.title || articleEntry.title || articleUrl,
+          featuredImage: pageImage || null,
+          imageSource: pageImage ? pageMetadata?.imageSource || "article-image" : null,
+        };
+      }
     } catch (pageError) {
       if (isGovernmentFeedSource(articleEntry.feed_source)) {
         return {
-          title: articleUrl,
-          featuredImage: articleEntry.image_link || null,
-          imageSource: articleEntry.image_source || null,
+          title: articleEntry.title || articleUrl,
+          featuredImage: null,
+          imageSource: null,
         };
       }
 
@@ -4679,11 +6106,19 @@ async function extractArticleMetadataForFeed(page, articleEntry) {
     }
   }
 
+  if (articleEntry.title) {
+    return {
+      title: articleEntry.title,
+      featuredImage: null,
+      imageSource: null,
+    };
+  }
+
   if (isGovernmentFeedSource(articleEntry.feed_source)) {
     return {
       title: articleUrl,
-      featuredImage: articleEntry.image_link || null,
-      imageSource: articleEntry.image_source || null,
+      featuredImage: null,
+      imageSource: null,
     };
   }
 
@@ -4695,7 +6130,7 @@ async function fetchAllCategories(page, limit) {
   const allResults = [];
 
   for (const category of categories) {
-    const categoryResult = await fetchArticlesForCategory(page, category, limit);
+    const categoryResult = await fetchPrimaryNewsForCategory(page, category, limit);
     allResults.push(categoryResult);
   }
 
@@ -4728,7 +6163,7 @@ async function fetchAllCategoriesByTotal(page, total) {
       continue;
     }
 
-    const categoryResult = await fetchArticlesForCategory(page, allocation.category, allocation.limit);
+    const categoryResult = await fetchPrimaryNewsForCategory(page, allocation.category, allocation.limit);
     allResults.push({
       ...categoryResult,
       requested_limit: allocation.limit,
@@ -4754,115 +6189,417 @@ function normalizeSyncSources(value) {
     .filter(Boolean);
 
   if (!sources.length || sources.includes("all")) {
-    return ["google", "rss"];
+    return ["cliff", "google", "rss"];
   }
 
   const normalized = [
     ...new Set(
       sources
-        .filter((source) => ["google", "rss", "other"].includes(source))
+        .map((source) => (source === "cliff-news" || source === "api" ? "cliff" : source))
+        .filter((source) => ["cliff", "google", "rss", "other"].includes(source))
         .map((source) => (source === "other" ? "rss" : source))
     ),
   ];
 
-  return normalized.length ? normalized : ["google", "rss"];
+  return normalized.length ? normalized : ["cliff", "google", "rss"];
 }
 
-async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
-  const query = options.query || getCategoryDisplayName(category);
-  const googleResult = await fetchGoogleRssFeed({
-    query,
-    limit,
-    candidateLimit: Math.max(limit * 10, 25),
-    timeoutMs: options.timeoutMs,
+function normalizePrimarySyncSources(value) {
+  const raw = Array.isArray(value) ? value.join(",") : String(value || "all");
+  const sources = raw
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .map((source) => {
+      if (source === "cliff" || source === "api") {
+        return "cliff-news";
+      }
+      if (source === "google") {
+        return "google-rss";
+      }
+      return source;
+    });
+
+  if (!sources.length || sources.includes("all")) {
+    return PRIMARY_NEWS_SOURCE_STRATEGY;
+  }
+
+  const allowedSources = new Set(PRIMARY_NEWS_SOURCE_STRATEGY);
+  const normalized = [...new Set(sources.filter((source) => allowedSources.has(source)))];
+  return normalized.length ? normalized : PRIMARY_NEWS_SOURCE_STRATEGY;
+}
+
+async function saveCliffNewsArticles({
+  category = null,
+  limit = CLIFF_NEWS_DEFAULT_LIMIT,
+  language = CLIFF_NEWS_LANGUAGE,
+  includeExisting = false,
+  page = 1,
+} = {}) {
+  const requestedCategory = category ? normalizeCategory(category) : null;
+  const dailyQuota = await getDailyNewsQuota();
+  if (dailyQuota.remaining <= 0) {
+    return {
+      ...buildDailyQuotaSkippedFetchResult(requestedCategory || "all", "cliff-news", dailyQuota),
+      language,
+      page: normalizeCliffNewsPage(page),
+      pagination: null,
+      feed_url: null,
+    };
+  }
+
+  const requestedLimit = Math.max(
+    1,
+    Math.min(Number.parseInt(limit, 10) || CLIFF_NEWS_DEFAULT_LIMIT, 500, dailyQuota.remaining)
+  );
+  const requestedPage = normalizeCliffNewsPage(page);
+  const apiLimit = requestedCategory
+    ? Math.max(requestedLimit * 8, Math.min(CLIFF_NEWS_DEFAULT_LIMIT, 100))
+    : requestedLimit;
+  const apiResult = await fetchCliffNewsApiArticles({
+    limit: Math.min(apiLimit, 500),
+    language,
+    page: requestedPage,
   });
   const results = [];
   const rewriteCandidates = [];
+  let matchedCount = 0;
 
-  for (const item of googleResult.items) {
-    try {
-      if (!item.link) {
-        results.push({
-          status: "Skipped",
-          category,
-          feed_source: "google-rss",
-          feed_url: googleResult.feed_url,
-          source: item.google_link || null,
-          title: item.title,
-          message: item.skipped_reason || "Google RSS item did not resolve to the original publisher URL.",
-        });
-        continue;
-      }
+  for (const rawArticle of apiResult.articles) {
+    if (!shouldIncludeCliffNewsArticle(rawArticle, requestedCategory)) {
+      continue;
+    }
 
-      const existingRecord = await findFullNewsRecordByUrl(item.link);
-      if (existingRecord && !options.includeExisting) {
-        results.push({
-          status: "Skipped",
-          category,
-          feed_source: "google-rss",
-          feed_url: googleResult.feed_url,
-          source: item.link,
-          title: item.title,
-          image_link: item.image_link,
-          image_source: item.image_source,
-          message: `Duplicate article already saved as id ${existingRecord.id}.`,
-          existing_id: existingRecord.id,
-        });
-        continue;
-      }
-
-      const recordId = existingRecord?.id || await saveNewsRecord({
-        category,
-        feedSource: "google-rss",
-        feedUrl: googleResult.feed_url,
-        query,
-        title: item.title,
-        articleUrl: item.link,
-        imageLink: item.image_link,
-        imageSource: item.image_source,
+    matchedCount += 1;
+    const article = normalizeCliffNewsArticle(rawArticle);
+    if (!article) {
+      results.push({
+        status: "Skipped",
+        category: requestedCategory || "all",
+        feed_source: "cliff-news",
+        feed_url: apiResult.request_url,
+        source: null,
+        message: "Cliff News API item is missing a usable title or article URL.",
       });
-      const savedRecord = existingRecord || (recordId
+      continue;
+    }
+
+    const freshness = isFreshPublishedDate(article.publishedAt);
+    if (!freshness.fresh) {
+      results.push({
+        status: "Skipped",
+        category: article.category,
+        feed_source: "cliff-news",
+        feed_url: apiResult.request_url,
+        source: article.articleUrl,
+        title: article.title,
+        message: buildFreshnessSkipMessage(freshness),
+      });
+      continue;
+    }
+
+    if (results.filter((item) => item.status === "Success" || item.status === "Existing").length >= requestedLimit) {
+      break;
+    }
+
+    try {
+      const blockedImageReason = getBlockedArticleImageReason(article.imageUrl);
+      if (blockedImageReason) {
+        results.push({
+          status: "Skipped",
+          category: article.category,
+          feed_source: "cliff-news",
+          feed_url: apiResult.request_url,
+          source: article.articleUrl,
+          title: article.title,
+          message: `Article skipped because image has ${blockedImageReason}.`,
+        });
+        continue;
+      }
+
+      const articleImageUrl = sanitizeArticleImageUrl(article.imageUrl);
+      if (!articleImageUrl) {
+        results.push({
+          status: "Skipped",
+          category: article.category,
+          feed_source: "cliff-news",
+          feed_url: apiResult.request_url,
+          source: article.articleUrl,
+          title: article.title,
+          message: "Cliff News API item is missing a valid article image.",
+        });
+        continue;
+      }
+
+      const existingRecord = await findFullNewsRecordByUrl(article.articleUrl);
+      const duplicateRecord = existingRecord || await findNewsRecordDuplicate({
+        articleUrl: article.articleUrl,
+        titleSignature: normalizeNewsTitleSignature(article.title),
+      });
+      if (duplicateRecord) {
+        results.push({
+          status: "Skipped",
+          saved_id: duplicateRecord.id,
+          category: duplicateRecord.category || article.category,
+          feed_source: "cliff-news",
+          feed_url: apiResult.request_url,
+          source: article.articleUrl,
+          title: duplicateRecord.title || article.title,
+          image_link: duplicateRecord.image_link || null,
+          image_source: duplicateRecord.image_source || null,
+          message: `Duplicate article already saved as id ${duplicateRecord.id}.`,
+          existing_id: duplicateRecord.id,
+        });
+        continue;
+      }
+
+      const recordId = await saveNewsRecord({
+        category: article.category,
+        feedSource: "cliff-news",
+        feedUrl: apiResult.request_url,
+        query: requestedCategory || article.category,
+        title: article.title,
+        articleUrl: article.articleUrl,
+        imageLink: articleImageUrl,
+        imageSource: article.imageSource,
+        sourceExcerpt: article.excerpt || null,
+        sourceContent: article.contentText || article.excerpt || null,
+        sourcePublishedAt: article.publishedAt,
+      });
+      const savedRecord = recordId
         ? await findFullNewsRecordById(recordId)
-        : await findFullNewsRecordByUrl(item.link));
+        : await findFullNewsRecordByUrl(article.articleUrl);
 
       if (!savedRecord) {
         results.push({
           status: "Skipped",
-          category,
-          feed_source: "google-rss",
-          feed_url: googleResult.feed_url,
-          source: item.link,
-          title: item.title,
-          image_link: item.image_link,
-          image_source: item.image_source,
+          category: article.category,
+          feed_source: "cliff-news",
+          feed_url: apiResult.request_url,
+          source: article.articleUrl,
+          title: article.title,
+          image_link: articleImageUrl,
+          image_source: articleImageUrl ? article.imageSource : null,
           message: "Duplicate article was already saved before insert.",
         });
         continue;
       }
 
-      rewriteCandidates.push(savedRecord);
+      rewriteCandidates.push({
+        ...savedRecord,
+        scraped_content_text: article.contentText || savedRecord.source_content || "",
+        scraped_subtitle: article.excerpt || savedRecord.source_excerpt || "",
+        scraped_publish_date: article.publishedAt || savedRecord.source_published_at || "",
+      });
       results.push({
-        status: existingRecord ? "Existing" : "Success",
+        status: "Success",
         saved_id: savedRecord.id,
-        category,
-        feed_source: "google-rss",
-        feed_url: googleResult.feed_url,
+        category: savedRecord.category || article.category,
+        feed_source: "cliff-news",
+        feed_url: apiResult.request_url,
         source: savedRecord.source_url,
         title: savedRecord.title,
         image_link: savedRecord.image_link,
         image_source: savedRecord.image_source,
+        original_image_preserved: Boolean(savedRecord.image_link),
       });
     } catch (error) {
       results.push({
         status: "Error",
-        category,
-        feed_source: "google-rss",
-        feed_url: googleResult.feed_url,
-        source: item.link,
-        title: item.title,
+        category: article.category,
+        feed_source: "cliff-news",
+        feed_url: apiResult.request_url,
+        source: article.articleUrl,
+        title: article.title,
         message: error.message,
       });
     }
+  }
+
+  return {
+    category: requestedCategory || "all",
+    source: "cliff-news",
+    language,
+    page: requestedPage,
+    pagination: apiResult.pagination,
+    feed_url: apiResult.request_url,
+    fetched_count: apiResult.payload_count,
+    matched_count: matchedCount,
+    saved_count: results.filter((item) => item.status === "Success").length,
+    existing_count: results.filter((item) => item.status === "Existing").length,
+    skipped_count: results.filter((item) => item.status === "Skipped").length,
+    failed_count: results.filter((item) => item.status === "Error").length,
+    results,
+    rewriteCandidates,
+  };
+}
+
+async function saveCliffNewsForCategory(category, limit, options = {}) {
+  return saveCliffNewsArticles({
+    category,
+    limit,
+    language: options.language || CLIFF_NEWS_LANGUAGE,
+    includeExisting: options.includeExisting,
+    page: options.page || 1,
+  });
+}
+
+async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
+  const dailyQuota = await getDailyNewsQuota();
+  if (dailyQuota.remaining <= 0) {
+    return {
+      ...buildDailyQuotaSkippedFetchResult(category, "google-rss", dailyQuota),
+      query: options.query || getCategorySearchQuery(category),
+      feed_url: null,
+    };
+  }
+
+  const query = options.query || getCategorySearchQuery(category);
+  const requestedLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || DEFAULT_ARTICLE_LIMIT, dailyQuota.remaining));
+  const googleResult = await fetchGoogleRssFeed({
+    query,
+    limit: requestedLimit,
+    candidateLimit: Math.max(requestedLimit * 10, 25),
+    timeoutMs: options.timeoutMs,
+    deferArticleScrape: true,
+  });
+  const results = [];
+  const rewriteCandidates = [];
+  const { browser, page } = await createBrowserPage();
+
+  try {
+    for (const item of googleResult.items) {
+      try {
+        if (!item.link) {
+          results.push({
+            status: "Skipped",
+            category,
+            feed_source: "google-rss",
+            feed_url: googleResult.feed_url,
+            source: item.google_link || null,
+            title: item.title,
+            message: item.skipped_reason || "Google RSS item did not resolve to the original publisher URL.",
+          });
+          continue;
+        }
+
+        const freshness = isFreshPublishedDate(item.published_at);
+        if (!freshness.fresh) {
+          results.push({
+            status: "Skipped",
+            category,
+            feed_source: "google-rss",
+            feed_url: googleResult.feed_url,
+            source: item.google_link || item.link,
+            title: item.title,
+            message: buildFreshnessSkipMessage(freshness),
+          });
+          continue;
+        }
+
+        const browserMetadata = await openGoogleRssArticleAndExtract(page, item.google_link, item.link);
+        const articleUrl = browserMetadata.articleUrl || item.link;
+        const title = browserMetadata.title || item.title;
+        const blockedMetadataImageReason = getBlockedArticleImageReason(browserMetadata.featuredImage);
+        if (blockedMetadataImageReason) {
+          results.push({
+            status: "Skipped",
+            category,
+            feed_source: "google-rss",
+            feed_url: googleResult.feed_url,
+            source: articleUrl,
+            title,
+            message: `Article skipped because image has ${blockedMetadataImageReason}.`,
+          });
+          continue;
+        }
+
+        const metadataImage = sanitizeArticleImageUrl(browserMetadata.featuredImage);
+        const imageLink = metadataImage || null;
+        const imageSource = metadataImage ? browserMetadata.imageSource || "article-image" : null;
+        const existingRecord = await findFullNewsRecordByUrl(articleUrl);
+        const duplicateRecord = existingRecord || await findNewsRecordDuplicate({
+          articleUrl,
+          titleSignature: normalizeNewsTitleSignature(title),
+        });
+        if (duplicateRecord) {
+          results.push({
+            status: "Skipped",
+            category,
+            feed_source: "google-rss",
+            feed_url: googleResult.feed_url,
+            source: articleUrl,
+            title: duplicateRecord.title || title,
+            image_link: duplicateRecord.image_link || imageLink,
+            image_source: duplicateRecord.image_source || imageSource,
+            message: `Duplicate article already saved as id ${duplicateRecord.id}.`,
+            existing_id: duplicateRecord.id,
+          });
+          continue;
+        }
+
+        const recordId = await saveNewsRecord({
+          category,
+          feedSource: "google-rss",
+          feedUrl: googleResult.feed_url,
+          query,
+          title,
+          articleUrl,
+          imageLink,
+          imageSource,
+          sourcePublishedAt: freshness.publishedAt,
+        });
+        const savedRecord = recordId
+          ? await findFullNewsRecordById(recordId)
+          : await findFullNewsRecordByUrl(articleUrl);
+
+        if (!savedRecord) {
+          results.push({
+            status: "Skipped",
+            category,
+            feed_source: "google-rss",
+            feed_url: googleResult.feed_url,
+            source: articleUrl,
+            title,
+            image_link: imageLink,
+            image_source: imageSource,
+            message: "Duplicate article was already saved before insert.",
+          });
+          continue;
+        }
+
+        rewriteCandidates.push(savedRecord);
+        results.push({
+          status: "Success",
+          saved_id: savedRecord.id,
+          category,
+          feed_source: "google-rss",
+          feed_url: googleResult.feed_url,
+          source: savedRecord.source_url,
+          title: savedRecord.title,
+          image_link: savedRecord.image_link,
+          image_source: savedRecord.image_source,
+        });
+      } catch (error) {
+        results.push({
+          status: "Error",
+          category,
+          feed_source: "google-rss",
+          feed_url: googleResult.feed_url,
+          source: item.link,
+          title: item.title,
+          message: error.message,
+        });
+      } finally {
+        try {
+          await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5000 });
+        } catch {
+          // Ignore page reset failures while continuing the Google RSS batch.
+        }
+      }
+    }
+  } finally {
+    await browser.close();
   }
 
   return {
@@ -4910,7 +6647,7 @@ async function rewriteNewsRecords(records, options = {}) {
         rewrite_id: rewrite.id,
         category: record.category,
         title: rewrite.ui_hindi?.title || record.title,
-        image_link: rewrite.ui_hindi?.image_url || record.image_link || null,
+        image_link: record.image_link || rewrite.ui_hindi?.image_url || null,
         words_100: rewrite.ui_hindi?.short_100 || "",
         words_300: rewrite.ui_hindi?.medium_300 || "",
         words_600: rewrite.ui_hindi?.long_500 || "",
@@ -4933,6 +6670,15 @@ async function syncSourcesAndAi({ category, limit, sources, rewrite, includeExis
   const normalizedSources = normalizeSyncSources(sources);
   const sourceResults = [];
   const rewriteCandidates = [];
+
+  if (normalizedSources.includes("cliff")) {
+    const cliffResult = await saveCliffNewsForCategory(category, limit, {
+      includeExisting,
+      language: CLIFF_NEWS_LANGUAGE,
+    });
+    sourceResults.push(cliffResult);
+    rewriteCandidates.push(...cliffResult.rewriteCandidates);
+  }
 
   if (normalizedSources.includes("google")) {
     const googleResult = await saveGoogleRssNewsForCategory(category, limit, {
@@ -4986,6 +6732,91 @@ async function syncSourcesAndAi({ category, limit, sources, rewrite, includeExis
   };
 }
 
+async function syncPrimarySourcesAndAi({
+  category,
+  limit,
+  sources,
+  rewrite,
+  includeExisting,
+  googleQuery,
+} = {}) {
+  const normalizedSources = normalizePrimarySyncSources(sources);
+  const sourceResults = [];
+  const rewriteCandidates = [];
+  let rssBrowser = null;
+  let rssPage = null;
+
+  try {
+    for (const source of normalizedSources) {
+    if (source === "cliff-news") {
+      const cliffResult = await saveCliffNewsForCategory(category, limit, {
+        includeExisting,
+        language: CLIFF_NEWS_LANGUAGE,
+      });
+      sourceResults.push(cliffResult);
+      rewriteCandidates.push(...cliffResult.rewriteCandidates);
+      continue;
+    }
+
+    if (source === "google-rss") {
+      const googleResult = await saveGoogleRssNewsForCategory(category, limit, {
+        query: googleQuery,
+        includeExisting,
+      });
+      sourceResults.push(googleResult);
+      rewriteCandidates.push(...googleResult.rewriteCandidates);
+      continue;
+    }
+
+    if (!rssPage) {
+      ({ browser: rssBrowser, page: rssPage } = await createBrowserPage());
+    }
+
+    const rssResult = await fetchArticlesForCategory(rssPage, category, limit, {
+      includeSources: [source],
+      allowEmpty: true,
+    });
+    sourceResults.push({
+      ...rssResult,
+      source,
+    });
+
+    for (const item of rssResult.results || []) {
+      if (item.status !== "Success" || !item.saved_id) {
+        continue;
+      }
+
+      const record = await findFullNewsRecordById(item.saved_id);
+      if (record) {
+        rewriteCandidates.push(record);
+      }
+    }
+  }
+  } finally {
+    if (rssBrowser) {
+      await rssBrowser.close();
+    }
+  }
+
+  const rewriteResults = await rewriteNewsRecords(rewriteCandidates, { enabled: rewrite });
+
+  return {
+    category,
+    limit_per_source: limit,
+    sources: normalizedSources,
+    source_results: sourceResults,
+    fetched_count: sourceResults.reduce((sum, item) => sum + (item.fetched_count || 0), 0),
+    saved_count: sourceResults.reduce((sum, item) => sum + (item.saved_count || 0), 0),
+    existing_count: sourceResults.reduce((sum, item) => sum + (item.existing_count || 0), 0),
+    skipped_count: sourceResults.reduce((sum, item) => sum + (item.skipped_count || 0), 0),
+    failed_count: sourceResults.reduce((sum, item) => sum + (item.failed_count || 0), 0),
+    ai_rewrite_enabled: rewrite,
+    ai_success_count: rewriteResults.filter((item) => item.status === "Success").length,
+    ai_failed_count: rewriteResults.filter((item) => item.status === "Error").length,
+    ai_results: rewriteResults,
+  };
+}
+
 async function saveMpInfoScraperArticle(article) {
   const sourceUrl = article?.sourceUrl;
   if (!sourceUrl) {
@@ -4995,25 +6826,47 @@ async function saveMpInfoScraperArticle(article) {
     };
   }
 
-  const existingRecord = await findFullNewsRecordByUrl(sourceUrl);
-  if (existingRecord) {
+  const freshness = isFreshPublishedDate(article?.publishDate);
+  if (!freshness.fresh) {
     return {
-      id: existingRecord.id,
-      status: "Existing",
-      record: existingRecord,
-      message: `Duplicate article already saved as id ${existingRecord.id}.`,
+      status: "Skipped",
+      message: buildFreshnessSkipMessage(freshness),
     };
   }
 
+  const existingRecord = await findFullNewsRecordByUrl(sourceUrl);
+  const duplicateRecord = existingRecord || await findNewsRecordDuplicate({
+    articleUrl: sourceUrl,
+    titleSignature: normalizeNewsTitleSignature(article.title),
+  });
+  if (duplicateRecord) {
+    if (duplicateRecord.category !== MPINFO_DISTRICT_CATEGORY) {
+      await dbPool.execute(
+        "UPDATE fetched_news SET category = ? WHERE id = ?",
+        [MPINFO_DISTRICT_CATEGORY, duplicateRecord.id]
+      );
+      duplicateRecord.category = MPINFO_DISTRICT_CATEGORY;
+    }
+
+    return {
+      id: duplicateRecord.id,
+      status: "Existing",
+      record: duplicateRecord,
+      message: `Duplicate article already saved as id ${duplicateRecord.id}.`,
+    };
+  }
+
+  const articleImageUrl = sanitizeArticleImageUrl(article.imageUrl);
   const recordId = await saveNewsRecord({
-    category: "states",
+    category: MPINFO_DISTRICT_CATEGORY,
     feedSource: `mpinfo-${String(article.district || "district").toLowerCase().replace(/\s+/g, "-")}`,
     feedUrl: `https://${article.subdomain || "mpinfo.org"}/`,
     query: article.district || "mpinfo",
     title: article.title || "MP Info News",
     articleUrl: sourceUrl,
-    imageLink: article.imageUrl || article.fallbackImageUrl || null,
-    imageSource: article.imageUrl ? "mpinfo-playwright" : article.fallbackImageUrl ? "mpinfo-fallback" : null,
+    imageLink: articleImageUrl,
+    imageSource: articleImageUrl ? "mpinfo-playwright" : null,
+    sourcePublishedAt: freshness.publishedAt,
   });
   const record = recordId ? await findFullNewsRecordById(recordId) : await findFullNewsRecordByUrl(sourceUrl);
 
@@ -5110,13 +6963,49 @@ async function runScheduledCategoryFetch(category, options = {}) {
 }
 
 async function runScheduledCategoryFetchUnlocked(category, options = {}) {
-  const perRunLimit = SCHEDULER_ARTICLES_PER_CATEGORY_RUN;
-  const rssFeedCount = getCategoryFeedPool(category).length;
-  const googleSourceCount = SCHEDULER_GOOGLE_RSS_ENABLED ? 1 : 0;
-  const feedCount = Math.max(googleSourceCount + rssFeedCount, 1);
+  const quota = await getDailyNewsQuota();
+  if (quota.remaining <= 0) {
+    return {
+      category,
+      fetched_count: 0,
+      saved_count: 0,
+      failed_count: 0,
+      skipped_count: 1,
+      results: [
+        {
+          status: "Skipped",
+          category,
+          message: `Daily news limit reached (${quota.savedCount}/${quota.limit}).`,
+        },
+      ],
+      daily_quota: quota,
+    };
+  }
+
+  if (quota.paceRemaining <= 0) {
+    return {
+      category,
+      fetched_count: 0,
+      saved_count: 0,
+      failed_count: 0,
+      skipped_count: 1,
+      results: [
+        {
+          status: "Skipped",
+          category,
+          message: `Scheduler is pacing the daily limit (${quota.savedCount}/${quota.paceBudget} allowed so far).`,
+        },
+      ],
+      daily_quota: quota,
+    };
+  }
+
+  const perRunLimit = Math.max(
+    1,
+    Math.min(SCHEDULER_ARTICLES_PER_CATEGORY_RUN, quota.remaining, quota.paceRemaining)
+  );
+  const feedCount = getSchedulerSourceCount(category);
   const currentCursor = schedulerState.categories[category]?.sourceCursor || 0;
-  const shouldFetchGoogle = SCHEDULER_GOOGLE_RSS_ENABLED && currentCursor === 0;
-  const rssStartIndex = SCHEDULER_GOOGLE_RSS_ENABLED ? Math.max(0, currentCursor - 1) : currentCursor;
   const triggerSource = options.triggerSource || "schedule";
   const windowKey = options.windowKey || null;
   const logId = await createSchedulerRunLog({
@@ -5126,41 +7015,21 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
     category,
     windowKey,
     requestedLimit: perRunLimit,
-    message: `Fetching up to ${perRunLimit} story/stories for ${category}.`,
+    message: `Fetching automatic primary sources for ${category}.`,
   });
   let browser = null;
 
   try {
-    let result;
-
-    if (shouldFetchGoogle) {
-      const googleResult = await withTimeout(
-        saveGoogleRssNewsForCategory(category, perRunLimit),
-        SCHEDULER_CATEGORY_TIMEOUT_MS,
-        `Scheduled Google RSS fetch for ${category}`
-      );
-
-      if (rssFeedCount > 0) {
-        const rssResult = await withTimeout(
-          fetchArticlesForCategory(null, category, perRunLimit, {
-            startIndex: 0,
-          }),
-          SCHEDULER_CATEGORY_TIMEOUT_MS,
-          `Scheduled priority RSS fetch for ${category}`
-        );
-        result = mergeCategoryFetchResults(category, [googleResult, rssResult]);
-      } else {
-        result = googleResult;
-      }
-    } else {
-      result = await withTimeout(
-        fetchArticlesForCategory(null, category, perRunLimit, {
-          startIndex: rssStartIndex,
-        }),
-        SCHEDULER_CATEGORY_TIMEOUT_MS,
-        `Scheduled category fetch for ${category}`
-      );
-    }
+    const result = await withTimeout(
+      fetchPrimaryNewsForCategory(null, category, perRunLimit, {
+        includeGoogle: SCHEDULER_GOOGLE_RSS_ENABLED,
+        fallbackStartIndex: currentCursor,
+      runAllPrimarySources: true,
+      primarySourceLimit: SCHEDULER_PRIMARY_SOURCE_LIMIT,
+    }),
+      SCHEDULER_CATEGORY_TIMEOUT_MS,
+      `Scheduled automatic primary fetch for ${category}`
+    );
 
     schedulerState.categories[category] = {
       ...schedulerState.categories[category],
@@ -5170,7 +7039,7 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
       skippedCount: result.skipped_count,
       failedCount: result.failed_count,
       lastHeadline: result.results.find((item) => item.status === "Success")?.title || null,
-      sourceCursor: (shouldFetchGoogle && rssFeedCount > 0 ? 2 : currentCursor + 1) % feedCount,
+      sourceCursor: (currentCursor + 1) % feedCount,
     };
     schedulerState.lastRunAt = new Date().toISOString();
     await finalizeSchedulerRunLog(logId, {
@@ -5226,6 +7095,7 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
         lastStatus: result?.status || "Skipped",
         newsId: result?.news_id || null,
         title: result?.title || null,
+        savedCount: result?.saved_count || 0,
         message: result?.message || null,
       };
     }
@@ -5237,14 +7107,14 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
         runType: "category",
         triggerSource,
         category: item.category,
-        requestedLimit: 1,
+        requestedLimit: item.requested_limit || 1,
         title: item.title || null,
         message: `AI rewrite ${item.status.toLowerCase()} for ${item.category}.`,
       });
 
       await finalizeSchedulerRunLog(categoryLogId, {
         status: item.status,
-        savedCount: item.status === "Success" ? 1 : 0,
+        savedCount: item.status === "Success" ? item.saved_count || 1 : 0,
         skippedCount: item.status === "Skipped" ? 1 : 0,
         failedCount: item.status === "Error" ? 1 : 0,
         title: item.title || null,
@@ -5260,7 +7130,7 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
         : results.some((item) => item.status === "Success")
           ? "Success"
           : "Skipped",
-      savedCount: results.filter((item) => item.status === "Success").length,
+      savedCount: results.reduce((total, item) => total + (item.status === "Success" ? item.saved_count || 1 : 0), 0),
       skippedCount: results.filter((item) => item.status === "Skipped").length,
       failedCount: results.filter((item) => item.status === "Error").length,
       message: "AI rewrite cycle finished.",
@@ -5384,7 +7254,7 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
     schedulerName: "main",
     runType: "mpinfo-districts",
     triggerSource,
-    category: "states",
+    category: MPINFO_DISTRICT_CATEGORY,
     requestedLimit: mpInfoDistrictSchedulerState.limit,
     message: "Starting MP Info district crawl.",
   });
@@ -5481,6 +7351,32 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
   }
 }
 
+async function initializeMpInfoDistrictSchedulerCursor() {
+  if (!dbPool || !mpInfoDistrictSchedulerState.enabled) {
+    return;
+  }
+
+  try {
+    const [rows] = await dbPool.query(
+      `
+        SELECT details_json
+        FROM scheduler_runs
+        WHERE run_type = 'mpinfo-districts'
+          AND details_json IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+      `
+    );
+    const details = rows[0]?.details_json ? JSON.parse(rows[0].details_json) : null;
+    const nextIndex = details?.summary?.next_district_index;
+    if (Number.isInteger(nextIndex) && nextIndex >= 0) {
+      mpInfoDistrictSchedulerState.nextDistrictIndex = nextIndex;
+    }
+  } catch (error) {
+    console.warn(`Could not restore MP Info district cursor: ${error.message}`);
+  }
+}
+
 async function runSchedulerTestCycle(limit = 1, options = {}) {
   const schedule = getCategorySchedule();
   const results = [];
@@ -5497,8 +7393,11 @@ async function runSchedulerTestCycle(limit = 1, options = {}) {
     });
     try {
       const result = await withTimeout(
-        fetchArticlesForCategory(null, slot.category, limit, {
-          startIndex: schedulerState.categories[slot.category]?.sourceCursor || 0,
+        fetchPrimaryNewsForCategory(null, slot.category, limit, {
+          fallbackStartIndex: schedulerState.categories[slot.category]?.sourceCursor || 0,
+          includeGoogle: SCHEDULER_GOOGLE_RSS_ENABLED,
+          runAllPrimarySources: true,
+          primarySourceLimit: SCHEDULER_PRIMARY_SOURCE_LIMIT,
         }),
         SCHEDULER_CATEGORY_TIMEOUT_MS,
         `Manual scheduler fetch for ${slot.category}`
@@ -5850,7 +7749,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
     const { browser, page } = await createBrowserPage();
 
     try {
-      const categoryResult = await fetchArticlesForCategory(page, query, limit);
+      const categoryResult = await fetchPrimaryNewsForCategory(page, query, limit);
 
       res.json({
         status: categoryResult.saved_count > 0 ? "Success" : "Error",
@@ -5882,7 +7781,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
     const { browser, page } = await createBrowserPage();
 
     try {
-      const categoryResult = await fetchArticlesForCategory(page, category, limit);
+      const categoryResult = await fetchPrimaryNewsForCategory(page, category, limit);
 
       res.json({
         status: categoryResult.saved_count > 0 ? "Success" : "Error",
@@ -5951,19 +7850,19 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
 async function handleFetchRssNews(req, res) {
   const category = normalizeCategory(req.query.category || DEFAULT_CATEGORY);
   const limit = normalizeArticleLimit(req.query.limit || 5);
-  console.log(`Fetching RSS feed | category: ${category} | limit: ${limit}`);
+  console.log(`Fetching primary news sources | category: ${category} | limit: ${limit}`);
 
   const { browser, page } = await createBrowserPage();
 
   try {
-    const categoryResult = await fetchArticlesForCategory(page, category, limit);
+    const categoryResult = await fetchPrimaryNewsForCategory(page, category, limit);
 
     res.json({
       status: categoryResult.saved_count > 0 ? "Success" : "Error",
-      source: "RSS feeds",
+      source: "Google RSS + priority government feeds",
       database: DB_NAME,
       category,
-      feed_urls: RSS_FEEDS[category],
+      feed_urls: getCategoryFeedPool(category),
       requested_limit: limit,
       fetched_count: categoryResult.fetched_count,
       saved_count: categoryResult.saved_count,
@@ -5985,8 +7884,8 @@ async function handleFetchRssNewsAll(req, res) {
   const limit = normalizeArticleLimit(req.query.limit || 5);
   console.log(
     total
-      ? `Fetching all RSS feeds | total distributed stories: ${total}`
-      : `Fetching all RSS feeds | limit per category: ${limit}`
+      ? `Fetching all primary news sources | total distributed stories: ${total}`
+      : `Fetching all primary news sources | limit per category: ${limit}`
   );
 
   const { browser, page } = await createBrowserPage();
@@ -5998,7 +7897,7 @@ async function handleFetchRssNewsAll(req, res) {
 
     res.json({
       status: payload.saved_count > 0 ? "Success" : "Error",
-      source: "RSS feeds",
+      source: "Google RSS + priority government feeds",
       database: DB_NAME,
       category_count: payload.categories.length,
       categories: payload.categories,
@@ -6022,7 +7921,7 @@ async function handleFetchRssNewsAll(req, res) {
 
 if (LEGACY_PUBLIC_ROUTES_ENABLED) {
 app.get("/fetch-mpinfo-news", async (req, res) => {
-  const category = normalizeCategory(req.query.category || "states");
+  const category = normalizeCategory(req.query.category || DEFAULT_CATEGORY);
   const limit = normalizeArticleLimit(req.query.limit || 5);
   const mpInfoFeed = { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" };
 
@@ -6040,14 +7939,10 @@ app.get("/fetch-mpinfo-news", async (req, res) => {
 
       try {
         const imageData = await extractBestImageFromArticle(page, articleUrl);
-        const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
-        const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
+        const metadataImage = sanitizeArticleImageUrl(imageData.featuredImage);
+        const featuredImage = metadataImage || null;
+        const imageSource = metadataImage ? imageData.imageSource || "article-image" : null;
         const title = imageData.title || articleEntry.title || articleUrl;
-        if (!featuredImage) {
-          throw new Error(
-            "The original article opened, but no direct image URL could be extracted from that page."
-          );
-        }
 
         const recordId = await saveNewsRecord({
           category,
@@ -6108,8 +8003,6 @@ app.get("/fetch-mpinfo-news", async (req, res) => {
 
 app.get("/fetch-rss-news", handleFetchRssNews);
 app.get("/fetch-rss-news/all", handleFetchRssNewsAll);
-app.get("/fetch-zee-news", handleFetchRssNews);
-app.get("/fetch-zee-news/all", handleFetchRssNewsAll);
 
 app.post("/fetch-sources-ai", async (req, res) => {
   const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
@@ -6150,8 +8043,59 @@ app.post("/fetch-sources-ai", async (req, res) => {
   }
 });
 
+app.post("/fetch-cliff-news", async (req, res) => {
+  const category = req.query.category || req.body?.category
+    ? normalizeCategory(req.query.category || req.body?.category)
+    : null;
+  const limit = normalizeApiLimit(req.query.limit || req.body?.limit, CLIFF_NEWS_DEFAULT_LIMIT, 500);
+  const page = normalizeCliffNewsPage(req.query.page || req.body?.page || 1);
+  const language = String(req.query.language || req.body?.language || CLIFF_NEWS_LANGUAGE).trim().toUpperCase();
+  const rewrite = !["false", "0", "no"].includes(
+    String(req.query.rewrite ?? req.body?.rewrite ?? "true").toLowerCase()
+  );
+  const includeExisting = ["true", "1", "yes"].includes(
+    String(req.query.include_existing ?? req.body?.include_existing ?? "").toLowerCase()
+  );
+
+  try {
+    const result = await saveCliffNewsArticles({
+      category,
+      limit,
+      language,
+      includeExisting,
+      page,
+    });
+    const rewriteResults = await rewriteNewsRecords(result.rewriteCandidates, { enabled: rewrite });
+    const { rewriteCandidates: _rewriteCandidates, ...publicResult } = result;
+
+    return res.json({
+      status: "Success",
+      database: DB_NAME,
+      ...publicResult,
+      ai_rewrite_enabled: rewrite,
+      ai_success_count: rewriteResults.filter((item) => item.status === "Success").length,
+      ai_failed_count: rewriteResults.filter((item) => item.status === "Error").length,
+      ai_results: rewriteResults,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "Error",
+      message: error.message,
+    });
+  }
+});
+
 app.get("/rss-feeds", (req, res) => {
   void getCachedRssFeedsPayload()
+    .then((payload) => res.json(payload))
+    .catch((error) => res.status(500).json({
+      status: "Error",
+      message: error.message,
+    }));
+});
+
+app.get("/categories", (req, res) => {
+  void getCachedCategoryCatalogPayload()
     .then((payload) => res.json(payload))
     .catch((error) => res.status(500).json({
       status: "Error",
@@ -6513,11 +8457,22 @@ apiV1.get("/rss-feeds", requireApiScope("feeds:read"), (req, res) => {
   return getCachedRssFeedsPayload()
     .then((payload) => sendApiSuccess(res, {
       count: payload.count,
+      final_categories: payload.final_categories,
       feeds: payload.feeds,
+      source_category_catalog: payload.source_category_catalog,
       expensive_source_throttle: payload.expensive_source_throttle,
       category_feed_pools: payload.category_feed_pools,
     }))
     .catch((error) => sendApiError(res, "RSS_FEEDS_FAILED", error.message, 500));
+});
+
+apiV1.get("/categories", requireApiScope("feeds:read"), (req, res) => {
+  return getCachedCategoryCatalogPayload()
+    .then((payload) => sendApiSuccess(res, payload, {
+      category_count: payload.final_categories.length,
+      source_category_count: payload.source_categories.length,
+    }))
+    .catch((error) => sendApiError(res, "CATEGORY_CATALOG_FAILED", error.message, 500));
 });
 
 apiV1.get("/news", requireApiScope("news:read"), async (req, res) => {
@@ -6551,7 +8506,9 @@ apiV1.get("/delivery/news", requireApiScope("delivery:read"), async (req, res) =
     const category = req.query.category ? normalizeCategory(req.query.category) : null;
     const language = normalizeDeliveryLanguage(req.query.language);
     const limit = normalizeApiLimit(req.query.limit, 50, 200);
-    const records = await listDeliveredAiRewrites(dbPool, { category, language, limit });
+    const records = (await listDeliveredAiRewrites(dbPool, { category, language, limit: Math.min(limit * 3, 200) }))
+      .filter(isFreshDeliveryRecord)
+      .slice(0, limit);
     return sendApiSuccess(res, records, { count: records.length, category, language, limit });
   } catch (error) {
     return sendApiError(res, "DELIVERY_LIST_FAILED", error.message, 500);
@@ -6562,7 +8519,9 @@ apiV1.get("/delivery/news/grouped", requireApiScope("delivery:read"), async (req
   try {
     const language = normalizeDeliveryLanguage(req.query.language);
     const limit = normalizeApiLimit(req.query.limit, 100, 500);
-    const records = await listDeliveredAiRewrites(dbPool, { language, limit });
+    const records = (await listDeliveredAiRewrites(dbPool, { language, limit: Math.min(limit * 3, 500) }))
+      .filter(isFreshDeliveryRecord)
+      .slice(0, limit);
     const grouped = groupDeliveryRecordsByCategory(records);
     return sendApiSuccess(res, grouped, {
       category_count: grouped.length,
@@ -6625,11 +8584,15 @@ apiV1.get("/ai/news/grouped", requireApiScope("ai:read"), async (req, res) => {
     const rewrites = await listAiRewrites(dbPool, { limit });
     const grouped = Object.entries(
       rewrites.reduce((accumulator, item) => {
-        const key = item.news?.category || "uncategorized";
+      const key = normalizeCategory(item.ui_hindi?.category || item.news?.category || DEFAULT_CATEGORY);
         if (!accumulator[key]) {
           accumulator[key] = [];
         }
-        accumulator[key].push(item);
+        accumulator[key].push({
+          ...item,
+          news: item.news ? { ...item.news, category: key } : item.news,
+          ui_hindi: item.ui_hindi ? { ...item.ui_hindi, category: key } : item.ui_hindi,
+        });
         return accumulator;
       }, {})
     ).map(([category, records]) => ({
@@ -6704,15 +8667,73 @@ apiV1.get("/scheduler/logs", requireApiScope("logs:read"), async (req, res) => {
   }
 });
 
+apiV1.post("/sync/cliff-news", requireApiScope("sync:write"), async (req, res) => {
+  const category = req.query.category || req.body?.category
+    ? normalizeCategory(req.query.category || req.body?.category)
+    : null;
+  const limit = normalizeApiLimit(req.query.limit || req.body?.limit, CLIFF_NEWS_DEFAULT_LIMIT, 500);
+  const page = normalizeCliffNewsPage(req.query.page || req.body?.page || 1);
+  const language = String(req.query.language || req.body?.language || CLIFF_NEWS_LANGUAGE).trim().toUpperCase();
+  const rewrite = !["false", "0", "no"].includes(
+    String(req.query.rewrite ?? req.body?.rewrite ?? "true").toLowerCase()
+  );
+  const includeExisting = ["true", "1", "yes"].includes(
+    String(req.query.include_existing ?? req.body?.include_existing ?? "").toLowerCase()
+  );
+
+  try {
+    const result = await saveCliffNewsArticles({
+      category,
+      limit,
+      language,
+      includeExisting,
+      page,
+    });
+    const rewriteResults = await rewriteNewsRecords(result.rewriteCandidates, { enabled: rewrite });
+    const { rewriteCandidates: _rewriteCandidates, ...publicResult } = result;
+
+    return sendApiSuccess(res, {
+      ...publicResult,
+      ai_rewrite_enabled: rewrite,
+      ai_success_count: rewriteResults.filter((item) => item.status === "Success").length,
+      ai_failed_count: rewriteResults.filter((item) => item.status === "Error").length,
+      ai_results: rewriteResults,
+    }, {
+      category,
+      limit,
+      page,
+      language,
+      rewrite,
+      saved_count: result.saved_count,
+      existing_count: result.existing_count,
+      output_sizes: {
+        words_100: "ui_hindi.short_100",
+        words_300: "ui_hindi.medium_300",
+        words_600: "ui_hindi.long_500",
+      },
+    });
+  } catch (error) {
+    return sendApiError(res, "CLIFF_NEWS_SYNC_FAILED", error.message, 500, {
+      category,
+      limit,
+      language,
+      rewrite,
+    });
+  }
+});
+
 apiV1.post("/sync/rss", requireApiScope("sync:write"), async (req, res) => {
   const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
   const limit = normalizeArticleLimit(req.query.limit || req.body?.limit || 5);
 
+  const { browser, page } = await createBrowserPage();
   try {
-    const result = await fetchArticlesForCategory(null, category, limit);
+    const result = await fetchPrimaryNewsForCategory(page, category, limit);
     return sendApiSuccess(res, result, { category, limit });
   } catch (error) {
     return sendApiError(res, "RSS_SYNC_FAILED", error.message, 500, { category, limit });
+  } finally {
+    await browser.close();
   }
 });
 
@@ -6720,13 +8741,16 @@ apiV1.post("/sync/rss/all", requireApiScope("sync:write"), async (req, res) => {
   const total = req.query.total || req.body?.total ? normalizeTotalLimit(req.query.total || req.body?.total) : null;
   const limit = normalizeArticleLimit(req.query.limit || req.body?.limit || 5);
 
+  const { browser, page } = await createBrowserPage();
   try {
     const result = total
-      ? await fetchAllCategoriesByTotal(null, total)
-      : await fetchAllCategories(null, limit);
+      ? await fetchAllCategoriesByTotal(page, total)
+      : await fetchAllCategories(page, limit);
     return sendApiSuccess(res, result, { total, limit: total ? null : limit });
   } catch (error) {
     return sendApiError(res, "RSS_SYNC_ALL_FAILED", error.message, 500, { total, limit });
+  } finally {
+    await browser.close();
   }
 });
 
@@ -6767,6 +8791,49 @@ apiV1.post("/sync/sources-ai", requireApiScope("sync:write"), async (req, res) =
     return sendApiError(res, "SOURCES_AI_SYNC_FAILED", error.message, 500, {
       category,
       limit,
+      sources,
+      rewrite,
+    });
+  }
+});
+
+apiV1.post("/sync/primary-sources", requireApiScope("sync:write"), async (req, res) => {
+  const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
+  const limit = Math.min(normalizePrimarySourceLimit(req.query.limit || req.body?.limit || 2), 5);
+  const sources = req.query.sources || req.body?.sources || "all";
+  const rewrite = !["false", "0", "no"].includes(
+    String(req.query.rewrite ?? req.body?.rewrite ?? "true").toLowerCase()
+  );
+  const includeExisting = ["true", "1", "yes"].includes(
+    String(req.query.include_existing ?? req.body?.include_existing ?? "").toLowerCase()
+  );
+  const googleQuery = req.query.google_query || req.body?.google_query || null;
+
+  try {
+    const result = await syncPrimarySourcesAndAi({
+      category,
+      limit,
+      sources,
+      rewrite,
+      includeExisting,
+      googleQuery,
+    });
+
+    return sendApiSuccess(res, result, {
+      category,
+      limit_per_source: limit,
+      sources: result.sources,
+      rewrite,
+      output_sizes: {
+        words_100: "ui_hindi.short_100",
+        words_300: "ui_hindi.medium_300",
+        words_600: "ui_hindi.long_500",
+      },
+    });
+  } catch (error) {
+    return sendApiError(res, "PRIMARY_SOURCE_SYNC_FAILED", error.message, 500, {
+      category,
+      limit_per_source: limit,
       sources,
       rewrite,
     });
@@ -6847,7 +8914,7 @@ apiV1.post("/sync/rashifal", requireApiScope("sync:write"), async (req, res) => 
 });
 
 apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
-  const category = normalizeCategory(req.query.category || req.body?.category || "states");
+  const category = normalizeCategory(req.query.category || req.body?.category || DEFAULT_CATEGORY);
   const limit = normalizeArticleLimit(req.query.limit || req.body?.limit || 5);
   const mpInfoFeed = { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml" };
   const { browser, page } = await createBrowserPage();
@@ -6859,12 +8926,10 @@ apiV1.post("/sync/mpinfo", requireApiScope("sync:write"), async (req, res) => {
     for (const articleEntry of articleEntries) {
       try {
         const imageData = await extractBestImageFromArticle(page, articleEntry.url);
-        const featuredImage = imageData.featuredImage || articleEntry.image_link || null;
-        const imageSource = imageData.featuredImage ? imageData.imageSource : articleEntry.image_source;
+        const metadataImage = sanitizeArticleImageUrl(imageData.featuredImage);
+        const featuredImage = metadataImage || null;
+        const imageSource = metadataImage ? imageData.imageSource || "article-image" : null;
         const title = imageData.title || articleEntry.title || articleEntry.url;
-        if (!featuredImage) {
-          throw new Error("The original article opened, but no direct image URL could be extracted from that page.");
-        }
 
         const recordId = await saveNewsRecord({
           category,
@@ -7179,10 +9244,6 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
     afterRewriteSaved: () => runRetentionCleanupCycle("manual-ai-rewrite-save"),
   });
 
-  app.get("/zee-feeds", (req, res) => {
-    res.redirect(302, "/rss-feeds");
-  });
-
   app.get("/news", async (req, res) => {
     try {
       const category = req.query.category ? normalizeCategory(req.query.category) : null;
@@ -7190,7 +9251,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
       const queryText = category
         ? `
           SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
-          , feed_source, feed_url
+          , feed_source, feed_url, source_excerpt, source_published_at
           FROM fetched_news
           WHERE category = ?
           ORDER BY id DESC
@@ -7198,7 +9259,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
         `
         : `
           SELECT id, category, search_query, title, source_url, image_link, image_source, fetched_at
-          , feed_source, feed_url
+          , feed_source, feed_url, source_excerpt, source_published_at
           FROM fetched_news
           ORDER BY id DESC
           LIMIT ?
@@ -7262,6 +9323,9 @@ app.get("/image-proxy", async (req, res) => {
     });
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), IMAGE_PROXY_TIMEOUT_MS);
+
   try {
     const upstream = await fetch(imageUrl, {
       headers: {
@@ -7269,6 +9333,7 @@ app.get("/image-proxy", async (req, res) => {
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Referer: new URL(imageUrl).origin,
       },
+      signal: controller.signal,
     });
 
     if (!upstream.ok) {
@@ -7314,17 +9379,27 @@ app.get("/image-proxy", async (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
     return res.send(optimizedImage.buffer);
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return res.status(504).json({
+        status: "Error",
+        message: "Upstream image request timed out.",
+      });
+    }
+
     return res.status(500).json({
       status: "Error",
       message: error.message,
     });
+  } finally {
+    clearTimeout(timeout);
   }
 });
 
 validateProductionConfig();
 
 initializeDatabase()
-  .then(() => {
+  .then(async () => {
+    await initializeMpInfoDistrictSchedulerCursor();
     startScheduler();
     startAiScheduler();
     startMpInfoDistrictScheduler();
@@ -7333,16 +9408,16 @@ initializeDatabase()
     serverInstance = app.listen(PORT, () => {
       console.log(`Gautam Tech Studio Bot running at http://localhost:${PORT}`);
       console.log(
-        `Try it: http://localhost:${PORT}/fetch-news?q=india&limit=5`
+        `Try it: http://localhost:${PORT}/fetch-news?q=${encodeURIComponent(DEFAULT_CATEGORY)}&limit=5`
       );
       console.log(
-        `Category URL example: http://localhost:${PORT}/fetch-news/category/india?limit=5`
+        `Category URL example: http://localhost:${PORT}/fetch-news/category/${encodeURIComponent(DEFAULT_CATEGORY)}?limit=5`
       );
       console.log(
         `All categories: http://localhost:${PORT}/fetch-news/all?limit=5`
       );
       console.log(
-        `RSS category feed: http://localhost:${PORT}/fetch-rss-news?category=india&limit=5`
+        `RSS category feed: http://localhost:${PORT}/fetch-rss-news?category=${encodeURIComponent(DEFAULT_CATEGORY)}&limit=5`
       );
       console.log(
         `All RSS feeds: http://localhost:${PORT}/fetch-rss-news/all?limit=5`
@@ -7351,7 +9426,7 @@ initializeDatabase()
         `Fetch 200 distributed stories: http://localhost:${PORT}/fetch-rss-news/all?total=200`
       );
       console.log(
-        `Test MP Info feed: http://localhost:${PORT}/fetch-mpinfo-news?category=states&limit=5`
+        `Test MP Info feed: http://localhost:${PORT}/fetch-mpinfo-news?category=${encodeURIComponent(DEFAULT_CATEGORY)}&limit=5`
       );
       console.log(
         `Feed list: http://localhost:${PORT}/rss-feeds`

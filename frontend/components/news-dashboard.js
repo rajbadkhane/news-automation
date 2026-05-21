@@ -42,17 +42,35 @@ function prettifyFeedSource(value) {
   }
 
   const normalized = value.toLowerCase();
-  if (normalized === "zee") {
-    return "Zee News";
-  }
-  if (normalized === "news18") {
-    return "News18";
-  }
   if (normalized === "dd") {
     return "DD News";
   }
   if (normalized === "mpinfo") {
     return "MP Info";
+  }
+  if (normalized === "pib") {
+    return "PIB";
+  }
+  if (normalized === "google-rss") {
+    return "Google RSS";
+  }
+  if (normalized === "cliff-news") {
+    return "Cliff News";
+  }
+  if (normalized.endsWith("-gov")) {
+    return value
+      .split("-")
+      .map((part) => {
+        const lower = part.toLowerCase();
+        if (lower === "gov") {
+          return "Govt";
+        }
+
+        return part.length <= 3
+          ? part.toUpperCase()
+          : part.charAt(0).toUpperCase() + part.slice(1);
+      })
+      .join(" ");
   }
 
   return value;
@@ -127,6 +145,40 @@ function getDisplayImageUrl(imageUrl) {
   return `${getDashboardProxyPath("/image-proxy")}?url=${encodeURIComponent(imageUrl)}`;
 }
 
+function isUsableImageUrl(imageUrl) {
+  return /^https?:\/\//i.test(String(imageUrl || "").trim());
+}
+
+function DashboardImage({ imageUrl, alt, className, loading = "lazy" }) {
+  const [useDirectImage, setUseDirectImage] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const hasImage = isUsableImageUrl(imageUrl);
+
+  if (!hasImage || failed) {
+    return (
+      <div className="h-full w-full bg-slate-900" aria-hidden="true" />
+    );
+  }
+
+  return (
+    <img
+      src={useDirectImage ? imageUrl : getDisplayImageUrl(imageUrl)}
+      alt={alt || "News image"}
+      className={className}
+      loading={loading}
+      referrerPolicy="no-referrer"
+      onError={() => {
+        if (!useDirectImage) {
+          setUseDirectImage(true);
+          return;
+        }
+
+        setFailed(true);
+      }}
+    />
+  );
+}
+
 function getDashboardProxyPath(path) {
   const normalized = String(path || "").startsWith("/") ? path : `/${path}`;
   return `/api/dashboard${normalized}`;
@@ -153,9 +205,11 @@ function buildStats(groups) {
 }
 
 const FEED_LEGEND = [
-  { label: "Zee News", className: "bg-cyan-400/20 text-cyan-100 border-cyan-300/30" },
+  { label: "Cliff News", className: "bg-cyan-400/20 text-cyan-100 border-cyan-300/30" },
   { label: "DD News", className: "bg-emerald-400/20 text-emerald-100 border-emerald-300/30" },
   { label: "MP Info", className: "bg-amber-400/20 text-amber-100 border-amber-300/30" },
+  { label: "PIB", className: "bg-sky-400/20 text-sky-100 border-sky-300/30" },
+  { label: "State Govt", className: "bg-white/10 text-slate-100 border-white/20" },
 ];
 
 function renderSummaryBullets(items) {
@@ -209,9 +263,33 @@ export default function NewsDashboard({
 
   async function triggerSync(endpoint, successMessage) {
     setSyncState({
-      loading: false,
-      message: "Sync actions are now restricted to the protected admin panel.",
+      loading: true,
+      message: "Syncing Cliff News and refreshing published delivery...",
     });
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || payload?.status === "Error" || payload?.success === false) {
+        throw new Error(payload?.message || payload?.error?.message || `Sync failed with ${response.status}.`);
+      }
+
+      await refreshDashboard();
+
+      setSyncState({
+        loading: false,
+        message: successMessage || "Sync completed. Dashboard refreshed.",
+      });
+    } catch (error) {
+      setSyncState({
+        loading: false,
+        message: error.message || "Sync failed. Please retry after checking the backend connection.",
+      });
+    }
   }
 
   async function refreshDashboard() {
@@ -367,11 +445,11 @@ export default function NewsDashboard({
           <div className="grid grid-cols-2 gap-3 md:min-w-[320px]">
             <button
               type="button"
-              onClick={() => triggerSync(getDashboardProxyPath("/fetch-rss-news/all?limit=5"), "RSS categories synced. Reloading dashboard...")}
+              onClick={() => triggerSync(getDashboardProxyPath("/sync/cliff-news?limit=100&language=ENGLISH&rewrite=true"), "Cliff News API synced and rewritten. Reloading dashboard...")}
               disabled={syncState.loading}
               className="rounded-2xl bg-amber-400 px-4 py-3 text-center text-sm font-semibold text-slate-950 transition hover:-translate-y-0.5 hover:bg-amber-300"
             >
-              {syncState.loading ? "Syncing..." : "Sync All Categories"}
+              {syncState.loading ? "Syncing..." : "Sync Cliff News"}
             </button>
             <a
               href={dashboardNewsPath}
@@ -428,7 +506,7 @@ export default function NewsDashboard({
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-slate-400">Feed Sources</p>
             <p className="mt-2 text-sm text-slate-200">
-              Stories are blended from the configured RSS publishers below and saved category-wise.
+              Stories are blended from the configured government RSS publishers and state portals below.
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -473,17 +551,14 @@ export default function NewsDashboard({
               >
                 <div className="relative aspect-[16/9] overflow-hidden">
                   {leadStory.image_link ? (
-                    <img
-                      src={getDisplayImageUrl(leadStory.image_link)}
+                    <DashboardImage
+                      imageUrl={leadStory.image_link}
                       alt={leadStory.title}
                       className="h-full w-full object-cover"
                       loading="lazy"
-                      referrerPolicy="no-referrer"
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center bg-slate-900 text-slate-400">
-                      Image unavailable
-                    </div>
+                    <div className="h-full bg-slate-900" aria-hidden="true" />
                   )}
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
                   <div className="absolute bottom-0 left-0 right-0 p-6">
@@ -601,23 +676,23 @@ export default function NewsDashboard({
                 <div className="mt-4 grid gap-3">
                   <button
                     type="button"
-                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-rss-news/all?limit=5"), "Fetched 5 stories per category from RSS feeds. Reloading dashboard...")}
+                    onClick={() => triggerSync(getDashboardProxyPath("/sync/cliff-news?limit=100&language=ENGLISH&rewrite=true"), "Fetched Cliff News articles and rewrites. Reloading dashboard...")}
                     disabled={syncState.loading}
                     className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-white transition hover:bg-white/15"
                   >
-                    Fetch 5 stories per category
+                    Fetch 100 Cliff articles
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-rss-news?category=technology&limit=5"), "Technology feed synced. Reloading dashboard...")}
+                    onClick={() => triggerSync(getDashboardProxyPath("/sync/cliff-news?category=Business&limit=20&language=ENGLISH&rewrite=true"), "Business Cliff News synced. Reloading dashboard...")}
                     disabled={syncState.loading}
                     className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-white transition hover:bg-white/15"
                   >
-                    Fetch technology only
+                    Fetch Cliff business
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-mpinfo-news?category=states&limit=5"), "MP Info test fetch completed. Reloading dashboard...")}
+                    onClick={() => triggerSync(getDashboardProxyPath("/fetch-mpinfo-news?category=National%2FState&limit=5"), "MP Info test fetch completed. Reloading dashboard...")}
                     disabled={syncState.loading}
                     className="rounded-2xl bg-white/10 px-4 py-3 text-sm text-white transition hover:bg-white/15"
                   >
@@ -773,7 +848,7 @@ export default function NewsDashboard({
               </h2>
             </div>
             <p className="max-w-xl text-sm leading-6 text-slate-300">
-              A quick verification area for MP Info stories so you can confirm the third RSS source is flowing into the same pipeline.
+              A quick verification area for MP Info stories so you can confirm this government feed is flowing into the same pipeline.
             </p>
           </div>
 
@@ -798,17 +873,14 @@ export default function NewsDashboard({
                 >
                   <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                     {item.image_link ? (
-                      <img
-                        src={getDisplayImageUrl(item.image_link)}
+                      <DashboardImage
+                        imageUrl={item.image_link}
                         alt={item.title || "MP Info image"}
                         className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
                         loading="lazy"
-                        referrerPolicy="no-referrer"
                       />
                     ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-slate-500">
-                        No image link available
-                      </div>
+                      <div className="h-full bg-slate-900" aria-hidden="true" />
                     )}
                     <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/35 to-transparent" />
                     <div className="absolute bottom-4 left-4 flex flex-wrap gap-2">
@@ -894,7 +966,7 @@ export default function NewsDashboard({
                         type="button"
                         onClick={() =>
                           triggerSync(
-                            getDashboardProxyPath(`/fetch-rss-news?category=${group.category}&limit=5`),
+                            getDashboardProxyPath(`/sync/cliff-news?category=${encodeURIComponent(group.category)}&limit=20&language=ENGLISH&rewrite=true`),
                             `${prettifyCategory(group.category)} synced. Reloading dashboard...`
                           )
                         }
@@ -925,17 +997,14 @@ export default function NewsDashboard({
                       >
                         <div className="relative aspect-[16/10] overflow-hidden bg-slate-900">
                           {item.image_link ? (
-                            <img
-                              src={getDisplayImageUrl(item.image_link)}
+                            <DashboardImage
+                              imageUrl={item.image_link}
                               alt={item.title || "News image"}
                               className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
                               loading="lazy"
-                              referrerPolicy="no-referrer"
                             />
                           ) : (
-                            <div className="flex h-full items-center justify-center text-sm text-slate-500">
-                              No image link available
-                            </div>
+                            <div className="h-full bg-slate-900" aria-hidden="true" />
                           )}
                           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/35 to-transparent" />
                           <div className="absolute bottom-4 left-4 flex flex-wrap gap-2">
@@ -997,17 +1066,14 @@ export default function NewsDashboard({
               <aside className="border-b border-white/10 bg-slate-950/50 lg:border-b-0 lg:border-r lg:border-white/10">
                 <div className="relative aspect-[16/10] overflow-hidden bg-slate-900 lg:aspect-auto lg:h-full lg:min-h-[520px]">
                   {readerStory.image_link ? (
-                    <img
-                      src={getDisplayImageUrl(readerStory.image_link)}
+                    <DashboardImage
+                      imageUrl={readerStory.image_link}
                       alt={readerStory.ui_hindi.title || readerStory.title}
                       className="h-full w-full object-cover"
                       loading="lazy"
-                      referrerPolicy="no-referrer"
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-slate-500">
-                      Image unavailable
-                    </div>
+                    <div className="h-full bg-slate-900" aria-hidden="true" />
                   )}
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/35 to-transparent" />
                   <div className="absolute bottom-0 left-0 right-0 p-6">
@@ -1138,17 +1204,14 @@ export default function NewsDashboard({
                 <div className="overflow-hidden rounded-[24px] border border-white/10 bg-slate-900/70">
                   <div className="relative aspect-[16/11] overflow-hidden bg-slate-900">
                     {aiState.article?.news?.image_link ? (
-                      <img
-                        src={getDisplayImageUrl(aiState.article.news.image_link)}
+                      <DashboardImage
+                        imageUrl={aiState.article.news.image_link}
                         alt={aiState.article?.news?.title || "AI article image"}
                         className="h-full w-full object-cover"
                         loading="lazy"
-                        referrerPolicy="no-referrer"
                       />
                     ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-slate-500">
-                        Image unavailable
-                      </div>
+                      <div className="h-full bg-slate-900" aria-hidden="true" />
                     )}
                     <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
                     <div className="absolute bottom-4 left-4 right-4">
