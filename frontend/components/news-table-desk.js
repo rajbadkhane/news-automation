@@ -8,6 +8,8 @@ import { unicodeToKrutidev } from "@/lib/krutidev-converter";
 const CACHE_KEY = "gts-news-table-cache-v2";
 const CACHE_TTL_MS = 20 * 1000;
 const REFRESH_INTERVAL_MS = 20 * 1000;
+const INITIAL_LOAD_MAX_WAIT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 15000;
 const TABLE_RECORD_LIMIT = 500;
 const DEFAULT_PAGE_SIZE = 25;
 const SECTION_CONFIG = {
@@ -77,6 +79,20 @@ function NewsTableLoadingScreen({ progress = 1, label = "News" }) {
 function getDashboardProxyPath(path) {
   const normalized = String(path || "").startsWith("/") ? path : `/${path}`;
   return `/api/dashboard${normalized}`;
+}
+
+async function fetchWithTimeout(resource, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(resource, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function getDisplayImageUrl(imageUrl, quality = "high") {
@@ -921,6 +937,20 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   }, [initialLoadComplete]);
 
   useEffect(() => {
+    if (initialLoadComplete) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setMessage("Backend abhi busy hai. Table open kar diya; reload se data refresh ho jayega.");
+      setInitialLoadSettled(true);
+      setLoadProgress(100);
+    }, INITIAL_LOAD_MAX_WAIT_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [initialLoadComplete]);
+
+  useEffect(() => {
     if (initialLoadComplete || (!initialLoadSettled && !payloadHasRecords)) {
       return undefined;
     }
@@ -947,10 +977,10 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     try {
       if (force && sectionConfig.syncPath) {
         setMessage(`${sectionConfig.label} sync chal raha hai...`);
-        const syncResponse = await fetch(getDashboardProxyPath(sectionConfig.syncPath), {
+        const syncResponse = await fetchWithTimeout(getDashboardProxyPath(sectionConfig.syncPath), {
           method: "POST",
           cache: "no-store",
-        });
+        }, REQUEST_TIMEOUT_MS);
         const syncPayload = await syncResponse.json().catch(() => null);
 
         if (!syncResponse.ok || syncPayload?.status === "Error" || syncPayload?.success === false) {
@@ -958,9 +988,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         }
       }
 
-      const response = await fetch(getDashboardProxyPath(sectionConfig.listPath), {
+      const response = await fetchWithTimeout(getDashboardProxyPath(sectionConfig.listPath), {
         cache: "no-store",
-      });
+      }, REQUEST_TIMEOUT_MS);
       const nextPayload = await response.json();
       if (response.ok && nextPayload.status !== "Error") {
         setPayload(nextPayload);
