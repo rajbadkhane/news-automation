@@ -9,7 +9,7 @@ const CACHE_KEY = "gts-news-table-cache-v2";
 const CACHE_TTL_MS = 20 * 1000;
 const REFRESH_INTERVAL_MS = 20 * 1000;
 const INITIAL_LOAD_MAX_WAIT_MS = 12000;
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 60000;
 const TABLE_RECORD_LIMIT = 500;
 const DEFAULT_PAGE_SIZE = 25;
 const SECTION_CONFIG = {
@@ -1035,7 +1035,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
 
     async function loadCategoryCatalog() {
       try {
-        const response = await fetch(getDashboardProxyPath("/categories"), { cache: "no-store" });
+        const response = await fetchWithTimeout(getDashboardProxyPath("/categories"), { cache: "no-store" });
         const nextPayload = await response.json();
         if (!cancelled && response.ok) {
           setCategoryCatalog(nextPayload);
