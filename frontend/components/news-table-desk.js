@@ -51,6 +51,29 @@ function hasPayloadRecords(payload) {
   return (payload?.grouped_records || []).some((group) => (group.records || []).length > 0);
 }
 
+function NewsTableLoadingScreen({ progress = 1, label = "News" }) {
+  const safeProgress = Math.min(100, Math.max(1, Math.round(progress)));
+
+  return (
+    <div className="flex min-h-[calc(100vh-126px)] items-center justify-center bg-[#f5f7fb] px-4 py-12">
+      <section className="w-full max-w-[520px] rounded-lg border border-[#cfd8e3] bg-white p-6 text-center shadow-sm">
+        <p className="text-xs font-black uppercase tracking-[0.18em] text-[#1f5f95]">Loading {label}</p>
+        <h2 className="mt-3 text-2xl font-black text-[#14243a]">News table is preparing</h2>
+        <div className="mt-6 overflow-hidden rounded-md border border-[#b8c4d2] bg-[#eef3f8]">
+          <div
+            className="h-4 rounded-md bg-gradient-to-r from-[#1f70bd] via-[#2f9e44] to-[#d00019] transition-all duration-300"
+            style={{ width: `${safeProgress}%` }}
+          />
+        </div>
+        <div className="mt-3 flex items-center justify-between text-sm font-bold text-[#334155]">
+          <span>Fetching latest feed</span>
+          <span>{safeProgress}%</span>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function getDashboardProxyPath(path) {
   const normalized = String(path || "").startsWith("/") ? path : `/${path}`;
   return `/api/dashboard${normalized}`;
@@ -809,6 +832,9 @@ function NewsTableHeader({ activeSection }) {
 export default function NewsTableDesk({ initialPayload, initialSection = "news" }) {
   const activeSection = SECTION_CONFIG[initialSection] ? initialSection : "news";
   const [payload, setPayload] = useState(initialPayload || createEmptyPayload());
+  const [initialLoadSettled, setInitialLoadSettled] = useState(() => hasPayloadRecords(initialPayload));
+  const [initialLoadComplete, setInitialLoadComplete] = useState(() => hasPayloadRecords(initialPayload));
+  const [loadProgress, setLoadProgress] = useState(() => (hasPayloadRecords(initialPayload) ? 100 : 1));
   const [filters, setFilters] = useState({
     category: "",
     state: "",
@@ -823,6 +849,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   const [relativeNow, setRelativeNow] = useState(null);
 
   const records = useMemo(() => flattenPayload(payload, activeSection), [activeSection, payload]);
+  const payloadHasRecords = hasPayloadRecords(payload);
   const dynamicNewsCategories = useMemo(() => {
     const categories =
       categoryCatalog?.data?.final_categories ||
@@ -874,6 +901,35 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     }
   }, [currentPage, totalPages]);
 
+  useEffect(() => {
+    if (initialLoadComplete) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      setLoadProgress((current) => {
+        if (current >= 96) {
+          return current;
+        }
+
+        const step = current < 35 ? 7 : current < 72 ? 4 : 2;
+        return Math.min(96, current + step);
+      });
+    }, 260);
+
+    return () => window.clearInterval(interval);
+  }, [initialLoadComplete]);
+
+  useEffect(() => {
+    if (initialLoadComplete || (!initialLoadSettled && !payloadHasRecords)) {
+      return undefined;
+    }
+
+    setLoadProgress(100);
+    const timeout = window.setTimeout(() => setInitialLoadComplete(true), 420);
+    return () => window.clearTimeout(timeout);
+  }, [initialLoadComplete, initialLoadSettled, payloadHasRecords]);
+
   const refreshNews = useCallback(async ({ force = false, section = activeSection } = {}) => {
     const sectionConfig = SECTION_CONFIG[section] || SECTION_CONFIG.news;
     if (!force) {
@@ -881,6 +937,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       if (cached) {
         setPayload(cached.payload);
         setLastReloadAt(new Date(cached.savedAt).toISOString());
+        if (section === activeSection) {
+          setInitialLoadSettled(true);
+        }
         return;
       }
     }
@@ -913,14 +972,24 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       }
     } catch (error) {
       setMessage(error.message || "Backend connection wait kar raha hai; cached data dikhaya ja raha hai.");
+    } finally {
+      if (section === activeSection) {
+        setInitialLoadSettled(true);
+      }
     }
   }, [activeSection]);
 
   useEffect(() => {
+    const hasInitialRecords = hasPayloadRecords(initialPayload);
+    setInitialLoadSettled(hasInitialRecords);
+    setInitialLoadComplete(hasInitialRecords);
+    setLoadProgress(hasInitialRecords ? 100 : 1);
+
     const cached = readSectionCache(activeSection);
     if (cached) {
       setPayload(cached.payload);
       setLastReloadAt(new Date(cached.savedAt).toISOString());
+      setInitialLoadSettled(true);
       return;
     }
 
@@ -993,6 +1062,18 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     const interval = window.setInterval(() => setRelativeNow(Date.now()), 60000);
     return () => window.clearInterval(interval);
   }, []);
+
+  if (!initialLoadComplete) {
+    return (
+      <main className="min-h-screen bg-white text-black" style={{ zoom: "90%" }}>
+        <NewsTableHeader activeSection={activeSection} />
+        <NewsTableLoadingScreen
+          progress={loadProgress}
+          label={SECTION_CONFIG[activeSection]?.label || "News"}
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-white text-black" style={{ zoom: "90%" }}>
@@ -1138,7 +1219,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                   <th className="w-[68px] border-r border-[#d8e0e8] px-2 py-2">Id</th>
                   <th className="w-[110px] border-r border-[#d8e0e8] px-2 py-2">Category</th>
                   <th className="w-[120px] border-r border-[#d8e0e8] px-2 py-2">Uploaded</th>
-                  <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title</th>
+                  <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title/हैडलाइन</th>
                   <th className="w-[145px] border-r border-[#d8e0e8] px-2 py-2 text-center">Image</th>
                   <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
                   <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">100 Words</th>
