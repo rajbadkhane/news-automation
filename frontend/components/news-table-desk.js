@@ -718,11 +718,15 @@ function ImageCell({ item, setMessage }) {
       <div
         className="h-[86px] w-[126px] overflow-hidden rounded border border-[#cfd8e3] bg-[#eef2f7] shadow-sm"
         title="Image preview"
+        onContextMenu={(event) => {
+          event.preventDefault();
+        }}
       >
         <img
           src={imageSrc}
           alt={item.title || "News image"}
-          className="h-full w-full object-cover"
+          className="pointer-events-none h-full w-full select-none object-cover"
+          draggable={false}
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => {

@@ -29,6 +29,14 @@ function normalizeSectionPayload(payload) {
 
 async function getRashifalFeed() {
   try {
+    await fetch(`${API_BASE_URL}/api/v1/sync/rashifal?limit=50`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "x-api-key": ADMIN_MASTER_API_KEY,
+      },
+    }).catch(() => null);
+
     const response = await fetch(`${API_BASE_URL}/api/v1/rashifal/grouped?limit=50`, {
       cache: "no-store",
       headers: {
