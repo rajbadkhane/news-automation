@@ -1175,6 +1175,15 @@ const schedulerState = {
     lastResult: null,
     lastError: null,
   },
+  rashifal: {
+    dayKey: null,
+    lastRunAt: null,
+    lastStatus: "Waiting",
+    savedCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    lastError: null,
+  },
   quietHours: {
     timezone: INDIA_TIMEZONE,
     startHour: QUIET_HOUR_START,
@@ -2320,6 +2329,7 @@ async function getCachedCronStatusPayload() {
         coordination: schedulerState.coordination,
         categories: schedulerState.categories,
         schedule: schedulerState.schedule || getCategorySchedule(),
+        rashifal: schedulerState.rashifal,
         mpinfo_districts: getMpInfoDistrictSchedulerHealthSnapshot(),
         retention_cleanup: getRetentionCleanupHealthSnapshot(),
       },
@@ -3976,6 +3986,13 @@ function buildWindowKey(now = new Date()) {
   const day = String(indiaNow.day).padStart(2, "0");
   const hour = String(indiaNow.hour).padStart(2, "0");
   return `${indiaNow.year}-${month}-${day} ${hour}:${bucketMinute}`;
+}
+
+function buildIndiaDayKey(now = new Date()) {
+  const indiaNow = getIndiaTimeParts(now);
+  const month = String(indiaNow.month).padStart(2, "0");
+  const day = String(indiaNow.day).padStart(2, "0");
+  return `${indiaNow.year}-${month}-${day}`;
 }
 
 function buildAiWindowKey(now = new Date()) {
@@ -7472,6 +7489,8 @@ async function schedulerTick() {
       const windowSecond = getWindowSecond(now);
       schedulerState.lastWindowKey = windowKey;
 
+      await runScheduledRashifalSync(now);
+
       const schedule = getCategorySchedule();
 
       for (const slot of schedule) {
@@ -7531,6 +7550,98 @@ async function schedulerTick() {
     schedulerHeartbeatInterval = null;
     updateSchedulerHeartbeat();
     schedulerRunning = false;
+  }
+}
+
+async function runScheduledRashifalSync(now = new Date()) {
+  const dayKey = buildIndiaDayKey(now);
+  if (schedulerState.rashifal.dayKey === dayKey) {
+    return;
+  }
+
+  const [completedRuns] = await dbPool.query(
+    `
+      SELECT id
+      FROM scheduler_runs
+      WHERE scheduler_name = ?
+        AND run_type = ?
+        AND window_key = ?
+        AND status = ?
+      LIMIT 1
+    `,
+    ["main", "rashifal", dayKey, "Success"]
+  );
+  if (completedRuns.length) {
+    schedulerState.rashifal = {
+      ...schedulerState.rashifal,
+      dayKey,
+      lastStatus: "Success",
+      lastError: null,
+    };
+    return;
+  }
+
+  schedulerState.rashifal = {
+    ...schedulerState.rashifal,
+    lastRunAt: new Date().toISOString(),
+    lastStatus: "Running",
+    lastError: null,
+  };
+
+  const logId = await createSchedulerRunLog({
+    schedulerName: "main",
+    runType: "rashifal",
+    triggerSource: "schedule",
+    category: "rashifal",
+    windowKey: dayKey,
+    requestedLimit: 50,
+    message: "Starting daily Rashifal RSS sync.",
+  });
+
+  try {
+    const result = await syncRashifal(dbPool, { limit: 50, force: true });
+    const status = result.saved_count > 0
+      ? "Success"
+      : result.failed_count > 0
+        ? "Error"
+        : "Skipped";
+
+    schedulerState.rashifal = {
+      ...schedulerState.rashifal,
+      dayKey,
+      lastRunAt: new Date().toISOString(),
+      lastStatus: status,
+      savedCount: result.saved_count || 0,
+      skippedCount: result.skipped_count || 0,
+      failedCount: result.failed_count || 0,
+      lastError: null,
+    };
+
+    await finalizeSchedulerRunLog(logId, {
+      status,
+      savedCount: result.saved_count || 0,
+      skippedCount: result.skipped_count || 0,
+      failedCount: result.failed_count || 0,
+      message: status === "Success" ? "Daily Rashifal RSS sync completed." : result.message || "Daily Rashifal RSS sync finished.",
+      details: result,
+    });
+  } catch (error) {
+    schedulerState.rashifal = {
+      ...schedulerState.rashifal,
+      dayKey,
+      lastRunAt: new Date().toISOString(),
+      lastStatus: "Error",
+      failedCount: (schedulerState.rashifal.failedCount || 0) + 1,
+      lastError: error.message,
+    };
+
+    await finalizeSchedulerRunLog(logId, {
+      status: "Error",
+      failedCount: 1,
+      message: "Daily Rashifal RSS sync failed.",
+      errorMessage: error.message,
+    });
+    console.error("Daily Rashifal sync failed:", error.message);
   }
 }
 
