@@ -12,6 +12,7 @@ const INITIAL_LOAD_MAX_WAIT_MS = 12000;
 const REQUEST_TIMEOUT_MS = 60000;
 const TABLE_RECORD_LIMIT = 500;
 const DEFAULT_PAGE_SIZE = 25;
+const TOI_LEFT_CROP_RATIO = 103 / 1280;
 const SECTION_CONFIG = {
   news: {
     label: "News",
@@ -299,6 +300,27 @@ function isUsableImageUrl(imageUrl) {
 function isRenderableImageSrc(imageSrc) {
   const value = String(imageSrc || "").trim();
   return /^https?:\/\//i.test(value) || value.startsWith("/");
+}
+
+function isTimesOfIndiaSource(item) {
+  const sourceText = [
+    item?.feed_source,
+    item?.feed_url,
+    item?.source_url,
+    item?.source,
+    item?.image_link,
+    item?.image_source,
+    item?.raw_articles?.source_url,
+    item?.raw_articles?.feed_source,
+    item?.raw_articles?.image_link,
+    item?.media?.source_url,
+    item?.media?.image_link,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return /timesofindia\.indiatimes\.com|(?:^|[^\w])toi(?:[^\w]|$)|times\s+of\s+india|toiimg\.com|timescontent\.com/.test(sourceText);
 }
 
 function cleanText(value) {
@@ -927,7 +949,8 @@ async function downloadImage(item, setMessage) {
     }
 
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
+    const downloadBlob = isTimesOfIndiaSource(item) ? await cropImageBlobFromLeft(blob, TOI_LEFT_CROP_RATIO) : blob;
+    const url = URL.createObjectURL(downloadBlob);
     const link = document.createElement("a");
     link.href = url;
     link.download = `news-${item.id || "image"}.jpg`;
@@ -941,9 +964,53 @@ async function downloadImage(item, setMessage) {
   }
 }
 
+async function cropImageBlobFromLeft(blob, cropRatio) {
+  const image = await new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const probe = new Image();
+    probe.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(probe);
+    };
+    probe.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Image crop failed"));
+    };
+    probe.src = objectUrl;
+  });
+
+  const cropLeft = Math.max(0, Math.min(image.naturalWidth - 1, Math.round(image.naturalWidth * cropRatio)));
+  const croppedWidth = image.naturalWidth - cropLeft;
+  const canvas = document.createElement("canvas");
+  canvas.width = croppedWidth;
+  canvas.height = image.naturalHeight;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return blob;
+  }
+
+  context.drawImage(
+    image,
+    cropLeft,
+    0,
+    croppedWidth,
+    image.naturalHeight,
+    0,
+    0,
+    croppedWidth,
+    image.naturalHeight
+  );
+
+  return await new Promise((resolve) => {
+    canvas.toBlob((croppedBlob) => resolve(croppedBlob || blob), blob.type || "image/jpeg", 0.92);
+  });
+}
+
 function ImageCell({ item, setMessage }) {
   const hasImage = isUsableImageUrl(item.image_link);
   const proxyImageSrc = hasImage ? getDisplayImageUrl(item.image_link) : "";
+  const shouldCropLeft = isTimesOfIndiaSource(item);
   const [imageSrc, setImageSrc] = useState(proxyImageSrc);
   const [failed, setFailed] = useState(false);
 
@@ -1009,7 +1076,11 @@ function ImageCell({ item, setMessage }) {
         <img
           src={imageSrc}
           alt={item.title || "News image"}
-          className="pointer-events-none h-full w-full select-none object-cover"
+          className={`pointer-events-none h-full select-none object-cover ${shouldCropLeft ? "max-w-none" : "w-full"}`}
+          style={shouldCropLeft ? {
+            width: `${100 / (1 - TOI_LEFT_CROP_RATIO)}%`,
+            transform: `translateX(-${TOI_LEFT_CROP_RATIO * 100}%)`,
+          } : undefined}
           draggable={false}
           loading="lazy"
           referrerPolicy="no-referrer"
