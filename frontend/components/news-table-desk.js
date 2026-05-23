@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { unicodeToChanakya } from "@/lib/chanakya-converter";
 import { unicodeTo4CGandhi } from "@/lib/gandhi-converter";
 import { unicodeToKrutidev } from "@/lib/krutidev-converter";
@@ -515,8 +515,37 @@ function writeSectionCache(section, payload, variant = "default") {
   }
 }
 
-async function copyText(text, setMessage) {
-  const value = cleanText(text);
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function getRenderedText(ref) {
+  return cleanText(ref?.current?.innerText || ref?.current?.textContent || "");
+}
+
+async function getUnicodeCopyValue(text, translateLanguage, translatedTextRef) {
+  const originalValue = cleanText(text);
+  if (translateLanguage === "hi") {
+    return originalValue;
+  }
+
+  applyGoogleTranslateLanguage(translateLanguage);
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const renderedValue = getRenderedText(translatedTextRef);
+    if (renderedValue && renderedValue !== originalValue) {
+      return renderedValue;
+    }
+
+    await delay(160);
+  }
+
+  return getRenderedText(translatedTextRef) || originalValue;
+}
+
+async function copyText(text, setMessage, options = {}) {
+  const value = cleanText(options.value || text);
   if (!value) {
     setMessage("Copy ke liye content available nahi hai.");
     return false;
@@ -598,12 +627,16 @@ function useCopyButtonFeedback() {
   return [copiedKey, setCopiedKey];
 }
 
-function CopyActions({ text, setMessage }) {
+function CopyActions({ text, setMessage, translateLanguage = "hi" }) {
   const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
+  const translatedTextRef = useRef(null);
 
   async function handleCopy(event, key, copyAction) {
     event.stopPropagation();
-    const copied = await copyAction(text, setMessage);
+    const unicodeValue = key === "copy"
+      ? await getUnicodeCopyValue(text, translateLanguage, translatedTextRef)
+      : "";
+    const copied = await copyAction(text, setMessage, { value: unicodeValue });
     if (copied) {
       setCopiedKey(key);
     }
@@ -643,6 +676,13 @@ function CopyActions({ text, setMessage }) {
       >
         {copiedKey === "gandhi" ? "Copied" : "Copy in 4cGandhi"}
       </button>
+      <span
+        ref={translatedTextRef}
+        className="pointer-events-none absolute -left-[9999px] top-auto h-px w-px overflow-hidden whitespace-pre-wrap"
+        aria-hidden="true"
+      >
+        {text}
+      </span>
     </div>
   );
 }
@@ -663,9 +703,13 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
     { key: "600", label: "600 Words", text: preview?.item.long_500 },
   ];
   const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
+  const translatedTextRef = useRef(null);
 
   async function handleModalCopy(key, copyAction) {
-    const copied = await copyAction(activeText, setMessage);
+    const unicodeValue = key === "copy"
+      ? await getUnicodeCopyValue(activeText, translateLanguage, translatedTextRef)
+      : "";
+    const copied = await copyAction(activeText, setMessage, { value: unicodeValue });
     if (copied) {
       setCopiedKey(key);
     }
@@ -786,6 +830,13 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
         </header>
 
         <div className="max-h-[62vh] overflow-y-auto px-4 py-5 sm:px-6">
+          <span
+            ref={translatedTextRef}
+            className="pointer-events-none absolute -left-[9999px] top-auto h-px w-px overflow-hidden whitespace-pre-wrap"
+            aria-hidden="true"
+          >
+            {activeText}
+          </span>
           {paragraphs.length ? (
             <div className="space-y-4 text-[16px] leading-8 text-[#17293b]">
               {paragraphs.map((paragraph, index) => (
@@ -803,7 +854,7 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
   );
 }
 
-function PreviewTextCell({ item, type, text, previewSize, setPreview, setMessage }) {
+function PreviewTextCell({ item, type, text, previewSize, setPreview, setMessage, translateLanguage }) {
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <button
@@ -829,7 +880,7 @@ function PreviewTextCell({ item, type, text, previewSize, setPreview, setMessage
           Preview/पूरी खबर पढ़ें
         </button>
         <div className="col-span-2">
-          <CopyActions text={text} setMessage={setMessage} />
+          <CopyActions text={text} setMessage={setMessage} translateLanguage={translateLanguage} />
         </div>
       </div>
     </div>
@@ -1585,7 +1636,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                           <div className="font-bold leading-5 text-[#123b61]">{truncate(item.title, 75)}</div>
                           <div className="mt-1 text-xs text-[#687789]">{item.state || "-"}</div>
                         </div>
-                        <CopyActions text={item.title} setMessage={setMessage} />
+                        <CopyActions text={item.title} setMessage={setMessage} translateLanguage={translateLanguage} />
                       </div>
                     </td>
                     <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center">
@@ -1620,7 +1671,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                             >
                               Preview
                             </button>
-                            <CopyActions text={item.image_caption} setMessage={setMessage} />
+                            <CopyActions text={item.image_caption} setMessage={setMessage} translateLanguage={translateLanguage} />
                           </div>
                         ) : null}
                       </div>
@@ -1633,6 +1684,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                         previewSize={58}
                         setPreview={setPreview}
                         setMessage={setMessage}
+                        translateLanguage={translateLanguage}
                       />
                     </td>
                     <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
@@ -1643,6 +1695,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                         previewSize={70}
                         setPreview={setPreview}
                         setMessage={setMessage}
+                        translateLanguage={translateLanguage}
                       />
                     </td>
                     <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
@@ -1653,6 +1706,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                         previewSize={78}
                         setPreview={setPreview}
                         setMessage={setMessage}
+                        translateLanguage={translateLanguage}
                       />
                     </td>
                   </tr>
