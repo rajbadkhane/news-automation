@@ -83,13 +83,35 @@ function clearGoogleTranslateCookie() {
 
   const host = window.location.hostname;
   const pathname = window.location.pathname || "/";
-  const domains = host ? [host, `.${host}`] : [];
+  const hostParts = host ? host.split(".").filter(Boolean) : [];
+  const domainCandidates = new Set();
+  if (host) {
+    domainCandidates.add(host);
+    domainCandidates.add(`.${host}`);
+  }
+  if (hostParts.length > 2) {
+    for (let index = 1; index < hostParts.length - 1; index += 1) {
+      const parentDomain = hostParts.slice(index).join(".");
+      domainCandidates.add(parentDomain);
+      domainCandidates.add(`.${parentDomain}`);
+    }
+  }
   const paths = Array.from(new Set(["/", pathname]));
   paths.forEach((path) => {
     document.cookie = `googtrans=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=${path}`;
-    domains.forEach((domain) => {
+    domainCandidates.forEach((domain) => {
       document.cookie = `googtrans=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=${path}; domain=${domain}`;
     });
+  });
+
+  [window.localStorage, window.sessionStorage].forEach((storage) => {
+    try {
+      Object.keys(storage)
+        .filter((key) => /goog|translate|googtrans/i.test(key))
+        .forEach((key) => storage.removeItem(key));
+    } catch {
+      // Storage cleanup is best-effort; cookie reset is the important part.
+    }
   });
 }
 
@@ -136,10 +158,15 @@ function applyGoogleTranslateLanguage(languageCode) {
 
 function resetGoogleTranslateToHindi({ reload = false } = {}) {
   clearGoogleTranslateCookie();
+  try {
+    window.sessionStorage.setItem("gts-force-hindi-reset", "1");
+  } catch {
+    // Reset still works without session storage.
+  }
 
   if (reload && typeof window !== "undefined") {
     window.setTimeout(() => {
-      window.location.reload();
+      window.location.replace(window.location.href);
     }, 80);
   }
 }
@@ -1172,15 +1199,14 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   const pageNumbers = Array.from({ length: totalPages }, (_, index) => index + 1);
   const handleTranslateLanguageChange = useCallback((languageCode) => {
     const nextLanguage = TRANSLATE_LANGUAGE_CODES.has(languageCode) ? languageCode : "hi";
-    const shouldReloadToHindi = nextLanguage === "hi" && translateLanguage !== "hi";
     setTranslateLanguage(nextLanguage);
     if (nextLanguage === "hi") {
-      resetGoogleTranslateToHindi({ reload: shouldReloadToHindi });
+      resetGoogleTranslateToHindi({ reload: true });
       return;
     }
 
     applyGoogleTranslateLanguage(nextLanguage);
-  }, [translateLanguage]);
+  }, []);
 
   useEffect(() => {
     let retryTimer = null;
@@ -1188,6 +1214,11 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
 
     if (translateLanguage === "hi") {
       clearGoogleTranslateCookie();
+      try {
+        window.sessionStorage.removeItem("gts-force-hindi-reset");
+      } catch {
+        // Session storage is optional.
+      }
     }
 
     function initializeTranslateElement() {
@@ -1319,6 +1350,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         setPayload(cached.payload);
         setLastReloadAt(new Date(cached.savedAt).toISOString());
         if (section === activeSection) {
+          setLoadProgress(100);
           setInitialLoadSettled(true);
         }
         return;
@@ -1348,6 +1380,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         setLastReloadAt(new Date().toISOString());
         writeSectionCache(section, nextPayload);
         setMessage(`${sectionConfig.label} reload ho gaya.`);
+        if (section === activeSection) {
+          setLoadProgress(100);
+        }
       } else {
         setMessage(nextPayload.message || `${sectionConfig.label} load nahi ho paya.`);
       }
@@ -1355,6 +1390,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       setMessage(error.message || "Backend connection wait kar raha hai; cached data dikhaya ja raha hai.");
     } finally {
       if (section === activeSection) {
+        setLoadProgress(100);
         setInitialLoadSettled(true);
       }
     }
@@ -1370,6 +1406,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     if (cached) {
       setPayload(cached.payload);
       setLastReloadAt(new Date(cached.savedAt).toISOString());
+      setLoadProgress(100);
       setInitialLoadSettled(true);
       return;
     }
