@@ -1,4 +1,5 @@
 import { Cormorant_Garamond, Space_Grotesk } from "next/font/google";
+import SiteFooter from "@/components/site-footer";
 import "./globals.css";
 
 const displayFont = Cormorant_Garamond({
@@ -16,6 +17,11 @@ const bodyFont = Space_Grotesk({
 export const metadata = {
   title: "Gautam Tech Studio Newsroom",
   description: "Professional live dashboard for Gautam Tech Studio news automation.",
+  icons: {
+    icon: "/images/logo.png",
+    shortcut: "/images/logo.png",
+    apple: "/images/logo.png",
+  },
 };
 
 export default function RootLayout({ children }) {
@@ -23,6 +29,7 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <body className={`${displayFont.variable} ${bodyFont.variable} bg-stone-950 text-white antialiased`}>
         {children}
+        <SiteFooter />
       </body>
     </html>
   );

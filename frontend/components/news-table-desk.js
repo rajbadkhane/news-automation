@@ -39,6 +39,21 @@ const HEADER_FEATURES = [
   { label: "GLOBAL", symbol: "◎" },
 ];
 
+const GOOGLE_TRANSLATE_ELEMENT_ID = "google_translate_element";
+const GOOGLE_TRANSLATE_SCRIPT_ID = "google-translate-script";
+const TRANSLATE_LANGUAGES = [
+  { code: "hi", label: "Hindi" },
+  { code: "en", label: "English" },
+  { code: "ur", label: "Urdu" },
+  { code: "pa", label: "Punjabi" },
+  { code: "mr", label: "Marathi" },
+  { code: "bn", label: "Bangla" },
+  { code: "ta", label: "Tamil" },
+  { code: "te", label: "Telugu" },
+  { code: "kn", label: "Kannada" },
+];
+const TRANSLATE_LANGUAGE_CODES = new Set(TRANSLATE_LANGUAGES.map((language) => language.code));
+
 function createEmptyPayload() {
   return {
     status: "Loading",
@@ -51,6 +66,152 @@ function createEmptyPayload() {
 
 function hasPayloadRecords(payload) {
   return (payload?.grouped_records || []).some((group) => (group.records || []).length > 0);
+}
+
+function getGoogleTranslateCombo() {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  return document.querySelector(".goog-te-combo");
+}
+
+function clearGoogleTranslateCookie() {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const host = window.location.hostname;
+  const pathname = window.location.pathname || "/";
+  const domains = host ? [host, `.${host}`] : [];
+  const paths = Array.from(new Set(["/", pathname]));
+  paths.forEach((path) => {
+    document.cookie = `googtrans=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=${path}`;
+    domains.forEach((domain) => {
+      document.cookie = `googtrans=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=${path}; domain=${domain}`;
+    });
+  });
+}
+
+function writeGoogleTranslateCookie(languageCode) {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  if (languageCode === "hi") {
+    clearGoogleTranslateCookie();
+    return;
+  }
+
+  const value = `/hi/${languageCode}`;
+  const host = window.location.hostname;
+  document.cookie = `googtrans=${value}; path=/`;
+  if (host) {
+    document.cookie = `googtrans=${value}; path=/; domain=${host}`;
+  }
+}
+
+function applyGoogleTranslateLanguage(languageCode) {
+  if (!TRANSLATE_LANGUAGE_CODES.has(languageCode)) {
+    return false;
+  }
+
+  if (languageCode === "hi") {
+    clearGoogleTranslateCookie();
+    return true;
+  }
+
+  writeGoogleTranslateCookie(languageCode);
+  const combo = getGoogleTranslateCombo();
+  if (!combo) {
+    return false;
+  }
+
+  if (combo.value !== languageCode) {
+    combo.value = languageCode;
+  }
+  combo.dispatchEvent(new Event("change"));
+  return true;
+}
+
+function resetGoogleTranslateToHindi({ reload = false } = {}) {
+  clearGoogleTranslateCookie();
+
+  if (reload && typeof window !== "undefined") {
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 80);
+  }
+}
+
+function GoogleTranslateControl({ value, onChange, compact = false }) {
+  return (
+    <label
+      className={`flex items-center gap-2 rounded border border-[#b8c4d2] bg-white text-[#14243a] shadow-sm ${compact ? "min-w-[205px] px-2 py-1 text-xs" : "min-w-[235px] px-3 py-2 text-sm"}`}
+      title="Translate table and preview with Google Translate"
+    >
+      <span className={`${compact ? "h-6 w-6" : "h-7 w-7"} flex shrink-0 items-center justify-center rounded border border-[#d8e0e8] bg-[#f4f7fb] text-[#1f5f95]`} aria-hidden="true">
+        <svg viewBox="0 0 24 24" className="h-4 w-4">
+          <path
+            d="M4 5h9M8.5 3v2M11.5 5c-.6 2.5-2.1 4.8-4.5 6.9M6 8.5c1.2 1.7 2.7 3 4.5 4"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.8"
+          />
+          <path
+            d="M13 19h7M14.2 19l2.9-7h1.1l2.9 7M15.2 16.5h4.8"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.8"
+          />
+        </svg>
+      </span>
+      <span className="font-bold">भाषा चुनें</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-w-0 flex-1 bg-white text-sm font-bold text-[#14243a] outline-none"
+      >
+        {TRANSLATE_LANGUAGES.map((language) => (
+          <option key={language.code} value={language.code}>
+            {language.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function GoogleTranslateRuntime() {
+  return (
+    <>
+      <div id={GOOGLE_TRANSLATE_ELEMENT_ID} className="news-google-translate-host" aria-hidden="true" />
+      <style jsx global>{`
+        .news-google-translate-host {
+          position: absolute;
+          left: -9999px;
+          top: 0;
+          height: 0;
+          width: 0;
+          overflow: hidden;
+        }
+
+        .goog-te-banner-frame,
+        .goog-te-banner-frame.skiptranslate,
+        .VIpgJd-ZVi9od-ORHb-OEVmcd {
+          display: none !important;
+        }
+
+        body {
+          top: 0 !important;
+        }
+      `}</style>
+    </>
+  );
 }
 
 function NewsTableLoadingScreen({ progress = 1, label = "News" }) {
@@ -358,14 +519,16 @@ async function copyText(text, setMessage) {
   const value = cleanText(text);
   if (!value) {
     setMessage("Copy ke liye content available nahi hai.");
-    return;
+    return false;
   }
 
   try {
     await navigator.clipboard.writeText(value);
     setMessage("Copied");
+    return true;
   } catch {
     setMessage("Clipboard permission nahi mili.");
+    return false;
   }
 }
 
@@ -373,14 +536,16 @@ async function copyChanakyaText(text, setMessage) {
   const value = cleanText(text);
   if (!value) {
     setMessage("Chanakya copy ke liye content available nahi hai.");
-    return;
+    return false;
   }
 
   try {
     await navigator.clipboard.writeText(unicodeToChanakya(value, { useFixedKraGlyph: true }));
     setMessage("Chanakya text copied");
+    return true;
   } catch {
     setMessage("Clipboard permission nahi mili.");
+    return false;
   }
 }
 
@@ -388,14 +553,16 @@ async function copyKrutidevText(text, setMessage) {
   const value = cleanText(text);
   if (!value) {
     setMessage("Krutidev copy ke liye content available nahi hai.");
-    return;
+    return false;
   }
 
   try {
     await navigator.clipboard.writeText(unicodeToKrutidev(value));
     setMessage("Krutidev text copied");
+    return true;
   } catch {
     setMessage("Clipboard permission nahi mili.");
+    return false;
   }
 }
 
@@ -403,69 +570,84 @@ async function copyGandhiText(text, setMessage) {
   const value = cleanText(text);
   if (!value) {
     setMessage("4cGandhi copy ke liye content available nahi hai.");
-    return;
+    return false;
   }
 
   try {
     await navigator.clipboard.writeText(unicodeTo4CGandhi(value));
     setMessage("4cGandhi text copied");
+    return true;
   } catch {
     setMessage("Clipboard permission nahi mili.");
+    return false;
   }
 }
 
+function useCopyButtonFeedback() {
+  const [copiedKey, setCopiedKey] = useState("");
+
+  useEffect(() => {
+    if (!copiedKey) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => setCopiedKey(""), 1000);
+    return () => window.clearTimeout(timeout);
+  }, [copiedKey]);
+
+  return [copiedKey, setCopiedKey];
+}
+
 function CopyActions({ text, setMessage }) {
+  const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
+
+  async function handleCopy(event, key, copyAction) {
+    event.stopPropagation();
+    const copied = await copyAction(text, setMessage);
+    if (copied) {
+      setCopiedKey(key);
+    }
+  }
+
   return (
     <div className="grid w-full min-w-0 grid-cols-1 gap-1">
       <button
         type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          void copyText(text, setMessage);
-        }}
+        onClick={(event) => void handleCopy(event, "copy", copyText)}
         className="w-full min-w-0 truncate rounded border border-[#b8c4d2] bg-white px-1.5 py-1 text-xs font-semibold text-[#26384c] hover:bg-[#edf6ff]"
         title="Copy normal Unicode text"
       >
-        Copy
+        {copiedKey === "copy" ? "Copied" : "Copy in Unicode"}
       </button>
       <button
         type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          void copyChanakyaText(text, setMessage);
-        }}
+        onClick={(event) => void handleCopy(event, "chanakya", copyChanakyaText)}
         className="w-full min-w-0 truncate rounded border border-[#b68b35] bg-[#fff8e8] px-1.5 py-1 text-xs font-semibold text-[#7a4f00] hover:bg-[#ffefc2]"
         title="Copy converted Chanakya font text"
       >
-        Chanakya
+        {copiedKey === "chanakya" ? "Copied" : "Copy in Chanakya"}
       </button>
       <button
         type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          void copyKrutidevText(text, setMessage);
-        }}
+        onClick={(event) => void handleCopy(event, "krutidev", copyKrutidevText)}
         className="w-full min-w-0 truncate rounded border border-[#7857b8] bg-[#f6f1ff] px-1.5 py-1 text-xs font-semibold text-[#4e2c83] hover:bg-[#ede2ff]"
         title="Copy converted Krutidev font text"
       >
-        Krutidev
+        {copiedKey === "krutidev" ? "Copied" : "Copy in Krutidev"}
       </button>
       <button
         type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          void copyGandhiText(text, setMessage);
-        }}
+        onClick={(event) => void handleCopy(event, "gandhi", copyGandhiText)}
         className="w-full min-w-0 truncate rounded border border-[#24845b] bg-[#effbf5] px-1.5 py-1 text-xs font-semibold text-[#176340] hover:bg-[#ddf7ea]"
         title="Copy converted 4cGandhi font text"
       >
-        4cGandhi
+        {copiedKey === "gandhi" ? "Copied" : "Copy in 4cGandhi"}
       </button>
     </div>
   );
 }
 
-function PreviewModal({ preview, onClose, setPreview, setMessage }) {
+function PreviewModal({ preview, onClose, setPreview, setMessage, translateLanguage, onTranslateLanguageChange }) {
   const activeText = preview?.active === "caption"
     ? preview.item.image_caption
     : preview?.active === "300"
@@ -480,6 +662,14 @@ function PreviewModal({ preview, onClose, setPreview, setMessage }) {
     { key: "300", label: "300 Words", text: preview?.item.medium_300 },
     { key: "600", label: "600 Words", text: preview?.item.long_500 },
   ];
+  const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
+
+  async function handleModalCopy(key, copyAction) {
+    const copied = await copyAction(activeText, setMessage);
+    if (copied) {
+      setCopiedKey(key);
+    }
+  }
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -496,6 +686,17 @@ function PreviewModal({ preview, onClose, setPreview, setMessage }) {
       document.body.style.overflow = "";
     };
   }, [onClose]);
+
+  useEffect(() => {
+    if (!preview?.item || translateLanguage === "hi") {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => {
+      applyGoogleTranslateLanguage(translateLanguage);
+    }, 220);
+    return () => window.clearTimeout(timeout);
+  }, [preview?.active, preview?.item, translateLanguage]);
 
   if (!preview?.item) {
     return null;
@@ -538,6 +739,11 @@ function PreviewModal({ preview, onClose, setPreview, setMessage }) {
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
+            <GoogleTranslateControl
+              value={translateLanguage}
+              onChange={onTranslateLanguageChange}
+              compact
+            />
             {options.map((option) => (
               <button
                 key={option.key}
@@ -550,31 +756,31 @@ function PreviewModal({ preview, onClose, setPreview, setMessage }) {
             ))}
             <button
               type="button"
-              onClick={() => void copyText(activeText, setMessage)}
+              onClick={() => void handleModalCopy("copy", copyText)}
               className="rounded-full border border-[#b8c4d2] bg-white px-4 py-2 text-xs font-bold text-[#26384c] hover:bg-[#edf6ff]"
             >
-              Copy
+              {copiedKey === "copy" ? "Copied" : "Copy in Unicode"}
             </button>
             <button
               type="button"
-              onClick={() => void copyChanakyaText(activeText, setMessage)}
+              onClick={() => void handleModalCopy("chanakya", copyChanakyaText)}
               className="rounded-full border border-[#b68b35] bg-[#fff8e8] px-4 py-2 text-xs font-bold text-[#7a4f00] hover:bg-[#ffefc2]"
             >
-              Copy in Chanakya
+              {copiedKey === "chanakya" ? "Copied" : "Copy in Chanakya"}
             </button>
             <button
               type="button"
-              onClick={() => void copyKrutidevText(activeText, setMessage)}
+              onClick={() => void handleModalCopy("krutidev", copyKrutidevText)}
               className="rounded-full border border-[#7857b8] bg-[#f6f1ff] px-4 py-2 text-xs font-bold text-[#4e2c83] hover:bg-[#ede2ff]"
             >
-              Copy in Krutidev
+              {copiedKey === "krutidev" ? "Copied" : "Copy in Krutidev"}
             </button>
             <button
               type="button"
-              onClick={() => void copyGandhiText(activeText, setMessage)}
+              onClick={() => void handleModalCopy("gandhi", copyGandhiText)}
               className="rounded-full border border-[#24845b] bg-[#effbf5] px-4 py-2 text-xs font-bold text-[#176340] hover:bg-[#ddf7ea]"
             >
-              Copy in 4cGandhi
+              {copiedKey === "gandhi" ? "Copied" : "Copy in 4cGandhi"}
             </button>
           </div>
         </header>
@@ -834,16 +1040,18 @@ function NewsTableHeader({ activeSection }) {
           ))}
         </nav>
 
-        {activeSection === "news" ? (
-          <form action="/news-table/logout" method="POST">
-            <button
-              type="submit"
-              className="rounded border border-[#b8c4d2] bg-white px-5 py-2 text-xs font-bold uppercase tracking-[0.12em] text-[#14243a] shadow-sm hover:bg-[#f4f7fb]"
-            >
-              Logout
-            </button>
-          </form>
-        ) : null}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+          {activeSection === "news" ? (
+            <form action="/news-table/logout" method="POST">
+              <button
+                type="submit"
+                className="rounded border border-[#b8c4d2] bg-white px-5 py-2 text-xs font-bold uppercase tracking-[0.12em] text-[#14243a] shadow-sm hover:bg-[#f4f7fb]"
+              >
+                Logout
+              </button>
+            </form>
+          ) : null}
+        </div>
       </div>
     </header>
   );
@@ -867,6 +1075,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   const [categoryCatalog, setCategoryCatalog] = useState(null);
   const [preview, setPreview] = useState(null);
   const [relativeNow, setRelativeNow] = useState(null);
+  const [translateLanguage, setTranslateLanguage] = useState("hi");
 
   const records = useMemo(() => flattenPayload(payload, activeSection), [activeSection, payload]);
   const payloadHasRecords = hasPayloadRecords(payload);
@@ -910,6 +1119,93 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   const pageEndIndex = Math.min(pageStartIndex + pageSize, filteredRecords.length);
   const visibleRecords = filteredRecords.slice(pageStartIndex, pageEndIndex);
   const pageNumbers = Array.from({ length: totalPages }, (_, index) => index + 1);
+  const handleTranslateLanguageChange = useCallback((languageCode) => {
+    const nextLanguage = TRANSLATE_LANGUAGE_CODES.has(languageCode) ? languageCode : "hi";
+    const shouldReloadToHindi = nextLanguage === "hi" && translateLanguage !== "hi";
+    setTranslateLanguage(nextLanguage);
+    if (nextLanguage === "hi") {
+      resetGoogleTranslateToHindi({ reload: shouldReloadToHindi });
+      return;
+    }
+
+    applyGoogleTranslateLanguage(nextLanguage);
+  }, [translateLanguage]);
+
+  useEffect(() => {
+    let retryTimer = null;
+    let retries = 0;
+
+    if (translateLanguage === "hi") {
+      clearGoogleTranslateCookie();
+    }
+
+    function initializeTranslateElement() {
+      if (!document.getElementById(GOOGLE_TRANSLATE_ELEMENT_ID)) {
+        return false;
+      }
+
+      if (getGoogleTranslateCombo()) {
+        return true;
+      }
+
+      if (!window.google?.translate?.TranslateElement) {
+        return false;
+      }
+
+      new window.google.translate.TranslateElement(
+        {
+          pageLanguage: "hi",
+          includedLanguages: TRANSLATE_LANGUAGES
+            .filter((language) => language.code !== "hi")
+            .map((language) => language.code)
+            .join(","),
+          autoDisplay: false,
+        },
+        GOOGLE_TRANSLATE_ELEMENT_ID
+      );
+      return true;
+    }
+
+    function applyWhenReady() {
+      if (initializeTranslateElement() && applyGoogleTranslateLanguage(translateLanguage)) {
+        return;
+      }
+
+      if (retries < 30) {
+        retries += 1;
+        retryTimer = window.setTimeout(applyWhenReady, 250);
+      }
+    }
+
+    window.googleTranslateElementInit = applyWhenReady;
+
+    if (!document.getElementById(GOOGLE_TRANSLATE_SCRIPT_ID)) {
+      const script = document.createElement("script");
+      script.id = GOOGLE_TRANSLATE_SCRIPT_ID;
+      script.src = "//translate.google.com/translate_a/element.js?cb=googleTranslateElementInit";
+      script.async = true;
+      document.body.appendChild(script);
+    } else {
+      applyWhenReady();
+    }
+
+    return () => {
+      if (retryTimer) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [initialLoadComplete, translateLanguage]);
+
+  useEffect(() => {
+    if (translateLanguage === "hi") {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => {
+      applyGoogleTranslateLanguage(translateLanguage);
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [activeSection, pageStartIndex, pageEndIndex, payload, translateLanguage]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -1100,6 +1396,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   if (!initialLoadComplete) {
     return (
       <main className="min-h-screen bg-white text-black" style={{ zoom: "90%" }}>
+        <GoogleTranslateRuntime />
         <NewsTableHeader activeSection={activeSection} />
         <NewsTableLoadingScreen
           progress={loadProgress}
@@ -1111,6 +1408,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
 
   return (
     <main className="min-h-screen bg-white text-black" style={{ zoom: "90%" }}>
+      <GoogleTranslateRuntime />
       <NewsTableHeader activeSection={activeSection} />
       <div className="px-3 pt-3">
         <div className="grid gap-3 lg:grid-cols-4">
@@ -1200,6 +1498,11 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
               </select>
               <span>entries</span>
               <span className="text-[#555]">Total entries: {filteredRecords.length}</span>
+              <GoogleTranslateControl
+                value={translateLanguage}
+                onChange={handleTranslateLanguageChange}
+                compact
+              />
               {message ? <span className="ml-3 text-sm text-[#0d6efd]">{message}</span> : null}
             </div>
 
@@ -1379,6 +1682,8 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
           preview={preview}
           setPreview={setPreview}
           setMessage={setMessage}
+          translateLanguage={translateLanguage}
+          onTranslateLanguageChange={handleTranslateLanguageChange}
           onClose={() => setPreview(null)}
         />
       ) : null}
