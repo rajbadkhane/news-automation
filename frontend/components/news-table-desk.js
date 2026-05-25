@@ -17,7 +17,7 @@ const SECTION_CONFIG = {
   news: {
     label: "News",
     pagePath: "/news-table",
-    listPath: `/delivery/news/grouped?language=hindi&limit=${TABLE_RECORD_LIMIT}`,
+    listPath: `/delivery/news/grouped?language=hindi&limit=${TABLE_RECORD_LIMIT}&compact=table`,
     syncPath: "/sync/cliff-news?limit=200&language=ENGLISH&rewrite=true",
   },
   editorial: {

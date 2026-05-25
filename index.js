@@ -3343,6 +3343,45 @@ function isFreshDeliveryRecord(record) {
   return isFreshPublishedDate(sourceTime).fresh;
 }
 
+function compactDeliveryRecordForTable(record) {
+  const uiHindi = record?.ui_hindi || {};
+  const rawArticles = record?.raw_articles || {};
+  const media = record?.media || {};
+  return {
+    id: record?.id,
+    slug: record?.slug || null,
+    category: record?.category,
+    source_category: record?.source_category,
+    publication_status: record?.publication_status,
+    published_at: record?.published_at,
+    updated_at: record?.updated_at,
+    news_id: record?.news_id,
+    source: {
+      title: record?.source?.title || null,
+      url: record?.source?.url || null,
+      feed_source: record?.source?.feed_source || null,
+      feed_url: record?.source?.feed_url || null,
+      fetched_at: record?.source?.fetched_at || null,
+    },
+    media: {
+      image_link: media.image_link || null,
+      image_source: media.image_source || null,
+      image_caption: media.image_caption || media.photo_caption || media.caption || null,
+    },
+    ui_hindi: {
+      title: uiHindi.title || record?.source?.title || "Untitled story",
+      short_100: uiHindi.short_100 || rawArticles.words_100 || "",
+      medium_300: uiHindi.medium_300 || rawArticles.words_300 || "",
+      long_500: uiHindi.long_500 || rawArticles.words_600 || rawArticles.words_500 || "",
+      category: record?.category || uiHindi.category,
+      state: uiHindi.state || "",
+      district: uiHindi.district || uiHindi.district_name || "",
+      image_caption: uiHindi.image_caption || uiHindi.photo_caption || uiHindi.caption || "",
+      image_url: media.image_link || uiHindi.image_url || "",
+    },
+  };
+}
+
 async function buildCronAwareDeliveryFeed({ category = null, language = "both", limit = 24, grouped = true } = {}) {
   const records = (await listDeliveredAiRewrites(dbPool, { category, language, limit: Math.min(limit * 3, 200) }))
     .filter(isFreshDeliveryRecord)
@@ -8630,15 +8669,17 @@ apiV1.get("/delivery/news/grouped", requireApiScope("delivery:read"), async (req
   try {
     const language = normalizeDeliveryLanguage(req.query.language);
     const limit = normalizeApiLimit(req.query.limit, 100, 500);
+    const compact = String(req.query.compact || "").trim().toLowerCase() === "table";
     const records = (await listDeliveredAiRewrites(dbPool, { language, limit: Math.min(limit * 3, 500) }))
       .filter(isFreshDeliveryRecord)
       .slice(0, limit);
-    const grouped = groupDeliveryRecordsByCategory(records);
+    const grouped = groupDeliveryRecordsByCategory(compact ? records.map(compactDeliveryRecordForTable) : records);
     return sendApiSuccess(res, grouped, {
       category_count: grouped.length,
       count: records.length,
       language,
       limit,
+      compact: compact ? "table" : null,
     });
   } catch (error) {
     return sendApiError(res, "DELIVERY_GROUPED_FAILED", error.message, 500);
