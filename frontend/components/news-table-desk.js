@@ -270,6 +270,11 @@ function getDashboardProxyPath(path) {
   return `/api/dashboard${normalized}`;
 }
 
+function addCacheBuster(path) {
+  const separator = String(path || "").includes("?") ? "&" : "?";
+  return `${path}${separator}_refresh=${Date.now()}`;
+}
+
 async function fetchWithTimeout(resource, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -1442,7 +1447,8 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         }
       }
 
-      const response = await fetchWithTimeout(getDashboardProxyPath(sectionConfig.listPath), {
+      const listPath = force ? addCacheBuster(sectionConfig.listPath) : sectionConfig.listPath;
+      const response = await fetchWithTimeout(getDashboardProxyPath(listPath), {
         cache: "no-store",
       }, REQUEST_TIMEOUT_MS);
       const nextPayload = await response.json();

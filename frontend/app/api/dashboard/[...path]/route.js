@@ -20,8 +20,12 @@ function getCacheSeconds(pathname) {
     return 20;
   }
 
-  if (normalized.startsWith("/delivery/news/grouped") || normalized.startsWith("/delivery/news")) {
-    return 0;
+  if (normalized.startsWith("/delivery/news/grouped")) {
+    return 20;
+  }
+
+  if (normalized.startsWith("/delivery/news")) {
+    return 10;
   }
 
   if (normalized.startsWith("/ai/news/grouped")) {
