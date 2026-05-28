@@ -5577,11 +5577,30 @@ async function extractBestImageFromLoadedPage(page) {
       },
     ].filter((candidate) => candidate.src && !isBlockedImage(candidate.src));
 
+    const isNonArticleImage = (img) => {
+      const junkContainer = img.closest(
+        "aside, nav, footer, header, [role='complementary'], .sidebar, .widget, .related, .related-posts, .most-read, .mostread, .popular, .trending, .recommend, .recommended, .also-read, .read-more, .latest-news, .latest, .rhs, .right-sidebar, .social, .share, .advertisement, .ad, .ads"
+      );
+      if (junkContainer) {
+        return true;
+      }
+
+      const label = [
+        img.getAttribute("class"),
+        img.getAttribute("alt"),
+        img.closest("[class]")?.getAttribute("class"),
+        img.closest("[id]")?.getAttribute("id"),
+      ].filter(Boolean).join(" ").toLowerCase();
+
+      return /sidebar|widget|related|most[-_\s]?read|popular|trending|recommend|also[-_\s]?read|latest|rhs|right[-_\s]?sidebar|social|share|advert|ads?/.test(label);
+    };
+
     const preferredArticleImages = Array.from(
       document.querySelectorAll(
-        "figure.featured-media img, .featured-media img, .post-thumbnail img, .postTypeListItem img, img.wp-post-image"
+        "article figure img, article .featured-media img, article .post-thumbnail img, main figure img, main .featured-media img, main .post-thumbnail img, .entry-content figure img, .post-content figure img, .article-content figure img, .news-detail figure img, .news-details figure img, .story figure img, figure.featured-media img, .featured-media img, .post-thumbnail img, img.wp-post-image"
       )
     )
+      .filter((img) => !isNonArticleImage(img))
       .map((img) => ({
         src: makeAbsolute(
           img.currentSrc ||
@@ -5602,6 +5621,7 @@ async function extractBestImageFromLoadedPage(page) {
         const height = img.naturalHeight || img.height || 0;
         const area = width * height;
         const inArticle = Boolean(img.closest("article, main, [role='main'], .article, .story"));
+        const nonArticle = isNonArticleImage(img);
         const loading = img.getAttribute("loading");
 
         return {
@@ -5610,6 +5630,7 @@ async function extractBestImageFromLoadedPage(page) {
           height,
           area,
           inArticle,
+          nonArticle,
           loading,
           altText: img.getAttribute("alt") || "",
           className: img.getAttribute("class") || "",
@@ -5626,6 +5647,7 @@ async function extractBestImageFromLoadedPage(page) {
             !normalizedSrc ||
             !normalizedSrc.startsWith("http") ||
             isBlockedImage(normalizedSrc) ||
+            img.nonArticle ||
             /logo|icon|favicon|share|social|avatar|author|profile|button|thumbnail|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|(?:^|[/?&_. -])(?:ads?|advert|advertisement)(?:[/?&_. =-]|$)|banner|rhs|promo|sponsor|newsletter|subscription|google play|play store|app store|download app|get it on/.test(normalizedAlt) ||
             /logo|icon|favicon|share|social|avatar|author|profile|button|widget|thumbnail|gallery|placeholder|default|fallback|brand|qr|qrcode|wechat|weibo|attention|follow|subscribe|(?:^|[/?&_. -])(?:ads?|advert|advertisement)(?:[/?&_. =-]|$)|banner|rhs|promo|sponsor|newsletter|subscription|instagram|insta|google-play|play-store|app-store|download-app|mobile-app|store-badge|app-badge/.test(normalizedClass) ||
             img.width < 320 ||
@@ -5674,9 +5696,6 @@ async function extractBestImageFromArticle(page, articleUrl) {
 
   try {
     htmlMetadata = await extractArticleMetadataFromHtml(articleUrl);
-    if (htmlMetadata?.featuredImage && htmlMetadata.imageSource !== "html-image") {
-      return htmlMetadata;
-    }
   } catch (error) {
     console.warn(`HTML-first extraction failed for ${articleUrl}: ${error.message}`);
   }
