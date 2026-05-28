@@ -70,6 +70,15 @@ function createMysqlPool() {
   });
 }
 
+function getPoolLimit(envName, fallback, maxAllowed) {
+  const parsed = Number.parseInt(process.env[envName], 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(parsed, maxAllowed));
+}
+
 function resolvePostgresConnectionString(rawConnectionString, databasePassword) {
   let connectionString = rawConnectionString;
 
@@ -199,7 +208,9 @@ async function createPostgresPool() {
     const pool = new Pool({
       connectionString: candidate.connectionString,
       ssl,
-      max: 10,
+      max: getPoolLimit("POSTGRES_POOL_MAX", 4, 10),
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
     });
 
     try {

@@ -1418,7 +1418,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     return () => window.clearTimeout(timeout);
   }, [initialLoadComplete, initialLoadSettled, payloadHasRecords]);
 
-  const refreshNews = useCallback(async ({ force = false, section = activeSection } = {}) => {
+  const refreshNews = useCallback(async ({ force = false, sync = false, section = activeSection } = {}) => {
     const sectionConfig = SECTION_CONFIG[section] || SECTION_CONFIG.news;
     if (!force) {
       const cached = readSectionCache(section);
@@ -1434,7 +1434,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     }
 
     try {
-      if (force && sectionConfig.syncPath) {
+      if (force && sync && sectionConfig.syncPath) {
         setMessage(`${sectionConfig.label} sync chal raha hai...`);
         const syncResponse = await fetchWithTimeout(getDashboardProxyPath(sectionConfig.syncPath), {
           method: "POST",
