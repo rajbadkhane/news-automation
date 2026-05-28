@@ -81,7 +81,7 @@ long_500 नियम:
 डेटा नियम:
 - तीनों संस्करण अलग गहराई के हों, एक-दूसरे की कॉपी न हों।
 - state सामग्री या स्रोत से पहचानें। न मिले तो "राष्ट्रीय" लिखें।
-- category केवल इनमें से एक हो: National/State, International, Business, Sports, Entertainment।
+- category केवल इनमें से एक हो: National/State, International, Business, Science, Health, Technology, Sports, Entertainment।
 - keywords में 3 से 5 हिंदी कीवर्ड दें।
 - source में किसी publication या agency का नाम न दें। "GE News Hub रिपोर्ट" या "आधिकारिक स्रोत" लिखें।
 - image_url वैध और दिया गया हो तो उसे बिना बदले लौटाएं।
@@ -123,6 +123,9 @@ CATEGORY OVERRIDE:
 - Use National/State for national, state, regional, local, government, policy, administration, public-service and India stories that are not specifically Madhya Pradesh district stories.
 - Use International for world, global and foreign stories.
 - Use Business for business, finance, economy, market and stock stories.
+- Use Science for science, space, research, discoveries, ISRO/NASA and climate science stories.
+- Use Health for healthcare, medical, medicine, public health, disease, wellness and hospital stories.
+- Use Technology for technology, AI, gadgets, startups, cybersecurity, internet, software and telecom stories.
 - Use Sports for sports, cricket, football, hockey and tournament stories.
 - Use Entertainment for entertainment, cinema, film, Bollywood, TV and celebrity stories.
 `;
