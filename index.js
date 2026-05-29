@@ -1124,7 +1124,7 @@ const MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS = Math.max(
 );
 const MPINFO_DISTRICT_SCHEDULER_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_LIMIT, 10) || 1, 3)
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_LIMIT, 10) || 1, 10)
 );
 const MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT = Math.max(
   1,
