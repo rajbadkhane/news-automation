@@ -1,5 +1,7 @@
 import { Cormorant_Garamond, Space_Grotesk } from "next/font/google";
+import { Suspense } from "react";
 import SiteFooter from "@/components/site-footer";
+import VisitorTracker from "@/components/visitor-tracker";
 import "./globals.css";
 
 const siteUrl = "https://news.gautamenterprises.org";
@@ -87,6 +89,9 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className={`${displayFont.variable} ${bodyFont.variable} bg-stone-950 text-white antialiased`}>
+        <Suspense fallback={null}>
+          <VisitorTracker />
+        </Suspense>
         {children}
         <SiteFooter />
       </body>

@@ -1647,6 +1647,56 @@ async function initializeDatabase() {
 
   if (dbPool.dialect === "postgres") {
     await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS visitor_events (
+        id BIGSERIAL PRIMARY KEY,
+        visitor_id VARCHAR(100) NULL,
+        visitor_key VARCHAR(128) NOT NULL,
+        session_id VARCHAR(100) NULL,
+        path VARCHAR(500) NOT NULL,
+        page_title VARCHAR(255) NULL,
+        referrer TEXT NULL,
+        utm_source VARCHAR(100) NULL,
+        utm_medium VARCHAR(100) NULL,
+        utm_campaign VARCHAR(150) NULL,
+        device_type VARCHAR(50) NULL,
+        browser VARCHAR(80) NULL,
+        os VARCHAR(80) NULL,
+        user_agent TEXT NULL,
+        ip_hash VARCHAR(128) NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await dbPool.query("CREATE INDEX IF NOT EXISTS idx_visitor_events_created ON visitor_events (created_at)");
+    await dbPool.query("CREATE INDEX IF NOT EXISTS idx_visitor_events_path_created ON visitor_events (path, created_at)");
+    await dbPool.query("CREATE INDEX IF NOT EXISTS idx_visitor_events_key_created ON visitor_events (visitor_key, created_at)");
+  } else {
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS visitor_events (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        visitor_id VARCHAR(100) NULL,
+        visitor_key VARCHAR(128) NOT NULL,
+        session_id VARCHAR(100) NULL,
+        path VARCHAR(500) NOT NULL,
+        page_title VARCHAR(255) NULL,
+        referrer TEXT NULL,
+        utm_source VARCHAR(100) NULL,
+        utm_medium VARCHAR(100) NULL,
+        utm_campaign VARCHAR(150) NULL,
+        device_type VARCHAR(50) NULL,
+        browser VARCHAR(80) NULL,
+        os VARCHAR(80) NULL,
+        user_agent TEXT NULL,
+        ip_hash VARCHAR(128) NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_visitor_events_created (created_at),
+        INDEX idx_visitor_events_path_created (path, created_at),
+        INDEX idx_visitor_events_key_created (visitor_key, created_at)
+      )
+    `);
+  }
+
+  if (dbPool.dialect === "postgres") {
+    await dbPool.query(`
       CREATE TABLE IF NOT EXISTS scheduler_runs (
         id BIGSERIAL PRIMARY KEY,
         scheduler_name VARCHAR(50) NOT NULL,
@@ -3005,6 +3055,199 @@ function sendApiError(res, code, message, statusCode, details = null) {
       timestamp: new Date().toISOString(),
     },
   });
+}
+
+function normalizeAnalyticsText(value, maxLength = 255) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function getRequesterIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || req.ip || req.socket?.remoteAddress || "";
+}
+
+function hashAnalyticsValue(value) {
+  return crypto
+    .createHash("sha256")
+    .update(String(value || "unknown"))
+    .digest("hex");
+}
+
+function detectVisitorDevice(userAgent) {
+  const ua = String(userAgent || "").toLowerCase();
+  if (/bot|crawler|spider|preview|facebookexternalhit|whatsapp|telegrambot|slurp|bingpreview/.test(ua)) {
+    return { isBot: true, deviceType: "bot", browser: "bot", os: "unknown" };
+  }
+
+  const deviceType = /tablet|ipad/.test(ua)
+    ? "tablet"
+    : /mobile|android|iphone|ipod/.test(ua)
+      ? "mobile"
+      : "desktop";
+  const browser = /edg\//.test(ua)
+    ? "Edge"
+    : /chrome|crios/.test(ua)
+      ? "Chrome"
+      : /firefox|fxios/.test(ua)
+        ? "Firefox"
+        : /safari/.test(ua)
+          ? "Safari"
+          : "Other";
+  const os = /windows/.test(ua)
+    ? "Windows"
+    : /android/.test(ua)
+      ? "Android"
+      : /iphone|ipad|ios/.test(ua)
+        ? "iOS"
+        : /mac os|macintosh/.test(ua)
+          ? "macOS"
+          : /linux/.test(ua)
+            ? "Linux"
+            : "Other";
+
+  return { isBot: false, deviceType, browser, os };
+}
+
+function getAnalyticsDateFilter(range) {
+  const normalized = String(range || "all").toLowerCase();
+  if (normalized === "24h" || normalized === "day") {
+    return dbPool.dialect === "postgres"
+      ? { sql: "created_at >= NOW() - INTERVAL '24 hours'", params: [] }
+      : { sql: "created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)", params: [] };
+  }
+
+  if (normalized === "7d" || normalized === "week") {
+    return dbPool.dialect === "postgres"
+      ? { sql: "created_at >= NOW() - INTERVAL '7 days'", params: [] }
+      : { sql: "created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)", params: [] };
+  }
+
+  if (normalized === "30d" || normalized === "month") {
+    return dbPool.dialect === "postgres"
+      ? { sql: "created_at >= NOW() - INTERVAL '30 days'", params: [] }
+      : { sql: "created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)", params: [] };
+  }
+
+  return { sql: "1=1", params: [] };
+}
+
+async function recordVisitorEvent(req) {
+  if (!dbPool) {
+    throw new Error("Database is not initialized.");
+  }
+
+  const userAgent = normalizeAnalyticsText(req.headers["user-agent"], 1000);
+  const device = detectVisitorDevice(userAgent);
+  if (device.isBot) {
+    return { recorded: false, reason: "bot" };
+  }
+
+  const body = req.body || {};
+  const pathValue = normalizeAnalyticsText(body.path || "/", 500) || "/";
+  const visitorId = normalizeAnalyticsText(body.visitor_id, 100);
+  const sessionId = normalizeAnalyticsText(body.session_id, 100);
+  const ipHash = hashAnalyticsValue(getRequesterIp(req));
+  const visitorKey = hashAnalyticsValue(visitorId || `${ipHash}:${userAgent}`);
+
+  await dbPool.execute(
+    `
+      INSERT INTO visitor_events (
+        visitor_id, visitor_key, session_id, path, page_title, referrer,
+        utm_source, utm_medium, utm_campaign, device_type, browser, os,
+        user_agent, ip_hash
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      visitorId || null,
+      visitorKey,
+      sessionId || null,
+      pathValue,
+      normalizeAnalyticsText(body.title, 255) || null,
+      normalizeAnalyticsText(body.referrer, 1000) || null,
+      normalizeAnalyticsText(body.utm_source, 100) || null,
+      normalizeAnalyticsText(body.utm_medium, 100) || null,
+      normalizeAnalyticsText(body.utm_campaign, 150) || null,
+      device.deviceType,
+      device.browser,
+      device.os,
+      userAgent || null,
+      ipHash,
+    ]
+  );
+
+  return { recorded: true, visitor_key: visitorKey };
+}
+
+async function getVisitorAnalytics(range = "all") {
+  const filter = getAnalyticsDateFilter(range);
+  const whereSql = filter.sql;
+  const [summaryRows] = await dbPool.query(
+    `
+      SELECT
+        COUNT(*) AS page_views,
+        COUNT(DISTINCT visitor_key) AS unique_visitors,
+        COUNT(DISTINCT session_id) AS sessions
+      FROM visitor_events
+      WHERE ${whereSql}
+    `,
+    filter.params
+  );
+  const [pageRows] = await dbPool.query(
+    `
+      SELECT path, COUNT(*) AS page_views, COUNT(DISTINCT visitor_key) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY path
+      ORDER BY page_views DESC
+      LIMIT 20
+    `,
+    filter.params
+  );
+  const [sourceRows] = await dbPool.query(
+    `
+      SELECT COALESCE(NULLIF(utm_source, ''), 'direct') AS source, COUNT(*) AS page_views
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY COALESCE(NULLIF(utm_source, ''), 'direct')
+      ORDER BY page_views DESC
+      LIMIT 20
+    `,
+    filter.params
+  );
+  const [deviceRows] = await dbPool.query(
+    `
+      SELECT device_type, COUNT(*) AS page_views, COUNT(DISTINCT visitor_key) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY device_type
+      ORDER BY page_views DESC
+    `,
+    filter.params
+  );
+
+  return {
+    range,
+    summary: {
+      page_views: Number(summaryRows?.[0]?.page_views || 0),
+      unique_visitors: Number(summaryRows?.[0]?.unique_visitors || 0),
+      sessions: Number(summaryRows?.[0]?.sessions || 0),
+    },
+    top_pages: pageRows.map((row) => ({
+      path: row.path,
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    sources: sourceRows.map((row) => ({
+      source: row.source,
+      page_views: Number(row.page_views || 0),
+    })),
+    devices: deviceRows.map((row) => ({
+      device_type: row.device_type,
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+  };
 }
 
 function getApiRequesterKey(req) {
@@ -8617,6 +8860,18 @@ apiV1.get("/health", async (req, res) => {
   }
 });
 
+apiV1.post("/analytics/visit", async (req, res) => {
+  try {
+    const result = await recordVisitorEvent(req);
+    return sendApiSuccess(res, { status: result.recorded ? "Recorded" : "Skipped" }, {
+      recorded: result.recorded,
+      reason: result.reason || null,
+    });
+  } catch (error) {
+    return sendApiError(res, "VISITOR_TRACK_FAILED", error.message, 500);
+  }
+});
+
 apiV1.use(enforceApiKey);
 apiV1.use(enforceApiRateLimit);
 apiV1.use(enforceClientQuota);
@@ -9342,6 +9597,19 @@ apiV1.get("/admin/usage", requireMasterApiKey, async (req, res) => {
     return sendApiSuccess(res, rows, { count: rows.length, limit });
   } catch (error) {
     return sendApiError(res, "USAGE_LOGS_FAILED", error.message, 500);
+  }
+});
+
+apiV1.get("/admin/analytics/visitors", requireMasterApiKey, async (req, res) => {
+  try {
+    const range = req.query.range || "all";
+    const payload = await getVisitorAnalytics(range);
+    return sendApiSuccess(res, payload, {
+      range,
+      note: "Unique visitors are counted by browser visitor id when available, with hashed IP/user-agent fallback.",
+    });
+  } catch (error) {
+    return sendApiError(res, "VISITOR_ANALYTICS_FAILED", error.message, 500);
   }
 });
 
