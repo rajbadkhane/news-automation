@@ -29,15 +29,26 @@ export async function POST(request) {
       },
     });
   } catch (error) {
+    console.error("[analytics-proxy] Backend request failed:", {
+      baseUrl: API_BASE_URL,
+      message: error?.message || String(error),
+      cause: error?.cause?.code || error?.cause?.message || null,
+    });
+
     return NextResponse.json(
       {
         success: false,
         error: {
           code: "VISIT_PROXY_FAILED",
-          message: error.message,
+          message: "Analytics backend is temporarily unavailable.",
         },
       },
-      { status: 500 }
+      {
+        status: 202,
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      }
     );
   }
 }
