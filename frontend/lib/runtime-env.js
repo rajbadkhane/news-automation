@@ -100,7 +100,9 @@ export function getPublicApiBaseUrl() {
 export function getServerApiBaseUrl() {
   const explicitValue = getEnvValue("API_BASE_URL")
     || getEnvValue("INTERNAL_API_BASE_URL")
-    || getEnvValue("BACKEND_API_BASE_URL");
+    || getEnvValue("BACKEND_API_BASE_URL")
+    || getEnvValue("NEEVCLOUD_API_BASE_URL")
+    || getEnvValue("NEXT_PUBLIC_API_BASE_URL");
 
   if (explicitValue) {
     return normalizeBaseUrl(explicitValue, "API_BASE_URL");

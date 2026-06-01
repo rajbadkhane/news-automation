@@ -259,13 +259,37 @@ async function proxyToBackend(request, { params }) {
     ? undefined
     : await request.text();
 
-  const backendResponse = await fetch(targetUrl, {
-    method: request.method,
-    headers: buildProxyHeaders(request),
-    cache: cacheSeconds > 0 ? "force-cache" : "no-store",
-    ...(cacheSeconds > 0 ? { next: { revalidate: cacheSeconds } } : {}),
-    ...(body ? { body } : {}),
-  });
+  let backendResponse;
+  try {
+    backendResponse = await fetch(targetUrl, {
+      method: request.method,
+      headers: buildProxyHeaders(request),
+      cache: cacheSeconds > 0 ? "force-cache" : "no-store",
+      ...(cacheSeconds > 0 ? { next: { revalidate: cacheSeconds } } : {}),
+      ...(body ? { body } : {}),
+    });
+  } catch (error) {
+    console.error("[dashboard-proxy] Backend request failed:", {
+      path: backendPath,
+      baseUrl: API_BASE_URL,
+      message: error?.message || String(error),
+      cause: error?.cause?.code || error?.cause?.message || null,
+    });
+
+    return NextResponse.json({
+      status: "Error",
+      message: "Backend request failed. Check the NeevCloud backend URL and make sure the backend is reachable.",
+      details: {
+        backend_path: backendPath,
+        error: error?.cause?.code || error?.message || "FETCH_FAILED",
+      },
+    }, {
+      status: 502,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
+  }
 
   const contentType = backendResponse.headers.get("content-type") || "application/octet-stream";
   const responseCacheControl = buildResponseCacheHeaders(cacheSeconds);
