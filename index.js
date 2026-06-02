@@ -1102,11 +1102,11 @@ const SCHEDULER_CATEGORY_TIMEOUT_MS = Math.max(
 );
 const SCHEDULER_ARTICLES_PER_CATEGORY_RUN = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.SCHEDULER_ARTICLES_PER_CATEGORY_RUN, 10) || 5, 5)
+  Math.min(Number.parseInt(process.env.SCHEDULER_ARTICLES_PER_CATEGORY_RUN, 10) || 10, 20)
 );
 const SCHEDULER_PRIMARY_SOURCE_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.SCHEDULER_PRIMARY_SOURCE_LIMIT, 10) || 3, 5)
+  Math.min(Number.parseInt(process.env.SCHEDULER_PRIMARY_SOURCE_LIMIT, 10) || 8, 20)
 );
 const STALE_SCHEDULER_RUN_MS = Math.max(
   5 * 60_000,
@@ -1463,6 +1463,21 @@ async function invalidateCachePrefixes(prefixes = []) {
         memoryCache.delete(key);
       }
     }
+  }
+
+  const client = await getRedisClient();
+  if (!client) {
+    return;
+  }
+
+  try {
+    for (const prefix of prefixes) {
+      for await (const key of client.scanIterator({ MATCH: `${prefix}*`, COUNT: 100 })) {
+        await client.del(key);
+      }
+    }
+  } catch (error) {
+    console.error("Redis cache invalidation failed:", error.message);
   }
 }
 
@@ -5169,7 +5184,7 @@ function normalizePrimarySourceLimit(value, fallback = SCHEDULER_PRIMARY_SOURCE_
     return fallback;
   }
 
-  return Math.min(parsed, 5);
+  return Math.min(parsed, 20);
 }
 
 function isAllowedImageHost(value) {
@@ -6968,7 +6983,7 @@ async function rewriteNewsRecords(records, options = {}) {
         dbPool,
         record,
         createBrowserPage,
-        () => runRetentionCleanupCycle("source-ai-sync")
+        () => afterAiRewriteSaved("source-ai-sync")
       );
 
       results.push({
@@ -7223,8 +7238,13 @@ async function rewriteSavedNewsRecord(record, scrapedArticle = null) {
       scraped_division: scrapedArticle?.division || "",
     },
     createBrowserPage,
-    () => runRetentionCleanupCycle("mpinfo-ai-rewrite-save")
+    () => afterAiRewriteSaved("mpinfo-ai-rewrite-save")
   );
+}
+
+async function afterAiRewriteSaved(cleanupTriggerSource = "ai-rewrite-save") {
+  await invalidateDashboardCaches();
+  await runRetentionCleanupCycle(cleanupTriggerSource);
 }
 
 async function createBrowserPage() {
@@ -7416,7 +7436,7 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
       dbPool,
       categories,
       createBrowserPage,
-      afterRewriteSaved: () => runRetentionCleanupCycle("ai-rewrite-save"),
+      afterRewriteSaved: () => afterAiRewriteSaved("ai-rewrite-save"),
     });
 
     const nowIso = new Date().toISOString();
@@ -9695,7 +9715,7 @@ if (LEGACY_PUBLIC_ROUTES_ENABLED) {
     getDbPool: () => dbPool,
     createBrowserPage,
     normalizeCategory,
-    afterRewriteSaved: () => runRetentionCleanupCycle("manual-ai-rewrite-save"),
+    afterRewriteSaved: () => afterAiRewriteSaved("manual-ai-rewrite-save"),
   });
 
   app.get("/news", async (req, res) => {

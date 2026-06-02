@@ -6,8 +6,8 @@ import { unicodeTo4CGandhi } from "@/lib/gandhi-converter";
 import { unicodeToKrutidev } from "@/lib/krutidev-converter";
 
 const CACHE_KEY = "gts-news-table-cache-v2";
-const CACHE_TTL_MS = 20 * 1000;
-const REFRESH_INTERVAL_MS = 20 * 1000;
+const CACHE_TTL_MS = 5 * 1000;
+const REFRESH_INTERVAL_MS = 8 * 1000;
 const INITIAL_LOAD_MAX_WAIT_MS = 12000;
 const REQUEST_TIMEOUT_MS = 60000;
 const TABLE_RECORD_LIMIT = 500;
