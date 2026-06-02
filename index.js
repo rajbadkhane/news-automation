@@ -1521,6 +1521,40 @@ async function normalizeStoredCategoryColumns(pool) {
       );
     }
   }
+
+  try {
+    const mpInfoWhereClause = `
+      feed_source LIKE 'mpinfo%'
+      OR feed_url LIKE '%mpinfo.org%'
+      OR source_url LIKE '%mpinfo.org%'
+    `;
+
+    await pool.execute(
+      `
+        UPDATE fetched_news
+        SET category = ?
+        WHERE (${mpInfoWhereClause})
+          AND (category IS NULL OR category <> ?)
+      `,
+      [MPINFO_DISTRICT_CATEGORY, MPINFO_DISTRICT_CATEGORY]
+    );
+
+    await pool.execute(
+      `
+        UPDATE ai_news_rewrites
+        SET ui_category = ?
+        WHERE news_id IN (
+          SELECT id
+          FROM fetched_news
+          WHERE ${mpInfoWhereClause}
+        )
+          AND (ui_category IS NULL OR ui_category <> ?)
+      `,
+      [MPINFO_DISTRICT_CATEGORY, MPINFO_DISTRICT_CATEGORY]
+    );
+  } catch (error) {
+    console.warn(`[category-normalizer] Could not force MP Info categories to ${MPINFO_DISTRICT_CATEGORY}: ${error.message}`);
+  }
 }
 
 async function backfillFetchedNewsSignatures(pool) {

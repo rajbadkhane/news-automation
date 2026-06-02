@@ -81,7 +81,7 @@ long_500 नियम:
 डेटा नियम:
 - तीनों संस्करण अलग गहराई के हों, एक-दूसरे की कॉपी न हों।
 - state सामग्री या स्रोत से पहचानें। न मिले तो "राष्ट्रीय" लिखें।
-- category केवल इनमें से एक हो: National/State, International, Business, Science, Health, Technology, Sports, Entertainment।
+- category केवल इनमें से एक हो: Madhyapradesh, National/State, International, Business, Science, Health, Technology, Sports, Entertainment।
 - keywords में 3 से 5 हिंदी कीवर्ड दें।
 - source में किसी publication या agency का नाम न दें। "GE News Hub रिपोर्ट" या "आधिकारिक स्रोत" लिखें।
 - image_url वैध और दिया गया हो तो उसे बिना बदले लौटाएं।

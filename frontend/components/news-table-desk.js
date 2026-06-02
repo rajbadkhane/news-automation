@@ -55,6 +55,25 @@ const TRANSLATE_LANGUAGES = [
 ];
 const TRANSLATE_LANGUAGE_CODES = new Set(TRANSLATE_LANGUAGES.map((language) => language.code));
 
+function normalizeNewsCategory(value) {
+  const normalized = String(value || "").trim();
+  const token = normalized
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+
+  if (
+    token === "madhyapradesh" ||
+    token === "madhya pradesh" ||
+    token.startsWith("mpinfo") ||
+    token.startsWith("mp info")
+  ) {
+    return "Madhyapradesh";
+  }
+
+  return normalized;
+}
+
 function createEmptyPayload() {
   return {
     status: "Loading",
@@ -486,7 +505,7 @@ function flattenPayload(payload, section = "news") {
         ...record,
         section,
         fetched_at: record.fetched_at || record.published_at || record.updated_at || payload?.loaded_at || null,
-        category: record.category || group.category || "uncategorized",
+        category: normalizeNewsCategory(record.category || group.category || "uncategorized"),
         title: record.ui_hindi?.title || record.title || "Untitled story",
         state: record.ui_hindi?.state || record.state || "राष्ट्रीय",
         district:
@@ -1239,7 +1258,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       categoryCatalog?.final_categories ||
       categoryCatalog?.data?.data?.final_categories ||
       [];
-    return Array.isArray(categories) ? categories.filter(Boolean) : [];
+    return Array.isArray(categories)
+      ? Array.from(new Set(categories.map(normalizeNewsCategory).filter(Boolean)))
+      : [];
   }, [categoryCatalog]);
   const categories = useMemo(() => {
     if (activeSection === "news" && dynamicNewsCategories.length > 0) {

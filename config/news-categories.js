@@ -17,6 +17,11 @@ const CATEGORY_MAPPING = Object.freeze({
     "madhyapradesh",
     "madhya pradesh",
     "madhya-pradesh",
+    "madhya_pradesh",
+    "madhyapradesh news",
+    "mp",
+    "mp news",
+    "mp local",
     "mpinfo",
     "mp info",
     "mpinfo district",
@@ -24,6 +29,8 @@ const CATEGORY_MAPPING = Object.freeze({
     "mp districts",
     "madhya pradesh district",
     "madhya pradesh districts",
+    "मध्यप्रदेश",
+    "मध्य प्रदेश",
   ]),
   "National/State": Object.freeze([
     "national",
@@ -33,8 +40,6 @@ const CATEGORY_MAPPING = Object.freeze({
     "india",
     "india news",
     "regional",
-    "mp",
-    "madhya pradesh",
     "nation",
     "local",
     "top",
@@ -281,6 +286,7 @@ function getCategoryDisplayName(category) {
 function getCategorySearchQuery(category) {
   const normalizedCategory = normalizeCategory(category);
   const queries = {
+    Madhyapradesh: "madhya pradesh",
     "National/State": "india",
     International: "world",
     Business: "business",
