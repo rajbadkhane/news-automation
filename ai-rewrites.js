@@ -605,6 +605,11 @@ async function saveAiRewrite(dbPool, {
   const hindi = normalizedPayload.hindi || {};
   const uiHindi = normalizedPayload.ui_hindi || (hasUiHindiShape(payload) ? normalizeUiHindiPayload(payload) : null);
 
+  const existingRewrite = await findAiRewriteByNewsId(dbPool, newsId);
+  if (existingRewrite) {
+    return existingRewrite;
+  }
+
   await dbPool.execute(
     dbPool.dialect === "postgres"
       ? `
@@ -617,35 +622,7 @@ async function saveAiRewrite(dbPool, {
             raw_response
           )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (news_id) DO UPDATE SET
-            model_name = EXCLUDED.model_name,
-            prompt_version = EXCLUDED.prompt_version,
-            source_url = EXCLUDED.source_url,
-            source_title = EXCLUDED.source_title,
-            source_excerpt = EXCLUDED.source_excerpt,
-            english_headline = EXCLUDED.english_headline,
-            english_top_summary = EXCLUDED.english_top_summary,
-            english_short_description = EXCLUDED.english_short_description,
-            english_long_description = EXCLUDED.english_long_description,
-            english_what_to_watch_next = EXCLUDED.english_what_to_watch_next,
-            hindi_headline = EXCLUDED.hindi_headline,
-            hindi_top_summary = EXCLUDED.hindi_top_summary,
-            hindi_short_description = EXCLUDED.hindi_short_description,
-            hindi_long_description = EXCLUDED.hindi_long_description,
-            hindi_what_to_watch_next = EXCLUDED.hindi_what_to_watch_next,
-            ui_title = EXCLUDED.ui_title,
-            ui_short_100 = EXCLUDED.ui_short_100,
-            ui_medium_300 = EXCLUDED.ui_medium_300,
-            ui_long_500 = EXCLUDED.ui_long_500,
-            ui_keywords_json = EXCLUDED.ui_keywords_json,
-            ui_category = EXCLUDED.ui_category,
-            ui_state = EXCLUDED.ui_state,
-            ui_image_url = EXCLUDED.ui_image_url,
-            ui_image_prompt = EXCLUDED.ui_image_prompt,
-            ui_source = EXCLUDED.ui_source,
-            ui_link = EXCLUDED.ui_link,
-            raw_response = EXCLUDED.raw_response,
-            updated_at = CURRENT_TIMESTAMP
+          ON CONFLICT (news_id) DO NOTHING
         `
       : `
           INSERT INTO ai_news_rewrites (
@@ -657,34 +634,7 @@ async function saveAiRewrite(dbPool, {
             raw_response
           )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE
-            model_name = VALUES(model_name),
-            prompt_version = VALUES(prompt_version),
-            source_url = VALUES(source_url),
-            source_title = VALUES(source_title),
-            source_excerpt = VALUES(source_excerpt),
-            english_headline = VALUES(english_headline),
-            english_top_summary = VALUES(english_top_summary),
-            english_short_description = VALUES(english_short_description),
-            english_long_description = VALUES(english_long_description),
-            english_what_to_watch_next = VALUES(english_what_to_watch_next),
-            hindi_headline = VALUES(hindi_headline),
-            hindi_top_summary = VALUES(hindi_top_summary),
-            hindi_short_description = VALUES(hindi_short_description),
-            hindi_long_description = VALUES(hindi_long_description),
-            hindi_what_to_watch_next = VALUES(hindi_what_to_watch_next),
-            ui_title = VALUES(ui_title),
-            ui_short_100 = VALUES(ui_short_100),
-            ui_medium_300 = VALUES(ui_medium_300),
-            ui_long_500 = VALUES(ui_long_500),
-            ui_keywords_json = VALUES(ui_keywords_json),
-            ui_category = VALUES(ui_category),
-            ui_state = VALUES(ui_state),
-            ui_image_url = VALUES(ui_image_url),
-            ui_image_prompt = VALUES(ui_image_prompt),
-            ui_source = VALUES(ui_source),
-            ui_link = VALUES(ui_link),
-            raw_response = VALUES(raw_response)
+          ON DUPLICATE KEY UPDATE news_id = news_id
         `,
     [
       newsId,
@@ -1196,10 +1146,11 @@ function formatAiRewriteWithNewsRecord(record) {
   }
 
   const rewrite = formatAiRewriteRecord(record);
+  const safeNewsImageLink = isLikelyValidImageUrl(record.news_image_link)
+    ? record.news_image_link
+    : null;
   if (rewrite?.ui_hindi) {
-    rewrite.ui_hindi.image_url = isLikelyValidImageUrl(record.news_image_link)
-      ? record.news_image_link
-      : "";
+    rewrite.ui_hindi.image_url = safeNewsImageLink || "";
     rewrite.ui_hindi.image_prompt = "";
   }
 
@@ -1211,8 +1162,8 @@ function formatAiRewriteWithNewsRecord(record) {
       source_category: record.category,
       title: record.news_title,
       source_url: record.news_source_url,
-      image_link: record.news_image_link,
-      image_source: record.news_image_source,
+      image_link: safeNewsImageLink,
+      image_source: safeNewsImageLink ? record.news_image_source : null,
       fetched_at: record.news_fetched_at,
       feed_source: record.news_feed_source,
       feed_url: record.news_feed_url,
@@ -1225,6 +1176,11 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
   let page = null;
 
   try {
+    const existingRewrite = await findAiRewriteByNewsId(dbPool, articleRecord.id);
+    if (existingRewrite) {
+      return existingRewrite;
+    }
+
     const scrapedText = normalizeWhitespace(
       articleRecord.scraped_content_text ||
         articleRecord.source_content ||
@@ -1722,7 +1678,6 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
   });
 
   app.post("/ai/rewrite/:newsId", async (req, res) => {
-    const force = String(req.query.force || "").toLowerCase() === "true" || req.query.force === "1";
     const newsId = Number.parseInt(req.params.newsId, 10);
 
     if (Number.isNaN(newsId) || newsId < 1) {
@@ -1743,10 +1698,10 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
       }
 
       const existingRewrite = await findAiRewriteByNewsId(dbPool, newsId);
-      if (existingRewrite && !force) {
+      if (existingRewrite) {
         return res.json({
           status: "Success",
-          message: "Existing AI rewrite returned. Add ?force=1 to regenerate it.",
+          message: "Existing AI rewrite returned. Regeneration is disabled to prevent duplicate rewrites.",
           news: articleRecord,
           rewrite: formatAiRewriteRecord(existingRewrite),
         });
@@ -1761,7 +1716,7 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
 
         return res.json({
           status: "Success",
-          message: existingRewrite ? "AI rewrite regenerated successfully." : "AI rewrite created successfully.",
+          message: "AI rewrite created successfully.",
           news: articleRecord,
           rewrite: formatAiRewriteRecord(savedRewrite),
         });
@@ -1776,7 +1731,6 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
   app.post("/ai/rewrite-latest", async (req, res) => {
     const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 3, 10));
     const category = req.query.category ? normalizeUnifiedCategory(req.query.category) : null;
-    const force = String(req.query.force || "").toLowerCase() === "true" || req.query.force === "1";
 
     try {
       const dbPool = getDbPool();
@@ -1810,12 +1764,12 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
       const results = [];
       for (const articleRecord of rows) {
         const existingRewrite = await findAiRewriteByNewsId(dbPool, articleRecord.id);
-        if (existingRewrite && !force) {
+        if (existingRewrite) {
           results.push({
             status: "Skipped",
             news_id: articleRecord.id,
             title: articleRecord.title,
-            message: "AI rewrite already exists. Use ?force=1 to regenerate.",
+            message: "AI rewrite already exists. Regeneration is disabled to prevent duplicate rewrites.",
           });
           continue;
         }
@@ -1848,7 +1802,6 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
         status: "Success",
         requested_limit: limit,
         category,
-        force,
         success_count: results.filter((item) => item.status === "Success").length,
         skipped_count: results.filter((item) => item.status === "Skipped").length,
         failed_count: results.filter((item) => item.status === "Error").length,
