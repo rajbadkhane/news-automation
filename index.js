@@ -1134,6 +1134,10 @@ const MPINFO_DISTRICT_CONCURRENCY = Math.max(
   1,
   Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_CONCURRENCY, 10) || 1, 3)
 );
+const MPINFO_DISTRICT_MAX_AGE_HOURS = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_MAX_AGE_HOURS, 10) || 48, 168)
+);
 const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
 );
@@ -1218,6 +1222,7 @@ const mpInfoDistrictSchedulerState = {
   limit: MPINFO_DISTRICT_SCHEDULER_LIMIT,
   districtScanLimit: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT,
   districtConcurrency: MPINFO_DISTRICT_CONCURRENCY,
+  maxAgeHours: MPINFO_DISTRICT_MAX_AGE_HOURS,
   rewrite: MPINFO_DISTRICT_SCHEDULER_REWRITE,
   nextDistrictIndex: 0,
   lastTickAt: null,
@@ -4574,6 +4579,7 @@ function getMpInfoDistrictSchedulerHealthSnapshot() {
       limit: mpInfoDistrictSchedulerState.limit,
       district_scan_limit: mpInfoDistrictSchedulerState.districtScanLimit,
       district_concurrency: mpInfoDistrictSchedulerState.districtConcurrency,
+      max_age_hours: mpInfoDistrictSchedulerState.maxAgeHours,
       next_district_index: mpInfoDistrictSchedulerState.nextDistrictIndex,
       rewrite: mpInfoDistrictSchedulerState.rewrite,
     last_tick_at: mpInfoDistrictSchedulerState.lastTickAt,
@@ -7150,11 +7156,13 @@ async function saveMpInfoScraperArticle(article) {
     };
   }
 
-  const freshness = isFreshPublishedDate(article?.publishDate);
+  const freshness = isFreshPublishedDate(article?.publishDate, MPINFO_DISTRICT_MAX_AGE_HOURS);
   if (!freshness.fresh) {
     return {
       status: "Skipped",
-      message: buildFreshnessSkipMessage(freshness),
+      message: freshness?.known
+        ? `Old MP Info district article skipped (${freshness.ageHours}h old; max ${MPINFO_DISTRICT_MAX_AGE_HOURS}h).`
+        : `MP Info district article skipped because it has no publish date; latest-only mode requires a date within ${MPINFO_DISTRICT_MAX_AGE_HOURS}h.`,
     };
   }
 

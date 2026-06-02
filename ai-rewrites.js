@@ -133,11 +133,11 @@ CATEGORY OVERRIDE:
 const { isDuplicateColumnError, isDuplicateKeyError } = require("./db");
 const AI_REWRITE_CANDIDATE_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "10", 10), 25)
+  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "30", 10), 50)
 );
 const AI_REWRITES_PER_CATEGORY_RUN = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.AI_REWRITES_PER_CATEGORY_RUN || "3", 10) || 3, 10)
+  Math.min(Number.parseInt(process.env.AI_REWRITES_PER_CATEGORY_RUN || "6", 10) || 6, 15)
 );
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
