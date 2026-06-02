@@ -1116,19 +1116,23 @@ const SCHEDULER_HEALTH_THRESHOLD_MS = 2 * SCHEDULER_TICK_MS + 15 * 1000;
 const AI_SCHEDULER_HEALTH_THRESHOLD_MS = 2 * AI_SCHEDULER_TICK_MS + 15 * 1000;
 const MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS = Math.max(
   15 * 60 * 1000,
-  Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS, 10) || 60 * 60 * 1000
+  Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS, 10) || 30 * 60 * 1000
 );
 const MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS = Math.max(
   5 * 60 * 1000,
-  Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS, 10) || 20 * 60 * 1000
+  Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_TIMEOUT_MS, 10) || 45 * 60 * 1000
 );
 const MPINFO_DISTRICT_SCHEDULER_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_LIMIT, 10) || 1, 10)
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_LIMIT, 10) || 24, 60)
 );
 const MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT, 10) || 1, 55)
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT, 10) || 12, 55)
+);
+const MPINFO_DISTRICT_CONCURRENCY = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.MPINFO_DISTRICT_CONCURRENCY, 10) || 1, 3)
 );
 const MPINFO_DISTRICT_SCHEDULER_REWRITE = !["false", "0", "no"].includes(
   String(process.env.MPINFO_DISTRICT_SCHEDULER_REWRITE || "true").toLowerCase()
@@ -1213,6 +1217,7 @@ const mpInfoDistrictSchedulerState = {
   intervalMs: MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS,
   limit: MPINFO_DISTRICT_SCHEDULER_LIMIT,
   districtScanLimit: MPINFO_DISTRICT_SCHEDULER_SCAN_LIMIT,
+  districtConcurrency: MPINFO_DISTRICT_CONCURRENCY,
   rewrite: MPINFO_DISTRICT_SCHEDULER_REWRITE,
   nextDistrictIndex: 0,
   lastTickAt: null,
@@ -4568,6 +4573,7 @@ function getMpInfoDistrictSchedulerHealthSnapshot() {
       interval_ms: mpInfoDistrictSchedulerState.intervalMs,
       limit: mpInfoDistrictSchedulerState.limit,
       district_scan_limit: mpInfoDistrictSchedulerState.districtScanLimit,
+      district_concurrency: mpInfoDistrictSchedulerState.districtConcurrency,
       next_district_index: mpInfoDistrictSchedulerState.nextDistrictIndex,
       rewrite: mpInfoDistrictSchedulerState.rewrite,
     last_tick_at: mpInfoDistrictSchedulerState.lastTickAt,
@@ -7583,7 +7589,8 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
         limit: mpInfoDistrictSchedulerState.limit,
         districtScanLimit: mpInfoDistrictSchedulerState.districtScanLimit,
         districtStartIndex,
-        concurrency: 1,
+        districtBatch: mpInfoDistrictSchedulerState.districtScanLimit,
+        concurrency: MPINFO_DISTRICT_CONCURRENCY,
         withContent: true,
         saveSnapshots: false,
       }),
