@@ -6835,6 +6835,7 @@ async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
 
   const query = options.query || getCategorySearchQuery(category);
   const requestedLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || DEFAULT_ARTICLE_LIMIT, dailyQuota.remaining));
+  console.log(`[google-rss] Starting fetch category=${category} query="${query}" limit=${requestedLimit}`);
   const googleResult = await fetchGoogleRssFeed({
     query,
     limit: requestedLimit,
@@ -6981,7 +6982,7 @@ async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
     await browser.close();
   }
 
-  return {
+  const summary = {
     category,
     source: "google-rss",
     query,
@@ -6994,6 +6995,10 @@ async function saveGoogleRssNewsForCategory(category, limit, options = {}) {
     results,
     rewriteCandidates,
   };
+  console.log(
+    `[google-rss] Finished category=${category} fetched=${summary.fetched_count} saved=${summary.saved_count} existing=${summary.existing_count} skipped=${summary.skipped_count} failed=${summary.failed_count}`
+  );
+  return summary;
 }
 
 async function rewriteNewsRecords(records, options = {}) {
@@ -7636,6 +7641,9 @@ async function runMpInfoDistrictScheduledCycleUnlocked(triggerSource = "schedule
 
 async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
   const districtStartIndex = mpInfoDistrictSchedulerState.nextDistrictIndex;
+  console.log(
+    `[mpinfo-district] Starting ${triggerSource} crawl start_index=${districtStartIndex} districts=${mpInfoDistrictSchedulerState.districtScanLimit} limit=${mpInfoDistrictSchedulerState.limit}`
+  );
   const logId = await createSchedulerRunLog({
     schedulerName: "main",
     runType: "mpinfo-districts",
@@ -7709,6 +7717,9 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
     mpInfoDistrictSchedulerState.lastStatus = summary.failed_district_count > 0 ? "CompletedWithErrors" : "Success";
     mpInfoDistrictSchedulerState.lastError = null;
     mpInfoDistrictSchedulerState.lastResult = summary;
+    console.log(
+      `[mpinfo-district] Finished ${triggerSource} status=${mpInfoDistrictSchedulerState.lastStatus} fetched=${summary.fetched_count} saved=${summary.saved_count} existing=${summary.existing_count} rewritten=${summary.rewrite_success_count} failed_districts=${summary.failed_district_count} next_index=${summary.next_district_index}`
+    );
 
     await finalizeSchedulerRunLog(logId, {
       status: mpInfoDistrictSchedulerState.lastStatus,
@@ -7728,6 +7739,7 @@ async function runMpInfoDistrictScheduledCycleWork(triggerSource = "schedule") {
     mpInfoDistrictSchedulerState.lastRunAt = new Date().toISOString();
     mpInfoDistrictSchedulerState.lastStatus = "Error";
     mpInfoDistrictSchedulerState.lastError = error.message;
+    console.error(`[mpinfo-district] ${triggerSource} crawl failed: ${error.message}`);
     await finalizeSchedulerRunLog(logId, {
       status: "Error",
       failedCount: 1,
