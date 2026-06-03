@@ -161,6 +161,10 @@ const CLIFF_NEWS_DEFAULT_LIMIT = Math.max(
   1,
   Math.min(Number.parseInt(process.env.CLIFF_NEWS_DEFAULT_LIMIT || "100", 10) || 100, 500)
 );
+const NEWS_EVENT_DUPLICATE_LOOKBACK_HOURS = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.NEWS_EVENT_DUPLICATE_LOOKBACK_HOURS, 10) || 72, 168)
+);
 const NEWS_MAX_AGE_HOURS = Math.max(
   1,
   Math.min(Number.parseInt(process.env.NEWS_MAX_AGE_HOURS || "24", 10) || 24, 168)
@@ -565,6 +569,125 @@ function normalizeStoredSourceUrl(value) {
   } catch {
     return raw.replace(/[?#].*$/, "").replace(/\/+$/, "");
   }
+}
+
+const NEWS_EVENT_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "at",
+  "by",
+  "for",
+  "from",
+  "in",
+  "is",
+  "of",
+  "on",
+  "the",
+  "to",
+  "with",
+  "after",
+  "before",
+  "latest",
+  "news",
+  "updates",
+  "मध्य",
+  "प्रदेश",
+  "में",
+  "की",
+  "का",
+  "के",
+  "को",
+  "से",
+  "ने",
+  "और",
+  "पर",
+  "लिए",
+  "बाद",
+  "साल",
+  "खबर",
+  "ताजा",
+  "अब",
+]);
+
+const NEWS_EVENT_TOKEN_ALIASES = new Map([
+  ["cm", "chief_minister"],
+  ["सीएम", "chief_minister"],
+  ["मुख्यमंत्री", "chief_minister"],
+  ["chief", "chief_minister"],
+  ["minister", "chief_minister"],
+  ["सरकारी", "government"],
+  ["सरकार", "government"],
+  ["राज्य", "government"],
+  ["संचालित", "government"],
+  ["state", "government"],
+  ["govt", "government"],
+  ["government", "government"],
+  ["शुरू", "launch"],
+  ["शुरुआत", "launch"],
+  ["आरंभ", "launch"],
+  ["प्रारंभ", "launch"],
+  ["लॉन्च", "launch"],
+  ["वापसी", "launch"],
+  ["बहाल", "launch"],
+  ["bus", "bus"],
+  ["बस", "bus"],
+  ["service", "service"],
+  ["सेवा", "service"],
+]);
+
+function normalizeNewsEventToken(value) {
+  const token = String(value || "")
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
+    .trim();
+
+  if (!token || token.length < 2 || NEWS_EVENT_STOP_WORDS.has(token)) {
+    return "";
+  }
+
+  return NEWS_EVENT_TOKEN_ALIASES.get(token) || token;
+}
+
+function buildNewsEventTokenSet(value) {
+  const tokens = normalizeRssText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0900-\u097f]+/gi, " ")
+    .split(/\s+/)
+    .map(normalizeNewsEventToken)
+    .filter(Boolean);
+
+  return new Set(tokens);
+}
+
+function getNewsTitleEventSimilarity(leftTitle, rightTitle) {
+  const leftTokens = buildNewsEventTokenSet(leftTitle);
+  const rightTokens = buildNewsEventTokenSet(rightTitle);
+  if (leftTokens.size < 4 || rightTokens.size < 4) {
+    return {
+      sameEvent: false,
+      intersectionCount: 0,
+      smallerRatio: 0,
+      jaccard: 0,
+      matchingTokens: [],
+    };
+  }
+
+  const matchingTokens = [...leftTokens].filter((token) => rightTokens.has(token));
+  const intersectionCount = matchingTokens.length;
+  const smallerRatio = intersectionCount / Math.min(leftTokens.size, rightTokens.size);
+  const unionCount = new Set([...leftTokens, ...rightTokens]).size;
+  const jaccard = unionCount ? intersectionCount / unionCount : 0;
+
+  return {
+    sameEvent:
+      (intersectionCount >= 5 && smallerRatio >= 0.45) ||
+      (intersectionCount >= 4 && smallerRatio >= 0.5 && jaccard >= 0.25),
+    intersectionCount,
+    smallerRatio,
+    jaccard,
+    matchingTokens,
+  };
 }
 
 function normalizeNewsTitleSignature(value) {
@@ -1979,6 +2102,17 @@ async function saveNewsRecord({
     return null;
   }
 
+  const similarRecentRecord = await findSimilarRecentNewsRecord({
+    category: normalizedCategory,
+    title,
+  });
+  if (similarRecentRecord) {
+    console.log(
+      `[news-dedupe] Similar recent article skipped category=${normalizedCategory} existing_id=${similarRecentRecord.id} match_tokens=${similarRecentRecord.matching_tokens?.join(",") || "n/a"}`
+    );
+    return null;
+  }
+
   const [result] = await dbPool.execute(
     dbPool.dialect === "postgres"
       ? `
@@ -2072,6 +2206,49 @@ async function findNewsRecordByUrl(articleUrl) {
   );
 
   return rows[0] || null;
+}
+
+async function findSimilarRecentNewsRecord({ category, title }) {
+  if (!dbPool || !title) {
+    return null;
+  }
+
+  const candidateTokens = buildNewsEventTokenSet(title);
+  if (candidateTokens.size < 4) {
+    return null;
+  }
+
+  const since = new Date(Date.now() - NEWS_EVENT_DUPLICATE_LOOKBACK_HOURS * 60 * 60 * 1000);
+  const normalizedCategory = category ? normalizeCategory(category) : null;
+  const categoryFilter = normalizedCategory ? "category = ? AND" : "";
+  const params = normalizedCategory ? [normalizedCategory, since] : [since];
+  const [rows] = await dbPool.execute(
+    `
+      SELECT id, category, title, source_url, fetched_at
+      FROM fetched_news
+      WHERE ${categoryFilter} fetched_at >= ?
+      ORDER BY id DESC
+      LIMIT 100
+    `,
+    params
+  );
+
+  for (const row of rows) {
+    const similarity = getNewsTitleEventSimilarity(title, row.title);
+    if (similarity.sameEvent) {
+      return {
+        ...row,
+        matching_tokens: similarity.matchingTokens,
+        event_similarity: {
+          intersection_count: similarity.intersectionCount,
+          smaller_ratio: Number(similarity.smallerRatio.toFixed(3)),
+          jaccard: Number(similarity.jaccard.toFixed(3)),
+        },
+      };
+    }
+  }
+
+  return null;
 }
 
 async function findNewsRecordDuplicate({ articleUrl, sourceUrlSignature, titleSignature }) {
