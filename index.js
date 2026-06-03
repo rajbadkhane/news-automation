@@ -6115,6 +6115,9 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
     includeSources: options.includeSources,
     excludeSources: options.excludeSources,
   });
+  const selectedSources = normalizeFeedSourceList(options.includeSources);
+  const sourceLabel = selectedSources.length === 1 ? selectedSources[0] : "configured-rss";
+  const logTag = sourceLabel === "dd" ? "dd-news" : "rss-source";
   if (!feedConfigs?.length) {
     if (options.allowEmpty) {
       return buildEmptyCategoryFetchResult(category);
@@ -6125,11 +6128,14 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
     );
   }
 
+  console.log(
+    `[${logTag}] Starting fetch category=${category} source=${sourceLabel} limit=${requestedLimit} feeds=${feedConfigs.length}`
+  );
   const articleEntries = await getArticleUrlsFromFeeds(feedConfigs, candidateLimit, {
     category,
     startIndex: options.startIndex || 0,
   });
-  console.log(`Found ${articleEntries.length} article link(s) from RSS feeds for ${category}.`);
+  console.log(`[${logTag}] Found links category=${category} source=${sourceLabel} links=${articleEntries.length}`);
 
   const results = [];
   let successCount = 0;
@@ -6140,7 +6146,8 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
     }
 
     const articleUrl = articleEntry.url;
-    console.log(`Opening article for ${category} from ${articleEntry.feed_source}: ${articleUrl}`);
+    const entryLogTag = articleEntry.feed_source === "dd" ? "dd-news" : logTag;
+    console.log(`[${entryLogTag}] Opening category=${category} source=${articleEntry.feed_source} url=${articleUrl}`);
 
     try {
       const freshness = isFreshPublishedDate(articleEntry.published_at);
@@ -6263,14 +6270,20 @@ async function fetchArticlesForCategory(page, category, limit, options = {}) {
     }
   }
 
-  return {
+  const summary = {
     category,
+    source: sourceLabel,
     fetched_count: articleEntries.length,
     saved_count: successCount,
     failed_count: results.filter((item) => item.status === "Error").length,
     skipped_count: results.filter((item) => item.status === "Skipped").length,
     results,
   };
+  console.log(
+    `[${logTag}] Finished category=${category} source=${sourceLabel} fetched=${summary.fetched_count} saved=${summary.saved_count} skipped=${summary.skipped_count} failed=${summary.failed_count}`
+  );
+
+  return summary;
 }
 
 async function fetchPrimaryNewsForCategory(page, category, limit, options = {}) {
@@ -6635,6 +6648,9 @@ async function saveCliffNewsArticles({
   const apiLimit = requestedCategory
     ? Math.max(requestedLimit * 8, Math.min(CLIFF_NEWS_DEFAULT_LIMIT, 100))
     : requestedLimit;
+  console.log(
+    `[cliff-news] Starting fetch category=${requestedCategory || "all"} language=${language} page=${requestedPage} limit=${requestedLimit}`
+  );
   const apiResult = await fetchCliffNewsApiArticles({
     limit: Math.min(apiLimit, 500),
     language,
@@ -6795,7 +6811,7 @@ async function saveCliffNewsArticles({
     }
   }
 
-  return {
+  const summary = {
     category: requestedCategory || "all",
     source: "cliff-news",
     language,
@@ -6811,6 +6827,11 @@ async function saveCliffNewsArticles({
     results,
     rewriteCandidates,
   };
+  console.log(
+    `[cliff-news] Finished category=${summary.category} fetched=${summary.fetched_count} matched=${summary.matched_count} saved=${summary.saved_count} existing=${summary.existing_count} skipped=${summary.skipped_count} failed=${summary.failed_count}`
+  );
+
+  return summary;
 }
 
 async function saveCliffNewsForCategory(category, limit, options = {}) {
