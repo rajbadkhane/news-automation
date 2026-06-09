@@ -35,12 +35,23 @@ async function postAiCron() {
     ? { "x-api-key": apiKey, Authorization: `Bearer ${apiKey}` }
     : {};
 
-  console.log(`\n$ POST ${new URL(url).pathname}`);
-  const response = await fetch(url, { method: "POST", headers });
-  const text = await response.text();
-  console.log(text.slice(0, 4000));
-  if (!response.ok) {
-    throw new Error(`AI cron failed with HTTP ${response.status}`);
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    console.log(`\n$ POST ${new URL(url).pathname} (attempt ${attempt}/12)`);
+    const response = await fetch(url, { method: "POST", headers });
+    const text = await response.text();
+    console.log(text.slice(0, 4000));
+
+    if (response.ok) {
+      return;
+    }
+
+    const busy = response.status === 409 && /AI_CRON_BUSY|ingestion cron|already running|try again/i.test(text);
+    if (!busy || attempt === 12) {
+      throw new Error(`AI cron failed with HTTP ${response.status}`);
+    }
+
+    console.log("\nIngestion is busy. Waiting 60 seconds before retry...");
+    await new Promise((resolve) => setTimeout(resolve, 60_000));
   }
 }
 
