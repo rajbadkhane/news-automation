@@ -1,4 +1,21 @@
 const { spawnSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+const envPath = path.resolve(__dirname, ".env");
+
+function loadEnv() {
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2];
+    }
+  }
+}
 
 function run(command, args) {
   console.log(`\n$ ${command} ${args.join(" ")}`);
@@ -9,8 +26,17 @@ function run(command, args) {
 }
 
 async function postAiCron() {
-  console.log("\n$ POST /ai/cron/run-now");
-  const response = await fetch("http://localhost:3000/ai/cron/run-now", { method: "POST" });
+  loadEnv();
+  const apiKey = String(process.env.MASTER_API_KEY || process.env.API_KEYS?.split(",")?.[0] || "").trim();
+  const url = apiKey
+    ? "http://localhost:3000/api/v1/ai/cron/run-now"
+    : "http://localhost:3000/ai/cron/run-now";
+  const headers = apiKey
+    ? { "x-api-key": apiKey, Authorization: `Bearer ${apiKey}` }
+    : {};
+
+  console.log(`\n$ POST ${new URL(url).pathname}`);
+  const response = await fetch(url, { method: "POST", headers });
   const text = await response.text();
   console.log(text.slice(0, 4000));
   if (!response.ok) {
