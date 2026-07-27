@@ -31,42 +31,42 @@ function maskKey(value) {
 
 async function main() {
   loadEnv();
-  const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
-  const model = String(process.env.GEMINI_MODEL || "gemini-2.5-flash-lite").trim();
+  const apiKey = String(process.env.DEEPSEEK_API_KEY || "").trim();
+  const model = String(process.env.DEEPSEEK_MODEL || "deepseek-v4-flash").trim();
+  const apiUrl = String(process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions").trim();
 
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is missing in .env.");
+    throw new Error("DEEPSEEK_API_KEY is missing in .env.");
   }
 
-  console.log(`Testing Gemini key ${maskKey(apiKey)} with model ${model}...`);
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: "Reply with exactly: OK" }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0,
+  console.log(`Testing DeepSeek key ${maskKey(apiKey)} with model ${model}...`);
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: "Reply with exactly: OK",
         },
-      }),
-    }
-  );
+      ],
+      temperature: 0,
+    }),
+  });
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    console.error(`Gemini test failed: HTTP ${response.status}`);
+    console.error(`DeepSeek test failed: HTTP ${response.status}`);
     console.error(payload?.error?.message || JSON.stringify(payload));
     process.exit(2);
   }
 
-  const text = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim();
-  console.log(`Gemini test success: ${text || "response received"}`);
+  const text = String(payload?.choices?.[0]?.message?.content || "").trim();
+  console.log(`DeepSeek test success: ${text || "response received"}`);
 }
 
 main().catch((error) => {

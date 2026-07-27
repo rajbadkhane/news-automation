@@ -81,8 +81,9 @@ API_CORS_ORIGINS=https://site-one.com,https://site-two.com
 API_RATE_LIMIT_WINDOW_MS=60000
 API_RATE_LIMIT_MAX=120
 
-GEMINI_API_KEY=your-real-key
-GEMINI_MODEL=gemini-2.5-flash-lite
+DEEPSEEK_API_KEY=your-real-key
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
 
 NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain.onrender.com
 ADMIN_PANEL_MASTER_API_KEY=replace-with-the-same-master-key-used-by-the-backend
@@ -101,6 +102,14 @@ ADMIN_PANEL_SESSION_SECRET=replace-with-a-long-random-session-secret
   - `ADMIN_PANEL_PASSWORD`
   - `ADMIN_PANEL_SESSION_SECRET`
 - The frontend now fails fast in production if these values are missing, localhost-based, or left as placeholders.
+
+## NeevCloud Or VPS Split
+
+- Run the backend from the repository root on one always-on Node process managed by PM2.
+- Keep `SCHEDULER_ENABLED=true` and `AI_SCHEDULER_ENABLED=true` on that one scheduler-enabled backend process.
+- Keep the Next.js app on Vercel unless you intentionally move the frontend too.
+- Use [NEEVCLOUD_DEPLOYMENT.md](/d:/news_automation/news_automation/NEEVCLOUD_DEPLOYMENT.md) for the server, Nginx, HTTPS, cutover, and rollback steps.
+- Turn off the Render backend schedulers when NeevCloud is healthy so the old and new deployments do not fetch and rewrite at the same time.
 
 ## Admin Panel
 

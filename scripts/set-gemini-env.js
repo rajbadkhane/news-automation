@@ -39,11 +39,11 @@ function updateEnv(content, updates) {
   const lines = content.split(/\r?\n/);
   const nextLines = lines.filter((line) => {
     const match = line.match(/^([A-Z0-9_]+)=/);
-    return !match || !(match[1] in updates);
+    return !match || (!(match[1] in updates) && !["GEMINI_API_KEY", "GEMINI_MODEL"].includes(match[1]));
   });
 
   nextLines.push("");
-  nextLines.push("# Gemini AI key updated by scripts/set-gemini-env.js");
+  nextLines.push("# DeepSeek AI key updated by scripts/set-gemini-env.js");
   for (const [key, value] of Object.entries(updates)) {
     nextLines.push(`${key}=${value}`);
   }
@@ -52,17 +52,19 @@ function updateEnv(content, updates) {
 }
 
 async function main() {
-  const apiKeyArg = process.argv[2] || process.env.NEW_GEMINI_API_KEY || "";
-  const modelArg = process.argv[3] || process.env.NEW_GEMINI_MODEL || "";
-  const apiKey = String(apiKeyArg || await ask("Paste Gemini API key and press Enter: ")).trim();
-  const model = String(modelArg || await ask("Gemini model [gemini-2.5-flash-lite]: ")).trim() || "gemini-2.5-flash-lite";
+  const apiKeyArg = process.argv[2] || process.env.NEW_DEEPSEEK_API_KEY || "";
+  const modelArg = process.argv[3] || process.env.NEW_DEEPSEEK_MODEL || "";
+  const apiUrlArg = process.argv[4] || process.env.NEW_DEEPSEEK_API_URL || "";
+  const apiKey = String(apiKeyArg || await ask("Paste DeepSeek API key and press Enter: ")).trim();
+  const model = String(modelArg || await ask("DeepSeek model [deepseek-v4-flash]: ")).trim() || "deepseek-v4-flash";
+  const apiUrl = String(apiUrlArg || "https://api.deepseek.com/chat/completions").trim();
 
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is required.");
+    throw new Error("DEEPSEEK_API_KEY is required.");
   }
 
-  if (!/^AIza[0-9A-Za-z_-]{20,}$/.test(apiKey)) {
-    console.warn("Warning: this does not look like a usual Gemini API key, but it will still be saved.");
+  if (!/^sk-[0-9A-Za-z_-]{20,}$/.test(apiKey)) {
+    console.warn("Warning: this does not look like a usual DeepSeek API key, but it will still be saved.");
   }
 
   const current = readEnvFile();
@@ -70,16 +72,18 @@ async function main() {
   fs.writeFileSync(backupPath, current, "utf8");
 
   const next = updateEnv(current, {
-    GEMINI_API_KEY: apiKey,
-    GEMINI_MODEL: model,
+    DEEPSEEK_API_KEY: apiKey,
+    DEEPSEEK_MODEL: model,
+    DEEPSEEK_API_URL: apiUrl,
     AI_SCHEDULER_ENABLED: "true",
     AI_REWRITE_AUTO_PUBLISH: "true",
   });
   fs.writeFileSync(envPath, next, "utf8");
 
-  console.log("Gemini env updated.");
-  console.log(`Saved GEMINI_API_KEY=${maskKey(apiKey)}`);
-  console.log(`Saved GEMINI_MODEL=${model}`);
+  console.log("DeepSeek env updated.");
+  console.log(`Saved DEEPSEEK_API_KEY=${maskKey(apiKey)}`);
+  console.log(`Saved DEEPSEEK_MODEL=${model}`);
+  console.log(`Saved DEEPSEEK_API_URL=${apiUrl}`);
   console.log(`Backup: ${backupPath}`);
   console.log("");
   console.log("Next commands:");

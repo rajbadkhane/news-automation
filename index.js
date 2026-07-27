@@ -40,6 +40,7 @@ const {
   extractBestImageFromArticle: extractBestImageFromArticleHttp,
 } = require("./google-rss-feed-fetcher");
 const { createMpInfoRoutes } = require("./routes/mpinfo.routes");
+const { createCategoryRoutes } = require("./routes/category.routes");
 const { crawlLatest } = require("./services/mpinfo-scraper.service");
 const {
   DEFAULT_UNIFIED_CATEGORY,
@@ -224,6 +225,15 @@ const AVAILABLE_API_SCOPES = [
   "admin:clients",
 ];
 const DEFAULT_CATEGORY = DEFAULT_UNIFIED_CATEGORY;
+const AI_ALLOWED_CATEGORIES = Object.freeze([
+  "National",
+  "International",
+  "Sports",
+  "Business",
+  "Madhya Pradesh",
+  "Entertainment",
+]);
+const AI_DEFAULT_CATEGORY = "National";
 const MPINFO_DISTRICT_CATEGORY = normalizeUnifiedCategory(
   process.env.MPINFO_DISTRICT_CATEGORY || "Madhyapradesh"
 );
@@ -3418,20 +3428,38 @@ async function recordVisitorEvent(req) {
 async function getVisitorAnalytics(range = "all") {
   const filter = getAnalyticsDateFilter(range);
   const whereSql = filter.sql;
+  const hourBucketExpression = dbPool.dialect === "postgres"
+    ? "DATE_TRUNC('hour', created_at)"
+    : "DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00')";
+  const uniqueVisitorExpression = "COALESCE(NULLIF(ip_hash, ''), visitor_key)";
+
   const [summaryRows] = await dbPool.query(
     `
       SELECT
         COUNT(*) AS page_views,
-        COUNT(DISTINCT visitor_key) AS unique_visitors,
+        COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors,
         COUNT(DISTINCT session_id) AS sessions
       FROM visitor_events
       WHERE ${whereSql}
     `,
     filter.params
   );
+  const [returningRows] = await dbPool.query(
+    `
+      SELECT COUNT(*) AS returning_visitors
+      FROM (
+        SELECT ${uniqueVisitorExpression} AS visitor_identity
+        FROM visitor_events
+        WHERE ${whereSql}
+        GROUP BY ${uniqueVisitorExpression}
+        HAVING COUNT(*) > 1 OR COUNT(DISTINCT session_id) > 1
+      ) visitor_rollup
+    `,
+    filter.params
+  );
   const [pageRows] = await dbPool.query(
     `
-      SELECT path, COUNT(*) AS page_views, COUNT(DISTINCT visitor_key) AS unique_visitors
+      SELECT path, COALESCE(MAX(page_title), '') AS title, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
       FROM visitor_events
       WHERE ${whereSql}
       GROUP BY path
@@ -3440,9 +3468,20 @@ async function getVisitorAnalytics(range = "all") {
     `,
     filter.params
   );
+  const [referrerRows] = await dbPool.query(
+    `
+      SELECT COALESCE(NULLIF(referrer, ''), 'direct') AS referrer, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY COALESCE(NULLIF(referrer, ''), 'direct')
+      ORDER BY page_views DESC
+      LIMIT 20
+    `,
+    filter.params
+  );
   const [sourceRows] = await dbPool.query(
     `
-      SELECT COALESCE(NULLIF(utm_source, ''), 'direct') AS source, COUNT(*) AS page_views
+      SELECT COALESCE(NULLIF(utm_source, ''), 'direct') AS source, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
       FROM visitor_events
       WHERE ${whereSql}
       GROUP BY COALESCE(NULLIF(utm_source, ''), 'direct')
@@ -3451,9 +3490,31 @@ async function getVisitorAnalytics(range = "all") {
     `,
     filter.params
   );
+  const [campaignRows] = await dbPool.query(
+    `
+      SELECT
+        COALESCE(NULLIF(utm_source, ''), 'direct') AS source,
+        COALESCE(NULLIF(utm_medium, ''), '') AS medium,
+        COALESCE(NULLIF(utm_campaign, ''), '') AS campaign,
+        COUNT(*) AS page_views,
+        COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+        AND (utm_source IS NOT NULL AND utm_source <> ''
+          OR utm_medium IS NOT NULL AND utm_medium <> ''
+          OR utm_campaign IS NOT NULL AND utm_campaign <> '')
+      GROUP BY
+        COALESCE(NULLIF(utm_source, ''), 'direct'),
+        COALESCE(NULLIF(utm_medium, ''), ''),
+        COALESCE(NULLIF(utm_campaign, ''), '')
+      ORDER BY page_views DESC
+      LIMIT 20
+    `,
+    filter.params
+  );
   const [deviceRows] = await dbPool.query(
     `
-      SELECT device_type, COUNT(*) AS page_views, COUNT(DISTINCT visitor_key) AS unique_visitors
+      SELECT device_type, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
       FROM visitor_events
       WHERE ${whereSql}
       GROUP BY device_type
@@ -3461,27 +3522,120 @@ async function getVisitorAnalytics(range = "all") {
     `,
     filter.params
   );
+  const [browserRows] = await dbPool.query(
+    `
+      SELECT browser, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY browser
+      ORDER BY page_views DESC
+    `,
+    filter.params
+  );
+  const [osRows] = await dbPool.query(
+    `
+      SELECT os, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY os
+      ORDER BY page_views DESC
+    `,
+    filter.params
+  );
+  const [hourlyRows] = await dbPool.query(
+    `
+      SELECT ${hourBucketExpression} AS hour, COUNT(*) AS page_views, COUNT(DISTINCT ${uniqueVisitorExpression}) AS unique_visitors
+      FROM visitor_events
+      WHERE ${whereSql}
+      GROUP BY ${hourBucketExpression}
+      ORDER BY hour DESC
+      LIMIT 48
+    `,
+    filter.params
+  );
+  const [recentRows] = await dbPool.query(
+    `
+      SELECT id, path, page_title, referrer, utm_source, utm_medium, utm_campaign, device_type, browser, os, created_at
+      FROM visitor_events
+      WHERE ${whereSql}
+      ORDER BY id DESC
+      LIMIT 50
+    `,
+    filter.params
+  );
+
+  const pageViews = Number(summaryRows?.[0]?.page_views || 0);
+  const uniqueVisitors = Number(summaryRows?.[0]?.unique_visitors || 0);
+  const sessions = Number(summaryRows?.[0]?.sessions || 0);
+  const returningVisitors = Number(returningRows?.[0]?.returning_visitors || 0);
+  const newVisitors = Math.max(0, uniqueVisitors - returningVisitors);
 
   return {
     range,
     summary: {
-      page_views: Number(summaryRows?.[0]?.page_views || 0),
-      unique_visitors: Number(summaryRows?.[0]?.unique_visitors || 0),
-      sessions: Number(summaryRows?.[0]?.sessions || 0),
+      page_views: pageViews,
+      unique_visitors: uniqueVisitors,
+      sessions,
+      new_visitors: newVisitors,
+      returning_visitors: returningVisitors,
+      avg_page_views_per_visitor: uniqueVisitors ? Number((pageViews / uniqueVisitors).toFixed(2)) : 0,
+      avg_page_views_per_session: sessions ? Number((pageViews / sessions).toFixed(2)) : 0,
     },
     top_pages: pageRows.map((row) => ({
       path: row.path,
+      title: row.title || "",
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    top_referrers: referrerRows.map((row) => ({
+      referrer: row.referrer,
       page_views: Number(row.page_views || 0),
       unique_visitors: Number(row.unique_visitors || 0),
     })),
     sources: sourceRows.map((row) => ({
       source: row.source,
       page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
     })),
-    devices: deviceRows.map((row) => ({
-      device_type: row.device_type,
+    campaigns: campaignRows.map((row) => ({
+      source: row.source,
+      medium: row.medium,
+      campaign: row.campaign,
       page_views: Number(row.page_views || 0),
       unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    devices: deviceRows.map((row) => ({
+      device_type: row.device_type || "unknown",
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    browsers: browserRows.map((row) => ({
+      browser: row.browser || "unknown",
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    operating_systems: osRows.map((row) => ({
+      os: row.os || "unknown",
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    hourly_trend: hourlyRows.map((row) => ({
+      hour: row.hour,
+      page_views: Number(row.page_views || 0),
+      unique_visitors: Number(row.unique_visitors || 0),
+    })),
+    recent_visits: recentRows.map((row) => ({
+      id: row.id,
+      path: row.path,
+      title: row.page_title || "",
+      referrer: row.referrer || "",
+      utm_source: row.utm_source || "",
+      utm_medium: row.utm_medium || "",
+      utm_campaign: row.utm_campaign || "",
+      device_type: row.device_type || "unknown",
+      browser: row.browser || "unknown",
+      os: row.os || "unknown",
+      created_at: row.created_at,
     })),
   };
 }
@@ -3791,7 +3945,7 @@ function buildDeliveryCategoryState(category) {
 function groupDeliveryRecordsByCategory(records) {
   return Object.entries(
     records.reduce((accumulator, record) => {
-      const key = normalizeCategory(record.ui_hindi?.category || record.category || DEFAULT_CATEGORY);
+      const key = normalizeAiCategory(record.ui_hindi?.category || record.category || AI_DEFAULT_CATEGORY);
       if (!accumulator[key]) {
         accumulator[key] = [];
       }
@@ -4416,8 +4570,8 @@ function validateProductionConfig() {
     console.warn("Production is running without REDIS_URL. Rate limiting and quota control will fall back to per-instance memory.");
   }
 
-  if (AI_SCHEDULER_ENABLED && !String(process.env.GEMINI_API_KEY || "").trim()) {
-    throw new Error("AI_SCHEDULER_ENABLED is true, but GEMINI_API_KEY is missing.");
+  if (AI_SCHEDULER_ENABLED && !String(process.env.DEEPSEEK_API_KEY || "").trim()) {
+    throw new Error("AI_SCHEDULER_ENABLED is true, but DEEPSEEK_API_KEY is missing.");
   }
 }
 
@@ -4443,6 +4597,28 @@ function normalizeTotalLimit(value) {
 
 function normalizeCategory(value) {
   return normalizeUnifiedCategory(value, { logger: console });
+}
+
+function normalizeAiCategory(value) {
+  const rawValue = String(value || "").trim();
+  if (AI_ALLOWED_CATEGORIES.includes(rawValue)) {
+    return rawValue;
+  }
+
+  const legacyCategory = normalizeCategory(rawValue);
+  if (legacyCategory === "Madhyapradesh") {
+    return "Madhya Pradesh";
+  }
+
+  if (legacyCategory === "National/State") {
+    return "National";
+  }
+
+  if (AI_ALLOWED_CATEGORIES.includes(legacyCategory)) {
+    return legacyCategory;
+  }
+
+  return AI_DEFAULT_CATEGORY;
 }
 
 function normalizeDeliveryLanguage(value) {
@@ -4910,7 +5086,7 @@ function compareCategories(left, right) {
 function groupRecordsByCategory(records) {
   return Object.entries(
     records.reduce((accumulator, record) => {
-      const key = normalizeCategory(record.ui_hindi?.category || record.category || DEFAULT_CATEGORY);
+      const key = normalizeAiCategory(record.ui_hindi?.category || record.category || AI_DEFAULT_CATEGORY);
       if (!accumulator[key]) {
         accumulator[key] = [];
       }
@@ -9178,6 +9354,8 @@ apiV1.get("/categories", requireApiScope("feeds:read"), (req, res) => {
     .catch((error) => sendApiError(res, "CATEGORY_CATALOG_FAILED", error.message, 500));
 });
 
+apiV1.use("/news", createCategoryRoutes({ dbPool }));
+
 apiV1.get("/news", requireApiScope("news:read"), async (req, res) => {
   try {
     const category = req.query.category ? normalizeCategory(req.query.category) : null;
@@ -9206,7 +9384,7 @@ apiV1.get("/news/grouped", requireApiScope("news:read"), async (req, res) => {
 
 apiV1.get("/delivery/news", requireApiScope("delivery:read"), async (req, res) => {
   try {
-    const category = req.query.category ? normalizeCategory(req.query.category) : null;
+    const category = req.query.category ? normalizeAiCategory(req.query.category) : null;
     const language = normalizeDeliveryLanguage(req.query.language);
     const limit = normalizeApiLimit(req.query.limit, 50, 200);
     const records = (await listDeliveredAiRewrites(dbPool, { category, language, limit: Math.min(limit * 3, 200) }))
@@ -9255,7 +9433,7 @@ apiV1.get("/delivery/news/:idOrSlug", requireApiScope("delivery:read"), async (r
 
 apiV1.get("/delivery/feed", requireApiScope("delivery:read"), async (req, res) => {
   try {
-    const category = req.query.category ? normalizeCategory(req.query.category) : null;
+    const category = req.query.category ? normalizeAiCategory(req.query.category) : null;
     const language = normalizeDeliveryLanguage(req.query.language);
     const limit = normalizeApiLimit(req.query.limit, 24, 200);
     const grouped = req.query.grouped === undefined ? true : isTruthyQueryValue(req.query.grouped);
@@ -9274,7 +9452,7 @@ apiV1.get("/delivery/feed", requireApiScope("delivery:read"), async (req, res) =
 
 apiV1.get("/ai/news", requireApiScope("ai:read"), async (req, res) => {
   try {
-    const category = req.query.category ? normalizeCategory(req.query.category) : null;
+    const category = req.query.category ? normalizeAiCategory(req.query.category) : null;
     const limit = normalizeApiLimit(req.query.limit, 100, 200);
     const records = await listAiRewrites(dbPool, { category, limit });
     return sendApiSuccess(res, records, { count: records.length, category, limit });
@@ -9289,7 +9467,7 @@ apiV1.get("/ai/news/grouped", requireApiScope("ai:read"), async (req, res) => {
     const rewrites = await listAiRewrites(dbPool, { limit });
     const grouped = Object.entries(
       rewrites.reduce((accumulator, item) => {
-      const key = normalizeCategory(item.ui_hindi?.category || item.news?.category || DEFAULT_CATEGORY);
+      const key = normalizeAiCategory(item.ui_hindi?.category || AI_DEFAULT_CATEGORY);
         if (!accumulator[key]) {
           accumulator[key] = [];
         }
@@ -9788,7 +9966,7 @@ apiV1.post("/admin/clients/:clientId/rotate-key", requireMasterApiKey, async (re
 
 apiV1.get("/admin/ai/rewrites", requireMasterApiKey, async (req, res) => {
   try {
-    const category = req.query.category ? normalizeCategory(req.query.category) : null;
+    const category = req.query.category ? normalizeAiCategory(req.query.category) : null;
     const publicationStatus = typeof req.query.status === "string" ? String(req.query.status).trim().toLowerCase() : null;
     const normalizedStatus = ["draft", "published"].includes(publicationStatus) ? publicationStatus : null;
     const limit = normalizeApiLimit(req.query.limit, 100, 200);
@@ -9885,7 +10063,7 @@ apiV1.get("/admin/analytics/visitors", requireMasterApiKey, async (req, res) => 
     const payload = await getVisitorAnalytics(range);
     return sendApiSuccess(res, payload, {
       range,
-      note: "Unique visitors are counted by browser visitor id when available, with hashed IP/user-agent fallback.",
+      note: "Unique visitors are counted by hashed IP address, with browser visitor id fallback for older rows without IP hash.",
     });
   } catch (error) {
     return sendApiError(res, "VISITOR_ANALYTICS_FAILED", error.message, 500);

@@ -1,14 +1,121 @@
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions";
 const {
-  DEFAULT_UNIFIED_CATEGORY,
-  UNIFIED_NEWS_CATEGORIES,
   normalizeCategory: normalizeUnifiedCategory,
-  normalizeCategoryToken,
 } = require("./config/news-categories");
 const AI_PROMPT_VERSION = "hindi-ui-news-v8-journalist-grade-ge";
-const HINDI_NEWS_CATEGORIES = UNIFIED_NEWS_CATEGORIES;
-const DEFAULT_HINDI_NEWS_CATEGORY = DEFAULT_UNIFIED_CATEGORY;
+const AI_ALLOWED_CATEGORIES = Object.freeze([
+  "National",
+  "International",
+  "Sports",
+  "Business",
+  "Madhya Pradesh",
+  "Entertainment",
+]);
+const AI_DEFAULT_CATEGORY = "National";
+const MP_CATEGORY_SIGNALS = Object.freeze([
+  "madhya pradesh",
+  "madhyapradesh",
+  "mp government",
+  "mp cabinet",
+  "mp police",
+  "mp high court",
+  "mp assembly",
+  "mp election",
+  "mp elections",
+  "mp weather",
+  "mp tourism",
+  "mohan yadav",
+  "bhopal",
+  "indore",
+  "jabalpur",
+  "ujjain",
+  "gwalior",
+  "sagar",
+  "rewa",
+  "satna",
+  "ratlam",
+  "damoh",
+  "panna",
+  "tikamgarh",
+  "vidisha",
+  "katni",
+  "dewas",
+  "shivpuri",
+  "sehore",
+  "chhindwara",
+  "morena",
+  "mandsaur",
+  "neemuch",
+  "burhanpur",
+  "khandwa",
+  "khargone",
+  "dhar",
+  "guna",
+  "betul",
+  "harda",
+  "hoshangabad",
+  "narmadapuram",
+  "shahdol",
+  "sidhi",
+  "singrauli",
+  "anuppur",
+  "umaria",
+  "balaghat",
+  "seoni",
+  "mandla",
+  "dindori",
+  "narsinghpur",
+  "raisen",
+  "rajgarh",
+  "shajapur",
+  "agar malwa",
+  "jhabua",
+  "alirajpur",
+  "barwani",
+  "ashoknagar",
+  "datia",
+  "bhind",
+  "sheopur",
+  "maihar",
+  "mauganj",
+  "pandhurna",
+  "holkar stadium",
+  "barkatullah university",
+  "devi ahilya university",
+  "madhya pradesh high court",
+  "madhya pradesh police",
+  "madhya pradesh assembly",
+  "मध्य प्रदेश",
+  "मध्यप्रदेश",
+  "भोपाल",
+  "इंदौर",
+  "जबलपुर",
+  "उज्जैन",
+  "ग्वालियर",
+  "सागर",
+  "रीवा",
+  "सतना",
+  "रतलाम",
+  "दमोह",
+  "पन्ना",
+  "टीकमगढ़",
+  "विदिशा",
+  "कटनी",
+  "देवास",
+  "शिवपुरी",
+  "सीहोर",
+  "छिंदवाड़ा",
+  "मुरैना",
+  "मंदसौर",
+  "नीमच",
+  "बुरहानपुर",
+  "खंडवा",
+  "नर्मदापुरम",
+  "शहडोल",
+  "मोहन यादव",
+]);
 const AI_REWRITE_SYSTEM_PROMPT = `भूमिका: आप राष्ट्रीय समाचार एजेंसी GE News Hub के Lead Investigative Reporter हैं। आपका काम न्यूनतम इनपुट को PCI यानी Press Council of India की मर्यादा, तथ्यात्मक संतुलन और उच्च-विश्वसनीयता वाली हिंदी रिपोर्ट में बदलना है।
 
 काम: दिए गए शीर्षक, संक्षिप्त विवरण, लिंक, चित्र और कच्चे समाचार इनपुट को 100, 300 और 600 शब्दों के अलग-अलग प्रकाशन योग्य हिंदी समाचार संस्करणों में बदलना। आउटपुट केवल वैध JSON हो।
@@ -81,7 +188,7 @@ long_500 नियम:
 डेटा नियम:
 - तीनों संस्करण अलग गहराई के हों, एक-दूसरे की कॉपी न हों।
 - state सामग्री या स्रोत से पहचानें। न मिले तो "राष्ट्रीय" लिखें।
-- category केवल इनमें से एक हो: Madhyapradesh, National/State, International, Business, Science, Health, Technology, Sports, Entertainment।
+- category केवल इनमें से एक हो: National, International, Sports, Business, Madhya Pradesh, Entertainment।
 - keywords में 3 से 5 हिंदी कीवर्ड दें।
 - source में किसी publication या agency का नाम न दें। "GE News Hub रिपोर्ट" या "आधिकारिक स्रोत" लिखें।
 - image_url वैध और दिया गया हो तो उसे बिना बदले लौटाएं।
@@ -101,7 +208,9 @@ long_500 नियम:
   "image_url": "",
   "image_prompt": "",
   "source": "",
-  "link": ""
+  "link": "",
+  "confidence": 0.98,
+  "reason": ""
 }`;
 
 const AI_REWRITE_SIZE_OVERRIDE = `
@@ -117,17 +226,19 @@ OUTPUT SIZE OVERRIDE:
 
 const AI_CATEGORY_OVERRIDE = `
 CATEGORY OVERRIDE:
-- category must be exactly one of: ${HINDI_NEWS_CATEGORIES.join(", ")}.
-- Decide category by reading the final regenerated title, short_100, medium_300 and long_500, not by copying the RSS/API/source category.
-- Use Madhyapradesh for MP Info district feed, Madhya Pradesh district, Bhopal, Indore, Jabalpur, Gwalior, Ujjain, Rewa, Sagar, Shahdol, Narmadapuram, Chambal and other Madhya Pradesh local/district stories.
-- Use National/State for national, state, regional, local, government, policy, administration, public-service and India stories that are not specifically Madhya Pradesh district stories.
-- Use International for world, global and foreign stories.
-- Use Business for business, finance, economy, market and stock stories.
-- Use Science for science, space, research, discoveries, ISRO/NASA and climate science stories.
-- Use Health for healthcare, medical, medicine, public health, disease, wellness and hospital stories.
-- Use Technology for technology, AI, gadgets, startups, cybersecurity, internet, software and telecom stories.
-- Use Sports for sports, cricket, football, hockey and tournament stories.
-- Use Entertainment for entertainment, cinema, film, Bollywood, TV and celebrity stories.
+- category must be exactly one of: ${AI_ALLOWED_CATEGORIES.join(", ")}.
+- confidence must be a number from 0 to 1.
+- reason must be one short English sentence explaining the category decision.
+- Return one category only. No lowercase, abbreviations, extra categories, plural forms, or spelling variations.
+- The RSS/API/source category is optional context only. Never copy it and never let it override your own classification.
+- Decide category only from the title, article body, entities, organizations, locations, institutions, URL context and final regenerated article.
+- Priority rule 1: If the primary location or institution is in Madhya Pradesh, return Madhya Pradesh immediately. This includes Bhopal, Indore, Jabalpur, Ujjain, Gwalior, Rewa, Sagar, Satna, Chhindwara, Dewas, Ratlam, Katni, Vidisha, Sehore, Morena, Shivpuri, Neemuch, Mandsaur, Damoh, Panna, Tikamgarh, MP Government, Madhya Pradesh High Court, MP Police, MP Education, MP Elections, MP Crime, MP Weather, MP Business, MP Startups, MP Tourism, MP Sports, MP Entertainment, MP Festivals and MP Infrastructure.
+- Madhya Pradesh overrides Sports, Business and Entertainment. Example: Bhopal hosts Ranji Trophy match => Madhya Pradesh. Indore startup raises funding => Madhya Pradesh. Bhopal hosts film festival => Madhya Pradesh.
+- Priority rule 2: If not Madhya Pradesh and the story is about cricket, football, hockey, tennis, kabaddi, IPL, Olympics, athletics, chess, Formula 1, esports, rankings, transfers, match reports or player interviews, return Sports.
+- Priority rule 3: If not Madhya Pradesh or Sports and the story is about economy, finance, banking, RBI, Sensex, Nifty, stock market, IPO, companies, taxation, cryptocurrency, startups, investments or trade, return Business.
+- Priority rule 4: If not Madhya Pradesh, Sports or Business and the story is about Bollywood, Hollywood, OTT, music, television, web series, movies, celebrities, influencers or awards, return Entertainment.
+- Priority rule 5: If the primary event happened outside India, return International.
+- Priority rule 6: For everything else inside India, including Parliament, Supreme Court, elections, crime, technology, science, education, healthcare, weather, government, railways, defence, environment and social issues, return National.
 `;
 
 const { isDuplicateColumnError, isDuplicateKeyError } = require("./db");
@@ -264,8 +375,10 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_url TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
-        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_link TEXT",
         "CREATE UNIQUE INDEX unique_delivery_slug ON ai_news_rewrites (delivery_slug)",
+        "CREATE INDEX IF NOT EXISTS idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
+        "CREATE INDEX IF NOT EXISTS idx_rewrites_published_at ON ai_news_rewrites (published_at)",
+        "CREATE INDEX IF NOT EXISTS idx_rewrites_publication_status ON ai_news_rewrites (publication_status)",
       ]
     : [
         "ALTER TABLE ai_news_rewrites ADD COLUMN publication_status VARCHAR(20) NOT NULL DEFAULT 'draft'",
@@ -284,6 +397,9 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_link TEXT",
         "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
+        "CREATE INDEX idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
+        "CREATE INDEX idx_rewrites_published_at ON ai_news_rewrites (published_at)",
+        "CREATE INDEX idx_rewrites_publication_status ON ai_news_rewrites (publication_status)",
       ];
 
   for (const statement of alterStatements) {
@@ -413,32 +529,180 @@ function isLikelyValidImageUrl(value) {
   }
 }
 
-function normalizeCategoryText(value) {
-  return normalizeCategoryToken(value);
+function normalizeAiCategoryForDisplay(value) {
+  const rawValue = String(value || "").trim();
+  if (AI_ALLOWED_CATEGORIES.includes(rawValue)) {
+    return rawValue;
+  }
+
+  const legacyCategory = normalizeUnifiedCategory(rawValue);
+  if (legacyCategory === "Madhyapradesh") {
+    return "Madhya Pradesh";
+  }
+
+  if (legacyCategory === "National/State") {
+    return "National";
+  }
+
+  if (AI_ALLOWED_CATEGORIES.includes(legacyCategory)) {
+    return legacyCategory;
+  }
+
+  return AI_DEFAULT_CATEGORY;
 }
 
-function normalizeSmartNewsCategory(value) {
-  return normalizeUnifiedCategory(value);
+function validateAiGeneratedCategory(value, context = {}) {
+  const rawValue = String(value || "").trim();
+  if (AI_ALLOWED_CATEGORIES.includes(rawValue)) {
+    return rawValue;
+  }
+
+  const logger = context.logger || console;
+  if (typeof logger?.warn === "function") {
+    const articleId = context.articleId ? ` for news_id=${context.articleId}` : "";
+    const responsePreview = context.rawResponse
+      ? ` response=${String(context.rawResponse).slice(0, 500)}`
+      : "";
+    logger.warn(
+      `[ai-category] Invalid AI category${articleId}: "${rawValue || "(empty)"}". Defaulting to ${AI_DEFAULT_CATEGORY}.${responsePreview}`
+    );
+  }
+
+  return AI_DEFAULT_CATEGORY;
+}
+
+function normalizeAiConfidence(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(parsed, 1));
+}
+
+function normalizeClassificationReason(value) {
+  return cleanGeneratedText(value).replace(/\s+/g, " ").slice(0, 240);
+}
+
+function normalizeDetectionText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findMpCategorySignal(values) {
+  const haystack = normalizeDetectionText(values.filter(Boolean).join(" "));
+  if (!haystack) {
+    return "";
+  }
+
+  return MP_CATEGORY_SIGNALS.find((signal) => {
+    const normalizedSignal = normalizeDetectionText(signal);
+    return normalizedSignal && haystack.includes(normalizedSignal);
+  }) || "";
+}
+
+function enforceMpCategoryOverride(uiHindi, context = {}) {
+  const signal = findMpCategorySignal([
+    context.articleTitle,
+    context.articleText,
+    context.sourceTitle,
+    context.sourceExcerpt,
+    context.sourceUrl,
+    uiHindi?.title,
+    uiHindi?.short_100,
+    uiHindi?.medium_300,
+    uiHindi?.long_500,
+    uiHindi?.state,
+  ]);
+
+  if (!signal || uiHindi.category === "Madhya Pradesh") {
+    return uiHindi;
+  }
+
+  const previousCategory = uiHindi.category || AI_DEFAULT_CATEGORY;
+  const reason = `Madhya Pradesh signal detected: ${signal}.`;
+  const logger = context.logger || console;
+  if (typeof logger?.warn === "function") {
+    const articleId = context.articleId ? ` for news_id=${context.articleId}` : "";
+    logger.warn(`[ai-category] Overriding category${articleId} from ${previousCategory} to Madhya Pradesh. ${reason}`);
+  }
+
+  return {
+    ...uiHindi,
+    category: "Madhya Pradesh",
+    confidence: Math.max(normalizeAiConfidence(uiHindi.confidence), 0.99),
+    reason,
+  };
+}
+
+function buildFallbackAiPayload(articleRecord, articleText, reason) {
+  const title = cleanGeneratedText(articleText?.title || articleRecord?.title || "समाचार अपडेट");
+  const body = cleanGeneratedText(articleText?.combinedText || articleRecord?.source_excerpt || title);
+  const shortText = truncateText(body || title, 900);
+  const mediumText = truncateText(body || title, 2200);
+  const longText = truncateText(body || title, 4200);
+  const uiHindi = enforceMpCategoryOverride({
+    title,
+    short_100: shortText,
+    medium_300: mediumText,
+    long_500: longText,
+    keywords: [],
+    category: AI_DEFAULT_CATEGORY,
+    state: "राष्ट्रीय",
+    confidence: 0,
+    reason: normalizeClassificationReason(reason) || "Fallback category used after invalid AI response.",
+    image_url: "",
+    image_prompt: "",
+    source: "आधिकारिक स्रोत",
+    link: String(articleRecord?.source_url || "").trim(),
+  }, {
+    articleId: articleRecord?.id,
+    articleTitle: articleRecord?.title,
+    articleText: articleText?.combinedText,
+    sourceTitle: articleText?.title,
+    sourceExcerpt: articleRecord?.source_excerpt,
+    sourceUrl: articleRecord?.source_url,
+  });
+
+  return {
+    ...createLegacyPayloadFromUiHindi(uiHindi),
+    ui_hindi: uiHindi,
+  };
+}
+
+function getLegacyAiCategoryValue(category) {
+  if (category === "Madhya Pradesh") {
+    return "Madhyapradesh";
+  }
+
+  if (category === "National") {
+    return "National/State";
+  }
+
+  return category;
 }
 
 function chooseSmartNewsCategory(payload) {
   const keywordsText = Array.isArray(payload?.keywords) ? payload.keywords.join(" ") : "";
-  const exactCategory = normalizeSmartNewsCategory(payload?.category);
-  if (exactCategory && exactCategory !== DEFAULT_HINDI_NEWS_CATEGORY) {
-    return exactCategory;
+  const exactAiCategory = normalizeAiCategoryForDisplay(payload?.category);
+  if (exactAiCategory) {
+    return exactAiCategory;
   }
 
-  return normalizeUnifiedCategory([
+  return normalizeAiCategoryForDisplay(normalizeUnifiedCategory([
     payload?.title,
     payload?.short_100,
     payload?.medium_300,
     payload?.long_500,
     keywordsText,
     payload?.state,
-  ].filter(Boolean).join(" "));
+  ].filter(Boolean).join(" ")));
 }
 
-function normalizeUiHindiPayload(payload) {
+function normalizeUiHindiPayload(payload, options = {}) {
   const normalized = payload && typeof payload === "object" ? payload : {};
   const keywords = Array.isArray(normalized.keywords)
     ? normalized.keywords.map((item) => removePublisherMentions(item)).filter(Boolean).slice(0, 5)
@@ -449,23 +713,31 @@ function normalizeUiHindiPayload(payload) {
     medium_300: removePublisherMentions(normalized.medium_300),
     long_500: removePublisherMentions(normalized.long_500),
     keywords,
-    category: normalized.category,
+    category: options.strictCategory
+      ? validateAiGeneratedCategory(normalized.category, options)
+      : normalizeAiCategoryForDisplay(normalized.category),
     state: removePublisherMentions(normalized.state) || "राष्ट्रीय",
+    confidence: normalizeAiConfidence(normalized.confidence),
+    reason: normalizeClassificationReason(normalized.reason),
   };
 
-  return {
+  const uiHindi = {
     title: cleanedPayload.title,
     short_100: cleanedPayload.short_100,
     medium_300: cleanedPayload.medium_300,
     long_500: cleanedPayload.long_500,
     keywords,
-    category: chooseSmartNewsCategory(cleanedPayload),
+    category: cleanedPayload.category,
     state: cleanedPayload.state,
+    confidence: cleanedPayload.confidence,
+    reason: cleanedPayload.reason,
     image_url: "",
     image_prompt: "",
     source: removePublisherMentions(normalized.source) || "आधिकारिक स्रोत",
     link: String(normalized.link || "").trim(),
   };
+
+  return enforceMpCategoryOverride(uiHindi, options);
 }
 
 function buildImagePrompt(title, state) {
@@ -517,7 +789,7 @@ function slugifyText(value) {
 function parseJsonResponse(rawText) {
   const normalized = String(rawText || "").trim();
   if (!normalized) {
-    throw new Error("Gemini returned an empty response.");
+    throw new Error("DeepSeek returned an empty response.");
   }
 
   const fencedMatch = normalized.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -525,23 +797,37 @@ function parseJsonResponse(rawText) {
   return JSON.parse(jsonText);
 }
 
-function validateAiPayload(payload) {
+function validateAiPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object") {
-    throw new Error("Gemini response was not a valid object.");
+    throw new Error("DeepSeek response was not a valid object.");
   }
 
   if (hasUiHindiShape(payload)) {
-    const uiHindi = normalizeUiHindiPayload(payload);
+    if (options.requireClassificationMetadata) {
+      const rawConfidence = Number(payload.confidence);
+      if (!Number.isFinite(rawConfidence) || rawConfidence < 0 || rawConfidence > 1) {
+        throw new Error("DeepSeek response confidence must be a number between 0 and 1.");
+      }
+
+      if (!cleanGeneratedText(payload.reason)) {
+        throw new Error("DeepSeek response is missing reason.");
+      }
+    }
+
+    const uiHindi = normalizeUiHindiPayload(payload, {
+      ...options,
+      strictCategory: true,
+    });
     const requiredFields = ["title", "short_100", "medium_300", "long_500", "category", "state", "source", "link"];
     for (const field of requiredFields) {
       if (!uiHindi[field]) {
-        throw new Error(`Gemini response is missing ${field}.`);
+        throw new Error(`DeepSeek response is missing ${field}.`);
       }
     }
 
     for (const field of ["title", "short_100", "medium_300", "long_500"]) {
       if (!hasHindiText(uiHindi[field])) {
-        throw new Error(`Gemini response field ${field} is not Hindi.`);
+        throw new Error(`DeepSeek response field ${field} is not Hindi.`);
       }
     }
 
@@ -553,7 +839,7 @@ function validateAiPayload(payload) {
 
   for (const language of ["english", "hindi"]) {
     if (!payload[language] || typeof payload[language] !== "object") {
-      throw new Error(`Gemini response is missing the ${language} section.`);
+      throw new Error(`DeepSeek response is missing the ${language} section.`);
     }
   }
 
@@ -686,6 +972,7 @@ async function saveAiRewrite(dbPool, {
       `,
       ["ai-auto", deliverySlug, savedRewrite.id]
     );
+    await invalidateCategoryCache(dbPool);
     return findAiRewriteByNewsId(dbPool, newsId);
   }
 
@@ -957,8 +1244,8 @@ async function withTransientRetry(task, { retries = 2, delayMs = 1200 } = {}) {
 }
 
 async function generateAiRewrite(articleRecord, articleText) {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
+  if (!DEEPSEEK_API_KEY) {
+    throw new Error("DEEPSEEK_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
   }
 
   const prompt = `${AI_REWRITE_SYSTEM_PROMPT}
@@ -966,7 +1253,7 @@ ${AI_REWRITE_SIZE_OVERRIDE}
 ${AI_CATEGORY_OVERRIDE}
 
 RAW ARTICLE DETAILS
-Category: ${articleRecord.category || "uncategorized"}
+Publisher category to ignore: ${articleRecord.category || "uncategorized"}
 Feed source: ${articleRecord.feed_source || "unknown"}
 Original title: ${articleRecord.title || ""}
 Original URL: ${articleRecord.source_url}
@@ -984,34 +1271,31 @@ ${truncateText(articleText.combinedText, 14000)}`;
       ? prompt
       : `${prompt}
 
-कड़ा सुधार निर्देश: पिछला उत्तर अस्वीकार हुआ क्योंकि जरूरी भाषा या structure पूरा नहीं था। अब JSON values मुख्य रूप से हिंदी में लिखें। केवल "Subheadings:", "Agency GE News Hub" और "Photo Caption:" ये labels इसी spelling में रह सकते हैं।`;
+कड़ा सुधार निर्देश: पिछला उत्तर अस्वीकार हुआ क्योंकि जरूरी भाषा, structure, category, confidence या reason पूरा नहीं था। अब JSON values मुख्य रूप से हिंदी में लिखें। confidence 0 से 1 के बीच number रखें और reason एक छोटी English sentence रखें। केवल "Subheadings:", "Agency GE News Hub" और "Photo Caption:" ये labels इसी spelling में रह सकते हैं।`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: attemptPrompt }],
-            },
-          ],
-          generationConfig: {
-            temperature: attempt === 0 ? 0.45 : 0.2,
-            responseMimeType: "application/json",
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: attemptPrompt,
           },
-        }),
-      }
-    );
+        ],
+        temperature: attempt === 0 ? 0.45 : 0.2,
+        response_format: { type: "json_object" },
+      }),
+    });
 
     const payload = await response.json();
 
     if (!response.ok) {
-      lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+      lastError = new Error(payload?.error?.message || `DeepSeek request failed with status ${response.status}.`);
       if (response.status === 429 || response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
         continue;
@@ -1020,29 +1304,37 @@ ${truncateText(articleText.combinedText, 14000)}`;
     }
 
     rawText =
-      payload?.candidates?.[0]?.content?.parts
-        ?.map((part) => part.text || "")
-        .join("\n")
-        .trim() || "";
+      String(payload?.choices?.[0]?.message?.content || "").trim();
 
     try {
-      parsed = validateAiPayload(parseJsonResponse(rawText));
+      parsed = validateAiPayload(parseJsonResponse(rawText), {
+        articleId: articleRecord.id,
+        articleTitle: articleRecord.title,
+        articleText: articleText.combinedText,
+        sourceTitle: articleText.title,
+        sourceExcerpt: articleRecord.source_excerpt,
+        sourceUrl: articleRecord.source_url,
+        rawResponse: rawText,
+        requireClassificationMetadata: true,
+      });
       break;
     } catch (error) {
       lastError = error;
-      if (attempt === 0 && /not Hindi|missing|JSON/i.test(error.message)) {
+      if (attempt === 0 && /not Hindi|missing|JSON|confidence|reason|category/i.test(error.message)) {
         continue;
       }
-      throw error;
+      break;
     }
   }
 
   if (!parsed) {
-    throw lastError || new Error("Gemini did not return a valid Hindi rewrite.");
+    const fallbackReason = lastError?.message || "DeepSeek did not return a valid Hindi rewrite.";
+    console.warn(`[ai-rewrite] Using fallback payload for news_id=${articleRecord.id}: ${fallbackReason}`);
+    parsed = buildFallbackAiPayload(articleRecord, articleText, fallbackReason);
   }
 
   return {
-    model_name: GEMINI_MODEL,
+    model_name: DEEPSEEK_MODEL,
     raw_response: rawText,
     payload: parsed,
   };
@@ -1062,7 +1354,17 @@ function formatAiRewriteRecord(record) {
     }
   };
 
+  const parseRawUiPayload = () => {
+    try {
+      const parsed = JSON.parse(record.raw_response || "{}");
+      return hasUiHindiShape(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
   const parseUiHindi = () => {
+    const rawUiPayload = parseRawUiPayload();
     if (record.ui_short_100 || record.ui_medium_300 || record.ui_long_500) {
       const uiHindi = normalizeUiHindiPayload({
         title: record.ui_title || record.hindi_headline || record.english_headline || record.source_title,
@@ -1076,17 +1378,26 @@ function formatAiRewriteRecord(record) {
         image_prompt: record.ui_image_prompt,
         source: record.ui_source,
         link: record.ui_link || record.source_url,
+        confidence: rawUiPayload?.confidence,
+        reason: rawUiPayload?.reason,
+      }, {
+        articleId: record.news_id,
+        articleTitle: record.news_title,
+        sourceTitle: record.source_title,
+        sourceExcerpt: record.source_excerpt,
+        sourceUrl: record.source_url,
       });
       return uiHindi;
     }
 
-    try {
-      const parsed = JSON.parse(record.raw_response || "{}");
-      if (hasUiHindiShape(parsed)) {
-        return normalizeUiHindiPayload(parsed);
-      }
-    } catch {
-      // Older records may contain non-JSON or legacy JSON only.
+    if (rawUiPayload) {
+      return normalizeUiHindiPayload(rawUiPayload, {
+        articleId: record.news_id,
+        articleTitle: record.news_title,
+        sourceTitle: record.source_title,
+        sourceExcerpt: record.source_excerpt,
+        sourceUrl: record.source_url,
+      });
     }
 
     const fallbackTitle = cleanGeneratedText(record.hindi_headline || record.english_headline || record.source_title);
@@ -1267,8 +1578,15 @@ async function listAiRewrites(dbPool, { category = null, limit = 50, publication
   const params = [];
 
   if (category) {
-    conditions.push("fn.category = ?");
-    params.push(category);
+    const aiCategory = normalizeAiCategoryForDisplay(category);
+    const legacyCategory = getLegacyAiCategoryValue(aiCategory);
+    if (legacyCategory !== aiCategory) {
+      conditions.push("(air.ui_category = ? OR air.ui_category = ?)");
+      params.push(aiCategory, legacyCategory);
+    } else {
+      conditions.push("air.ui_category = ?");
+      params.push(aiCategory);
+    }
   }
 
   if (publicationStatus) {
@@ -1311,28 +1629,15 @@ function formatDeliveredRewrite(record, language = "both") {
   const deliveredImageUrl = isLikelyValidImageUrl(formatted.news?.image_link)
     ? formatted.news.image_link
     : "";
-  const sourceCategory = formatted.news?.source_category
-    ? normalizeUnifiedCategory(formatted.news.source_category)
-    : formatted.news?.category
-      ? normalizeUnifiedCategory(formatted.news.category)
-      : "";
-  const uiCategory = formatted.ui_hindi?.category ? normalizeUnifiedCategory(formatted.ui_hindi.category) : "";
-  const feedSource = String(formatted.news?.feed_source || "").toLowerCase();
-  const preferredUiCategory =
-    uiCategory &&
-    uiCategory !== DEFAULT_HINDI_NEWS_CATEGORY &&
-    !(uiCategory === "Madhyapradesh" && sourceCategory !== "Madhyapradesh" && !feedSource.startsWith("mpinfo-"))
-      ? uiCategory
-      : "";
-  const deliveryCategory = sourceCategory === "Madhyapradesh" || feedSource.startsWith("mpinfo-")
-    ? "Madhyapradesh"
-    : preferredUiCategory || sourceCategory || uiCategory || chooseSmartNewsCategory({
+  const deliveryCategory = formatted.ui_hindi?.category
+    ? normalizeAiCategoryForDisplay(formatted.ui_hindi.category)
+    : chooseSmartNewsCategory({
     title: formatted.ui_hindi?.title || formatted.hindi?.headline || formatted.english?.headline,
     short_100: formatted.ui_hindi?.short_100 || formatted.hindi?.short_description,
     medium_300: formatted.ui_hindi?.medium_300 || formatted.hindi?.what_to_watch_next,
     long_500: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description,
     keywords: [],
-    category: formatted.news?.category,
+    category: formatted.ui_hindi?.category,
     state: formatted.ui_hindi?.state,
   });
 
@@ -1528,6 +1833,7 @@ async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publis
     `,
     [normalizedStatus, nextPublishedAt, nextPublishedBy, nextSlug, rewriteId]
   );
+  await invalidateCategoryCache(dbPool);
 
   const [rows] = await dbPool.query(
     `
@@ -1818,7 +2124,7 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
   app.get("/ai/news", async (req, res) => {
     try {
       const dbPool = getDbPool();
-      const category = req.query.category ? normalizeUnifiedCategory(req.query.category) : null;
+      const category = req.query.category ? normalizeAiCategoryForDisplay(req.query.category) : null;
       const limit = Math.max(1, Math.min(Number.parseInt(req.query.limit, 10) || 100, 200));
       const rewrites = await listAiRewrites(dbPool, { category, limit });
 
@@ -1843,7 +2149,7 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
       const rewrites = await listAiRewrites(dbPool, { limit });
       const grouped = Object.entries(
         rewrites.reduce((accumulator, item) => {
-          const key = normalizeUnifiedCategory(item.ui_hindi?.category || item.news?.category || DEFAULT_HINDI_NEWS_CATEGORY);
+          const key = normalizeAiCategoryForDisplay(item.ui_hindi?.category || AI_DEFAULT_CATEGORY);
           if (!accumulator[key]) {
             accumulator[key] = [];
           }
@@ -1873,6 +2179,16 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
       });
     }
   });
+}
+
+async function invalidateCategoryCache(dbPool) {
+  try {
+    const CategoryService = require("./services/category.service");
+    const categoryService = new CategoryService({ dbPool });
+    await categoryService.invalidateCache();
+  } catch (err) {
+    console.error("Cache invalidation error in ai-rewrites:", err.message);
+  }
 }
 
 module.exports = {
