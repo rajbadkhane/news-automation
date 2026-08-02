@@ -1,13 +1,50 @@
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
-const RAW_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
-const DEEPSEEK_MODEL = RAW_DEEPSEEK_MODEL === "deepseek-v4-flash" ? "deepseek-chat" : RAW_DEEPSEEK_MODEL;
+const RAW_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+function normalizeDeepSeekModelName(value) {
+  const model = String(value || "deepseek-v4-flash").trim() || "deepseek-v4-flash";
+  if (model === "deepseek-chat" || model === "deepseek-reasoner") {
+    return "deepseek-v4-flash";
+  }
+  return model;
+}
+const DEEPSEEK_MODEL = normalizeDeepSeekModelName(RAW_DEEPSEEK_MODEL);
+if (DEEPSEEK_MODEL !== RAW_DEEPSEEK_MODEL) {
+  console.warn(`[ai-rewrite] Configured DeepSeek model "${RAW_DEEPSEEK_MODEL}" is retired. Using "${DEEPSEEK_MODEL}".`);
+}
 const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions";
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
-const AI_PROMPT_VERSION = "hindi-ui-news-v8-journalist-grade-ge";
+const AI_PROMPT_VERSION = "bilingual-compact-v9-three-fact-subheadings";
+const AI_REWRITE_MODE = String(process.env.AI_REWRITE_MODE || "bilingual-compact").trim().toLowerCase();
+const AI_REWRITE_MODES = Object.freeze({
+  BILINGUAL_COMPACT: "bilingual-compact",
+  HINDI_LEGACY: "hindi-legacy",
+});
 const AI_LONG_REWRITE_MIN_WORDS = 950;
 const AI_LONG_REWRITE_MAX_WORDS = 1050;
+const AI_LEAD_BODY_MIN_WORDS = 95;
+const AI_LEAD_BODY_MAX_WORDS = 105;
+const AI_EXTENSION_200_MIN_WORDS = 190;
+const AI_EXTENSION_200_MAX_WORDS = 210;
+const AI_EXTENSION_700_MIN_WORDS = 680;
+const AI_EXTENSION_700_MAX_WORDS = 720;
+const AI_LEAD_BODY_ACCEPT_MIN_WORDS = 80;
+const AI_LEAD_BODY_ACCEPT_MAX_WORDS = 130;
+const AI_EXTENSION_200_ACCEPT_MIN_WORDS = 140;
+const AI_EXTENSION_200_ACCEPT_MAX_WORDS = 260;
+const AI_EXTENSION_700_ACCEPT_MIN_WORDS = 500;
+const AI_EXTENSION_700_ACCEPT_MAX_WORDS = 800;
+const AI_BODY_100_MIN_WORDS = 90;
+const AI_BODY_100_MAX_WORDS = 110;
+const AI_BODY_300_MIN_WORDS = 280;
+const AI_BODY_300_MAX_WORDS = 320;
+const AI_BODY_100_EMERGENCY_MIN_WORDS = 80;
+const AI_BODY_100_EMERGENCY_MAX_WORDS = 120;
+const AI_BODY_300_EMERGENCY_MIN_WORDS = 260;
+const AI_BODY_300_EMERGENCY_MAX_WORDS = 340;
+const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
+const AI_MIN_SOURCE_FACT_TOKENS = 4;
 const AI_ALLOWED_CATEGORIES = Object.freeze([
   "National",
   "International",
@@ -227,6 +264,112 @@ OUTPUT SIZE OVERRIDE:
 - Keep these three versions in the JSON and make them independently publishable raw article bodies.
 `;
 
+const FIXED_BILINGUAL_SYSTEM_PROMPT = `You are the GE News Hub bilingual rewrite desk.
+
+Permanent editorial rules:
+- Produce one compact bilingual rewrite package from supplied scraped news.
+- Return only valid JSON.
+- Do not mention any publisher, publication, website, reporter, news agency, wire service or portal except GE News Hub.
+- Remove source publisher names from generated article text, headlines, captions, source labels and keywords.
+- Do not invent names, numbers, dates, quotes, deaths, injuries, arrests, FIR details, court orders, government decisions, financial figures, police action, official reactions or ground-level scenes.
+- Include official response, claims, allegations and ground reality only when supported by the supplied source.
+- Use every verified detail and safe directly supported context needed to build the requested article length.
+- If the source is too thin for the requested length, use only supported context and avoid fabrication; the application will validate the result.
+- Hindi and English must cover the same verified story. English must not add facts absent from the Hindi output or source.
+- Names, numbers, dates, places and official titles must remain consistent in both languages.
+- Do not return image_url, image_prompt, link or source. The application sets them locally.
+
+Compact JSON schema:
+{
+  "classification": {
+    "category": "National",
+    "state": "राष्ट्रीय",
+    "confidence": 0.98,
+    "reason": "The primary event is an Indian national issue outside Madhya Pradesh.",
+    "keywords": ["हिंदी कीवर्ड 1", "हिंदी कीवर्ड 2", "हिंदी कीवर्ड 3"]
+  },
+  "hindi": {
+    "heading": "",
+    "subheadings": ["", "", ""],
+    "photo_caption": "",
+    "lead_100": "",
+    "extension_200": "",
+    "extension_700": ""
+  },
+  "english": {
+    "heading": "",
+    "subheadings": ["", "", ""],
+    "photo_caption": "",
+    "lead_100": "",
+    "extension_200": "",
+    "extension_700": ""
+  }
+}
+
+Size rules:
+- Generate progressive body sections once per language.
+- Segment names describe editorial progression, not exact independent word-count contracts.
+- Aim lead_100 at 80 to 130 body words when practical.
+- Aim extension_200 at 160 to 300 additional body words when practical.
+- extension_700 must usually be 650 to 850 additional supported body words.
+- lead_100 + extension_200 + extension_700 must reach a publishable 950 to 1050 body words in each language, preferably 980 to 1030.
+- Never stop the progressive stream around 300, 500 or 600 words when the supplied source has enough verified material for 950 to 1050 words.
+- This is a hard output contract: each language must contain enough body text for the cumulative stream to validate at 950 to 1050 body words.
+- For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
+- Keep sentences complete and reasonably short so the application can trim at sentence boundaries near 100, 300 and 1000 words.
+- The application will assemble body100/body300/body1000 cumulatively from the progressive stream.
+- Prioritize factual accuracy, clear progression, complete sentences and non-repetition over exact segment counts.
+- Do not repeat the headline, subheadings or caption inside body sections.
+- Each language gets exactly one headline, exactly three factual subheadings and exactly one photo caption.
+- Hindi headline: natural newspaper Hindi, 10 to 20 words, factual, restrained, not clickbait.
+- English headline: natural newspaper English, 8 to 18 words, faithful to the same central event, not an awkward word-for-word translation.
+- Each subheading must be a supported factual mini-headline. Do not use labels such as Fact 1, Key Point, Main Update or Angle.
+- Captions should be factual, 20 to 30 words when practical, and must not describe unsupported visual details.
+- Include attributed statements only when supported by the supplied source.
+- Include ground-level details only when supported by the supplied source.
+- Never invent a generic official, police, administration, witness or local-resident response merely to satisfy article structure.
+
+Category rules:
+- category must be exactly one of: ${AI_ALLOWED_CATEGORIES.join(", ")}.
+- confidence must be a number from 0 to 1.
+- reason must be one short English sentence explaining the category decision.
+- The RSS/API/source category is optional context only. Never copy it blindly.
+- Priority rule 1: If the primary location or institution is in Madhya Pradesh, return Madhya Pradesh immediately. This includes Bhopal, Indore, Jabalpur, Ujjain, Gwalior, Rewa, Sagar, Satna, Chhindwara, Dewas, Ratlam, Katni, Vidisha, Sehore, Morena, Shivpuri, Neemuch, Mandsaur, Damoh, Panna, Tikamgarh, MP Government, Madhya Pradesh High Court, MP Police, MP Education, MP Elections, MP Crime, MP Weather, MP Business, MP Startups, MP Tourism, MP Sports, MP Entertainment, MP Festivals and MP Infrastructure.
+- Madhya Pradesh overrides Sports, Business and Entertainment.
+- Priority rule 2: If not Madhya Pradesh and the story is about cricket, football, hockey, tennis, kabaddi, IPL, Olympics, athletics, chess, Formula 1, esports, rankings, transfers, match reports or player interviews, return Sports.
+- Priority rule 3: If not Madhya Pradesh or Sports and the story is about economy, finance, banking, RBI, Sensex, Nifty, stock market, IPO, companies, taxation, cryptocurrency, startups, investments or trade, return Business.
+- Priority rule 4: If not Madhya Pradesh, Sports or Business and the story is about Bollywood, Hollywood, OTT, music, television, web series, movies, celebrities, influencers or awards, return Entertainment.
+- Priority rule 5: If the primary event happened outside India, return International.
+- Priority rule 6: For everything else inside India, return National.`;
+
+const BILINGUAL_REPAIR_SYSTEM_PROMPT = `${FIXED_BILINGUAL_SYSTEM_PROMPT}
+
+Repair mode:
+- Return only requested repair operations.
+- Do not regenerate correct fields.
+- Use this exact JSON shape: {"replace_language": {}, "replace": {}, "append": {}}.`;
+
+const BILINGUAL_STAGE1_SYSTEM_PROMPT = `${FIXED_BILINGUAL_SYSTEM_PROMPT}
+
+Stage 1 core-report mode:
+- Return only the core compact bilingual report.
+- Do not return extension_700 in this stage.
+- Use this exact shape: {"classification":{},"hindi":{"heading":"","subheadings":["","",""],"photo_caption":"","lead_100":"","extension_200":""},"english":{"heading":"","subheadings":["","",""],"photo_caption":"","lead_100":"","extension_200":""}}.
+- lead_100 and extension_200 are progressive body sections. They must contain enough complete sentences for the application to assemble valid 100-word and 300-word article bodies.
+- lead_100 + extension_200 must be 280-330 body words in each language when possible.
+- Do not include heading, subheadings, caption, agency label, source, link or image fields inside body sections.`;
+
+const BILINGUAL_STAGE2_SYSTEM_PROMPT = `${FIXED_BILINGUAL_SYSTEM_PROMPT}
+
+Stage 2 continuation mode:
+- Return only JSON with this exact shape: {"hindi_extension_700":"","english_extension_700":""}.
+- Continue the supplied Stage 1 reports.
+- Do not return classification, headings, subheadings, captions, links, source labels, image fields or agency labels.
+- Do not repeat the first 300 words.
+- Use only supported facts and directly supported context from the supplied source.
+- Preserve factual agreement between Hindi and English.
+- Add no unsupported names, numbers, quotes or official responses.`;
+
 const AI_CATEGORY_OVERRIDE = `
 CATEGORY OVERRIDE:
 - category must be exactly one of: ${AI_ALLOWED_CATEGORIES.join(", ")}.
@@ -255,6 +398,9 @@ const AI_REWRITES_PER_CATEGORY_RUN = Math.max(
 );
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
+);
+const AI_REWRITE_ENABLED = !["false", "0", "no"].includes(
+  String(process.env.AI_REWRITE_ENABLED || "true").toLowerCase()
 );
 
 async function initializeAiRewriteStorage(dbPool) {
@@ -790,6 +936,584 @@ function createLegacyPayloadFromUiHindi(uiHindi) {
   };
 }
 
+function hasCompactBilingualShape(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      payload.classification &&
+      payload.hindi &&
+      payload.english &&
+      !payload.ui_hindi
+  );
+}
+
+function hasBilingualPayloadShape(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      payload.english &&
+      payload.hindi &&
+      payload.ui_hindi
+  );
+}
+
+function hasEnglishText(value) {
+  const text = String(value || "");
+  return /[A-Za-z]/.test(text) && !/[\u0900-\u097F]/.test(text);
+}
+
+function countBodyWords(value) {
+  return countArticleWords(value);
+}
+
+function joinBodySegments(segments) {
+  return segments.map((segment) => cleanGeneratedText(segment)).filter(Boolean).join("\n\n");
+}
+
+function splitCompleteSentences(value) {
+  const normalized = cleanGeneratedText(value).replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const matches = normalized.match(/[^।.!?]+[।.!?]+(?:["')\]]+)?|[^।.!?]+$/g) || [];
+  return matches
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function joinSentences(sentences) {
+  return sentences.map((sentence) => cleanGeneratedText(sentence)).filter(Boolean).join(" ");
+}
+
+function normalizeSentencesClosestToTarget(sourceText, {
+  preferredMin,
+  preferredMax,
+  emergencyMin,
+  emergencyMax,
+  target,
+  requiredPrefix = "",
+}) {
+  const prefixText = cleanGeneratedText(requiredPrefix);
+  const prefixWords = countBodyWords(prefixText);
+  const cleanSourceText = cleanGeneratedText(sourceText).replace(/\s+/g, " ").trim();
+  const sourceSentences = splitCompleteSentences(cleanSourceText);
+  const prefixSentences = prefixText ? splitCompleteSentences(prefixText) : [];
+  const remainingText = prefixText && cleanSourceText.startsWith(prefixText)
+    ? cleanSourceText.slice(prefixText.length).trim()
+    : cleanSourceText;
+  const remainingSentences = prefixText
+    ? splitCompleteSentences(remainingText)
+    : sourceSentences;
+
+  let bestText = prefixText;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const seedSentences = prefixText ? prefixSentences : [];
+  const candidateSentences = [...seedSentences];
+
+  if (!sourceSentences.length && !prefixText) {
+    return {
+      text: "",
+      words: 0,
+      valid: false,
+      emergency: false,
+    };
+  }
+
+  const evaluate = () => {
+    const text = joinSentences(candidateSentences);
+    const words = countBodyWords(text);
+    const inEmergency = words >= emergencyMin && words <= emergencyMax;
+    const distance = Math.abs(words - target);
+    if (inEmergency && distance < bestDistance) {
+      bestText = text;
+      bestDistance = distance;
+    }
+  };
+
+  evaluate();
+  for (const sentence of remainingSentences) {
+    candidateSentences.push(sentence);
+    evaluate();
+    const words = countBodyWords(joinSentences(candidateSentences));
+    if (words > emergencyMax && words > target) {
+      break;
+    }
+  }
+
+  let bestWords = countBodyWords(bestText);
+  if ((bestWords < emergencyMin || bestWords > emergencyMax) && countBodyWords(cleanSourceText) >= emergencyMin) {
+    const sourceWords = cleanSourceText.split(/\s+/).filter(Boolean);
+    const prefixWordList = prefixText ? prefixText.split(/\s+/).filter(Boolean) : [];
+    const desiredTotal = Math.min(Math.max(target, emergencyMin), emergencyMax);
+    const fallbackWords = prefixText && cleanSourceText.startsWith(prefixText)
+      ? [
+          ...prefixWordList,
+          ...cleanSourceText.slice(prefixText.length).trim().split(/\s+/).filter(Boolean).slice(0, Math.max(0, desiredTotal - prefixWordList.length)),
+        ]
+      : sourceWords.slice(0, desiredTotal);
+    const fallbackText = cleanGeneratedText(fallbackWords.join(" "));
+    const fallbackCount = countBodyWords(fallbackText);
+    if (fallbackCount >= emergencyMin && fallbackCount <= emergencyMax) {
+      bestText = fallbackText;
+      bestWords = fallbackCount;
+    }
+  }
+
+  return {
+    text: bestText,
+    words: bestWords,
+    valid: bestWords >= emergencyMin && bestWords <= emergencyMax,
+    preferred: bestWords >= preferredMin && bestWords <= preferredMax,
+    emergency: bestWords >= emergencyMin && bestWords <= emergencyMax && (bestWords < preferredMin || bestWords > preferredMax),
+    prefix_words: prefixWords,
+  };
+}
+
+function normalizeProgressiveBodies(pack, language) {
+  const invalidFields = [];
+  const leadWords = countBodyWords(pack.lead_100);
+  const extension200Words = countBodyWords(pack.extension_200);
+  const extension700Words = countBodyWords(pack.extension_700);
+  const details = {};
+  const segmentCounts = {
+    lead_100: leadWords,
+    extension_200: extension200Words,
+    extension_700: extension700Words,
+  };
+  const progressiveStream = joinBodySegments([pack.lead_100, pack.extension_200, pack.extension_700]);
+
+  const body100 = normalizeSentencesClosestToTarget(progressiveStream, {
+    preferredMin: AI_BODY_100_MIN_WORDS,
+    preferredMax: AI_BODY_100_MAX_WORDS,
+    emergencyMin: AI_BODY_100_EMERGENCY_MIN_WORDS,
+    emergencyMax: AI_BODY_100_EMERGENCY_MAX_WORDS,
+    target: 100,
+  });
+  if (!body100.valid) {
+    const field = `${language}.body100_cumulative`;
+    invalidFields.push(field);
+    details[field] = {
+      words: body100.words,
+      min: AI_BODY_100_EMERGENCY_MIN_WORDS,
+      max: AI_BODY_100_EMERGENCY_MAX_WORDS,
+      message: "Cumulative progressive stream could not produce a valid body100 prefix.",
+    };
+  }
+
+  const body300 = normalizeSentencesClosestToTarget(progressiveStream, {
+    preferredMin: AI_BODY_300_MIN_WORDS,
+    preferredMax: AI_BODY_300_MAX_WORDS,
+    emergencyMin: AI_BODY_300_EMERGENCY_MIN_WORDS,
+    emergencyMax: AI_BODY_300_EMERGENCY_MAX_WORDS,
+    target: 300,
+    requiredPrefix: body100.text,
+  });
+  if (!body300.valid) {
+    const field = `${language}.body300_cumulative`;
+    invalidFields.push(field);
+    details[field] = {
+      words: body300.words,
+      min: AI_BODY_300_EMERGENCY_MIN_WORDS,
+      max: AI_BODY_300_EMERGENCY_MAX_WORDS,
+      message: "Cumulative progressive stream could not produce a valid body300 prefix.",
+    };
+  }
+
+  const body1000 = normalizeSentencesClosestToTarget(progressiveStream, {
+    preferredMin: AI_LONG_REWRITE_MIN_WORDS,
+    preferredMax: AI_LONG_REWRITE_MAX_WORDS,
+    emergencyMin: AI_LONG_REWRITE_MIN_WORDS,
+    emergencyMax: AI_LONG_REWRITE_MAX_WORDS,
+    target: 1000,
+    requiredPrefix: body300.text,
+  });
+  if (!body1000.valid) {
+    const field = `${language}.long_cumulative`;
+    invalidFields.push(field);
+    details[field] = {
+      words: body1000.words,
+      source_words: countBodyWords(progressiveStream),
+      min: AI_LONG_REWRITE_MIN_WORDS,
+      max: AI_LONG_REWRITE_MAX_WORDS,
+      message: "Cumulative progressive stream could not produce a valid body1000 article.",
+    };
+  }
+
+  return {
+    invalidFields,
+    details,
+    bodies: {
+      body100: body100.text,
+      body300: body300.text,
+      body1000: body1000.text,
+    },
+    counts: {
+      segment: segmentCounts,
+      normalized: {
+        body100: body100.words,
+        body300: body300.words,
+        body1000: body1000.words,
+      },
+    },
+  };
+}
+
+function assemblePublishableArticle({
+  heading,
+  subheadings,
+  photoCaption,
+  body,
+}) {
+  return [
+    cleanGeneratedText(heading),
+    "",
+    "Subheadings:",
+    ...subheadings.map((item) => `\u2022 ${cleanGeneratedText(item)}`),
+    "",
+    `Agency GE News Hub ${cleanGeneratedText(body)}`,
+    "",
+    `Photo Caption: ${cleanGeneratedText(photoCaption)}`,
+  ].join("\n");
+}
+
+function getSubheadingCount(articleText) {
+  const lines = String(articleText || "").split(/\r?\n/);
+  const labelIndex = lines.findIndex((line) => line.trim() === "Subheadings:");
+  if (labelIndex < 0) {
+    return 0;
+  }
+
+  let count = 0;
+  for (let index = labelIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) {
+      break;
+    }
+    if (/^\u2022\s+/.test(line)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function hasExactlyOneLabel(articleText, label) {
+  const matches = String(articleText || "").match(new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"));
+  return (matches || []).length === 1;
+}
+
+function assertWordRange(value, min, max, fieldPath, invalidFields) {
+  const count = countBodyWords(value);
+  if (count < min || count > max) {
+    invalidFields.push(fieldPath);
+  }
+  return count;
+}
+
+function createAiValidationError(message, invalidFields = [], details = {}) {
+  const error = new Error(message);
+  error.invalidFields = Array.from(new Set(invalidFields.filter(Boolean)));
+  error.validationDetails = details && typeof details === "object" ? details : {};
+  return error;
+}
+
+function getPathValue(source, path) {
+  return String(path || "").split(".").reduce((current, key) => (
+    current && Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined
+  ), source);
+}
+
+function setPathValue(target, path, value) {
+  const keys = String(path || "").split(".").filter(Boolean);
+  if (!keys.length) {
+    return;
+  }
+
+  let cursor = target;
+  for (let index = 0; index < keys.length - 1; index += 1) {
+    const key = keys[index];
+    if (!cursor[key] || typeof cursor[key] !== "object") {
+      cursor[key] = {};
+    }
+    cursor = cursor[key];
+  }
+  cursor[keys[keys.length - 1]] = value;
+}
+
+function coerceRepairValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    for (const key of ["text", "value", "content", "replacement", "continuation", "body", "extension_700", "lead_100", "extension_200"]) {
+      if (typeof value[key] === "string") {
+        return value[key];
+      }
+      if (Array.isArray(value[key])) {
+        return value[key];
+      }
+    }
+  }
+  return value;
+}
+
+function normalizeSubheadingList(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((item) => removePublisherMentions(item).replace(/^\s*(?:Fact|Key Point|Main Update|Angle)\s*\d*\s*[:.-]?\s*/i, "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function hasBadSubheadingLabel(value) {
+  return /^\s*(?:Fact\s*\d+|Key Point|Important Fact|Main Update|Angle\s*\d+|\d+[\).:-])\b/i.test(String(value || ""));
+}
+
+function extractNumberFacts(value) {
+  return Array.from(String(value || "").matchAll(/\b\d+(?:[.,]\d+)*%?\b/g)).map((match) => match[0]).sort();
+}
+
+function assertSameNumberFacts(hindiBody, englishBody, invalidFields) {
+  const hindiNumbers = extractNumberFacts(hindiBody).join("|");
+  const englishNumbers = extractNumberFacts(englishBody).join("|");
+  if (hindiNumbers !== englishNumbers) {
+    console.warn("[ai-rewrite-validation] Hindi/English numeric tokens differ; continuing with source-grounded validation.");
+  }
+}
+
+function normalizeCompactLanguagePackage(languagePayload, language) {
+  const normalized = languagePayload && typeof languagePayload === "object" ? languagePayload : {};
+  const cleaner = language === "hindi" ? removePublisherMentions : cleanGeneratedText;
+  return {
+    heading: cleaner(normalized.heading),
+    subheadings: normalizeSubheadingList(normalized.subheadings),
+    photo_caption: cleaner(normalized.photo_caption),
+    lead_100: cleaner(normalized.lead_100),
+    extension_200: cleaner(normalized.extension_200),
+    extension_700: cleaner(normalized.extension_700),
+  };
+}
+
+function buildCompactBilingualPayload(compactPayload, articleRecord, articleText, options = {}) {
+  const invalidFields = [];
+  const validationDetails = {};
+  const normalized = compactPayload && typeof compactPayload === "object" ? compactPayload : {};
+  const classification = normalized.classification && typeof normalized.classification === "object"
+    ? normalized.classification
+    : {};
+  const category = validateAiGeneratedCategory(classification.category, {
+    ...options,
+    articleId: articleRecord?.id,
+    articleTitle: articleRecord?.title,
+    articleText: articleText?.combinedText,
+    sourceTitle: articleText?.title,
+    sourceExcerpt: articleRecord?.source_excerpt,
+    sourceUrl: articleRecord?.source_url,
+  });
+  const confidence = normalizeAiConfidence(classification.confidence);
+  const reason = normalizeClassificationReason(classification.reason);
+  const keywords = Array.isArray(classification.keywords)
+    ? classification.keywords.map((item) => removePublisherMentions(item)).filter(Boolean).slice(0, 5)
+    : [];
+  const hindi = normalizeCompactLanguagePackage(normalized.hindi, "hindi");
+  const english = normalizeCompactLanguagePackage(normalized.english, "english");
+
+  if (!normalized.classification || typeof normalized.classification !== "object") {
+    invalidFields.push("classification");
+  }
+  if (!AI_ALLOWED_CATEGORIES.includes(String(classification.category || "").trim())) {
+    invalidFields.push("classification.category");
+  }
+  if (!Number.isFinite(Number(classification.confidence)) || Number(classification.confidence) < 0 || Number(classification.confidence) > 1) {
+    invalidFields.push("classification.confidence");
+  }
+  if (!reason) {
+    invalidFields.push("classification.reason");
+  }
+  if (!normalized.hindi || typeof normalized.hindi !== "object") {
+    invalidFields.push("hindi");
+  }
+  if (!normalized.english || typeof normalized.english !== "object") {
+    invalidFields.push("english");
+  }
+
+  for (const language of ["hindi", "english"]) {
+    const pack = language === "hindi" ? hindi : english;
+    const textCheck = language === "hindi" ? hasHindiText : hasEnglishText;
+    const oppositeCheck = language === "hindi" ? hasEnglishText : hasHindiText;
+    for (const field of ["heading", "photo_caption", "lead_100", "extension_200", "extension_700"]) {
+      if (!pack[field]) {
+        invalidFields.push(`${language}.${field}`);
+      } else if (!textCheck(pack[field])) {
+        invalidFields.push(`${language}.${field}`);
+      }
+    }
+
+    if (!Array.isArray(pack.subheadings) || pack.subheadings.length !== 3) {
+      invalidFields.push(`${language}.subheadings`);
+    }
+    pack.subheadings.forEach((subheading, index) => {
+      if (!subheading || !textCheck(subheading) || oppositeCheck(subheading) || hasBadSubheadingLabel(subheading)) {
+        invalidFields.push(`${language}.subheadings.${index}`);
+      }
+    });
+  }
+
+  if (cleanGeneratedText(english.heading).toLowerCase() === cleanGeneratedText(hindi.heading).toLowerCase()) {
+    invalidFields.push("english.heading");
+  }
+  if (hasHindiText([
+    english.heading,
+    english.photo_caption,
+    english.lead_100,
+    english.extension_200,
+    english.extension_700,
+    ...english.subheadings,
+  ].join(" "))) {
+    invalidFields.push("english");
+  }
+  const hindiProgressive = normalizeProgressiveBodies(hindi, "hindi");
+  const englishProgressive = normalizeProgressiveBodies(english, "english");
+  invalidFields.push(...hindiProgressive.invalidFields, ...englishProgressive.invalidFields);
+  Object.assign(validationDetails, hindiProgressive.details, englishProgressive.details);
+
+  assertSameNumberFacts(
+    hindiProgressive.bodies.body1000,
+    englishProgressive.bodies.body1000,
+    invalidFields
+  );
+
+  for (const language of ["hindi", "english"]) {
+    const source = normalized[language] || {};
+    if (source.image_url || source.image_prompt || source.link || source.source) {
+      invalidFields.push(`${language}.image_url`);
+    }
+  }
+  if (normalized.image_url || normalized.image_prompt || classification.image_url || classification.image_prompt) {
+    invalidFields.push("image_url");
+  }
+
+  if (invalidFields.length) {
+    throw createAiValidationError(
+      `DeepSeek compact bilingual response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+      invalidFields,
+      validationDetails
+    );
+  }
+
+  let uiHindi = enforceMpCategoryOverride({
+    title: hindi.heading,
+    short_100: assemblePublishableArticle({
+      heading: hindi.heading,
+      subheadings: hindi.subheadings,
+      photoCaption: hindi.photo_caption,
+      body: hindiProgressive.bodies.body100,
+    }),
+    medium_300: assemblePublishableArticle({
+      heading: hindi.heading,
+      subheadings: hindi.subheadings,
+      photoCaption: hindi.photo_caption,
+      body: hindiProgressive.bodies.body300,
+    }),
+    long_500: assemblePublishableArticle({
+      heading: hindi.heading,
+      subheadings: hindi.subheadings,
+      photoCaption: hindi.photo_caption,
+      body: hindiProgressive.bodies.body1000,
+    }),
+    keywords,
+    category,
+    state: removePublisherMentions(classification.state) || "\u0930\u093e\u0937\u094d\u091f\u094d\u0930\u0940\u092f",
+    confidence,
+    reason,
+    image_url: "",
+    image_prompt: "",
+    source: "GE News Hub \u0930\u093f\u092a\u094b\u0930\u094d\u091f",
+    link: String(articleRecord?.source_url || "").trim(),
+  }, {
+    articleId: articleRecord?.id,
+    articleTitle: articleRecord?.title,
+    articleText: articleText?.combinedText,
+    sourceTitle: articleText?.title,
+    sourceExcerpt: articleRecord?.source_excerpt,
+    sourceUrl: articleRecord?.source_url,
+  });
+
+  const englishShort100 = assemblePublishableArticle({
+    heading: english.heading,
+    subheadings: english.subheadings,
+    photoCaption: english.photo_caption,
+    body: englishProgressive.bodies.body100,
+  });
+  const englishMedium300 = assemblePublishableArticle({
+    heading: english.heading,
+    subheadings: english.subheadings,
+    photoCaption: english.photo_caption,
+    body: englishProgressive.bodies.body300,
+  });
+  const englishLong1000 = assemblePublishableArticle({
+    heading: english.heading,
+    subheadings: english.subheadings,
+    photoCaption: english.photo_caption,
+    body: englishProgressive.bodies.body1000,
+  });
+
+  const assembledArticles = [
+    uiHindi.short_100,
+    uiHindi.medium_300,
+    uiHindi.long_500,
+    englishShort100,
+    englishMedium300,
+    englishLong1000,
+  ];
+  for (const article of assembledArticles) {
+    if (!hasExactlyOneLabel(article, "Subheadings:") || !hasExactlyOneLabel(article, "Photo Caption:") || getSubheadingCount(article) !== 3) {
+      throw createAiValidationError("Assembled bilingual article structure is invalid.", ["hindi.subheadings", "english.subheadings"]);
+    }
+  }
+
+  return {
+    english: {
+      headline: english.heading,
+      top_summary: english.subheadings,
+      short_description: englishShort100,
+      long_description: englishLong1000,
+      what_to_watch_next: englishMedium300,
+    },
+    hindi: {
+      headline: hindi.heading,
+      top_summary: hindi.subheadings,
+      short_description: uiHindi.short_100,
+      long_description: uiHindi.long_500,
+      what_to_watch_next: uiHindi.medium_300,
+    },
+    ui_hindi: {
+      ...uiHindi,
+      subheadings: hindi.subheadings,
+    },
+    ui_english: {
+      title: english.heading,
+      short_100: englishShort100,
+      medium_300: englishMedium300,
+      long_500: englishLong1000,
+      subheadings: english.subheadings,
+      category: uiHindi.category,
+      state: uiHindi.state,
+      source: uiHindi.source,
+      link: uiHindi.link,
+      image_url: "",
+      image_prompt: "",
+    },
+    _compact_counts: {
+      hindi: hindiProgressive.counts,
+      english: englishProgressive.counts,
+    },
+    _compact_repair_plan: normalized._compact_repair_plan || null,
+  };
+}
+
 function slugifyText(value) {
   return String(value || "")
     .toLowerCase()
@@ -877,21 +1601,31 @@ ${truncateText(nextLong, 8000)}`;
         "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+      body: JSON.stringify(buildDeepSeekRequestBody([
+        {
+          role: "user",
+          content: prompt,
+        },
+      ], {
         temperature: 0.2,
-        max_tokens: 2500,
-        response_format: { type: "json_object" },
-      }),
+        maxTokens: 2500,
+      })),
     });
 
     const supplementPayload = await response.json();
+    logDeepSeekUsage(supplementPayload, {
+      articleId: articleRecord?.id,
+      mode: AI_REWRITE_MODES.HINDI_LEGACY,
+      call: "legacy-long-supplement",
+    });
+    const supplementInfo = getDeepSeekResponseInfo(supplementPayload, {
+      maxTokens: 2500,
+      call: "legacy-long-supplement",
+    });
+    logDeepSeekResponseInfo(supplementInfo, {
+      articleId: articleRecord?.id,
+      mode: AI_REWRITE_MODES.HINDI_LEGACY,
+    });
     if (!response.ok) {
       lastError = new Error(
         supplementPayload?.error?.message || `DeepSeek long_500 supplement failed with status ${response.status}.`
@@ -902,8 +1636,17 @@ ${truncateText(nextLong, 8000)}`;
       }
       throw lastError;
     }
+    const supplementTerminationError = createDeepSeekTerminationError(supplementInfo);
+    if (supplementTerminationError) {
+      lastError = supplementTerminationError;
+      if (supplementTerminationError.transient) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        continue;
+      }
+      throw supplementTerminationError;
+    }
 
-    const rawSupplementJson = String(supplementPayload?.choices?.[0]?.message?.content || "").trim();
+    const rawSupplementJson = supplementInfo.content;
     const parsedSupplement = parseJsonResponse(rawSupplementJson);
     const addition = cleanGeneratedText(parsedSupplement.addition);
     if (!addition) {
@@ -981,21 +1724,31 @@ ${truncateText(articleText.combinedText, 10000)}`;
         "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+      body: JSON.stringify(buildDeepSeekRequestBody([
+        {
+          role: "user",
+          content: prompt,
+        },
+      ], {
         temperature: 0.2,
-        max_tokens: 7000,
-        response_format: { type: "json_object" },
-      }),
+        maxTokens: 7000,
+      })),
     });
 
     const expansionPayload = await response.json();
+    logDeepSeekUsage(expansionPayload, {
+      articleId: articleRecord?.id,
+      mode: AI_REWRITE_MODES.HINDI_LEGACY,
+      call: "legacy-long-expansion",
+    });
+    const expansionInfo = getDeepSeekResponseInfo(expansionPayload, {
+      maxTokens: 7000,
+      call: "legacy-long-expansion",
+    });
+    logDeepSeekResponseInfo(expansionInfo, {
+      articleId: articleRecord?.id,
+      mode: AI_REWRITE_MODES.HINDI_LEGACY,
+    });
     if (!response.ok) {
       lastError = new Error(
         expansionPayload?.error?.message || `DeepSeek long_500 expansion failed with status ${response.status}.`
@@ -1006,8 +1759,17 @@ ${truncateText(articleText.combinedText, 10000)}`;
       }
       throw lastError;
     }
+    const expansionTerminationError = createDeepSeekTerminationError(expansionInfo);
+    if (expansionTerminationError) {
+      lastError = expansionTerminationError;
+      if (expansionTerminationError.transient) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        continue;
+      }
+      throw expansionTerminationError;
+    }
 
-    const rawLongJson = String(expansionPayload?.choices?.[0]?.message?.content || "").trim();
+    const rawLongJson = expansionInfo.content;
     const parsedLong = parseJsonResponse(rawLongJson);
     const nextLong = cleanGeneratedText(parsedLong.long_500);
     if (!nextLong) {
@@ -1059,6 +1821,79 @@ ${truncateText(articleText.combinedText, 10000)}`;
 function validateAiPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object") {
     throw new Error("DeepSeek response was not a valid object.");
+  }
+
+  if (hasCompactBilingualShape(payload)) {
+    return buildCompactBilingualPayload(payload, options.articleRecord, options.articleTextObject, options);
+  }
+
+  if (hasBilingualPayloadShape(payload)) {
+    const invalidFields = [];
+    const english = payload.english || {};
+    const hindi = payload.hindi || {};
+    const uiHindi = normalizeUiHindiPayload(payload.ui_hindi, {
+      ...options,
+      strictCategory: true,
+    });
+
+    for (const language of ["english", "hindi"]) {
+      const block = language === "english" ? english : hindi;
+      for (const field of ["headline", "short_description", "long_description", "what_to_watch_next"]) {
+        if (!cleanGeneratedText(block[field])) {
+          invalidFields.push(`${language}.${field}`);
+        }
+      }
+      const summary = cleanSummaryList(block.top_summary);
+      if (summary.length !== 3 || summary.some(hasBadSubheadingLabel)) {
+        invalidFields.push(`${language}.top_summary`);
+      }
+    }
+
+    if (!hasHindiText(hindi.headline) || !hasHindiText(hindi.short_description) || !hasHindiText(hindi.long_description)) {
+      invalidFields.push("hindi");
+    }
+    if (!hasEnglishText(english.headline) || !hasEnglishText(english.short_description) || !hasEnglishText(english.long_description)) {
+      invalidFields.push("english");
+    }
+    if (cleanGeneratedText(english.short_description) === cleanGeneratedText(hindi.short_description)) {
+      invalidFields.push("english.short_description");
+    }
+    if (!uiHindi.short_100 || !uiHindi.medium_300 || !uiHindi.long_500) {
+      invalidFields.push("ui_hindi");
+    }
+
+    if (invalidFields.length) {
+      throw createAiValidationError(
+        `DeepSeek bilingual payload failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+        invalidFields
+      );
+    }
+
+    return {
+      english: {
+        headline: cleanGeneratedText(english.headline),
+        top_summary: cleanSummaryList(english.top_summary).slice(0, 3),
+        short_description: cleanGeneratedText(english.short_description),
+        long_description: cleanGeneratedText(english.long_description),
+        what_to_watch_next: cleanGeneratedText(english.what_to_watch_next),
+      },
+      hindi: {
+        headline: cleanGeneratedText(hindi.headline),
+        top_summary: cleanSummaryList(hindi.top_summary).slice(0, 3),
+        short_description: cleanGeneratedText(hindi.short_description),
+        long_description: cleanGeneratedText(hindi.long_description),
+        what_to_watch_next: cleanGeneratedText(hindi.what_to_watch_next),
+      },
+      ui_hindi: {
+        ...uiHindi,
+        subheadings: Array.isArray(payload.ui_hindi?.subheadings)
+          ? cleanSummaryList(payload.ui_hindi.subheadings).slice(0, 3)
+          : cleanSummaryList(hindi.top_summary).slice(0, 3),
+      },
+      ui_english: payload.ui_english && typeof payload.ui_english === "object"
+        ? payload.ui_english
+        : undefined,
+    };
   }
 
   if (hasUiHindiShape(payload)) {
@@ -1152,7 +1987,7 @@ async function saveAiRewrite(dbPool, {
   payload,
   rawResponse,
 }) {
-  const normalizedPayload = hasUiHindiShape(payload) ? validateAiPayload(payload) : payload;
+  const normalizedPayload = validateAiPayload(payload);
   const english = normalizedPayload.english || {};
   const hindi = normalizedPayload.hindi || {};
   const uiHindi = normalizedPayload.ui_hindi || (hasUiHindiShape(payload) ? normalizeUiHindiPayload(payload) : null);
@@ -1509,7 +2344,847 @@ async function withTransientRetry(task, { retries = 2, delayMs = 1200 } = {}) {
   throw lastError;
 }
 
-async function generateAiRewrite(articleRecord, articleText) {
+function getDeepSeekCacheHitTokens(usage = {}) {
+  return usage.cache_hit_tokens ??
+    usage.prompt_cache_hit_tokens ??
+    usage.prompt_cache_hit ??
+    usage?.prompt_tokens_details?.cached_tokens ??
+    null;
+}
+
+function getDeepSeekReasoningTokens(usage = {}) {
+  return usage?.completion_tokens_details?.reasoning_tokens || 0;
+}
+
+function logDeepSeekUsage(payload, { articleId, mode, call }) {
+  const usage = payload?.usage;
+  if (!usage || typeof usage !== "object") {
+    return;
+  }
+
+  console.log(
+    `[ai-rewrite-usage] news_id=${articleId || "unknown"} mode=${mode} call=${call}` +
+      ` prompt_tokens=${usage.prompt_tokens ?? ""}` +
+      ` completion_tokens=${usage.completion_tokens ?? ""}` +
+      ` total_tokens=${usage.total_tokens ?? ""}` +
+      ` cache_hit_tokens=${getDeepSeekCacheHitTokens(usage) ?? ""}`
+  );
+}
+
+function buildDeepSeekRequestBody(messages, {
+  temperature = 0.2,
+  maxTokens = 20000,
+  responseFormat = { type: "json_object" },
+} = {}) {
+  return {
+    model: DEEPSEEK_MODEL,
+    messages,
+    thinking: {
+      type: "disabled",
+    },
+    temperature,
+    max_tokens: maxTokens,
+    response_format: responseFormat,
+  };
+}
+
+function getDeepSeekResponseInfo(payload, { maxTokens, call }) {
+  const choice = payload?.choices?.[0];
+  const usage = payload?.usage || {};
+  const content = String(choice?.message?.content || "").trim();
+  return {
+    requested_model: DEEPSEEK_MODEL,
+    returned_model: payload?.model || "",
+    thinking: "disabled",
+    max_tokens: maxTokens,
+    finish_reason: choice?.finish_reason || "unknown",
+    prompt_tokens: usage.prompt_tokens ?? 0,
+    completion_tokens: usage.completion_tokens ?? 0,
+    reasoning_tokens: getDeepSeekReasoningTokens(usage),
+    total_tokens: usage.total_tokens ?? 0,
+    content_chars: content.length,
+    call,
+    content,
+  };
+}
+
+function logDeepSeekResponseInfo(info, { articleId, mode }) {
+  console.log(
+    `[ai-rewrite-response] news_id=${articleId || "unknown"}` +
+      ` mode=${mode || ""}` +
+      ` call=${info.call || ""}` +
+      ` requested_model=${info.requested_model}` +
+      ` returned_model=${info.returned_model}` +
+      ` thinking=${info.thinking}` +
+      ` max_tokens=${info.max_tokens}` +
+      ` finish_reason=${info.finish_reason}` +
+      ` prompt_tokens=${info.prompt_tokens}` +
+      ` completion_tokens=${info.completion_tokens}` +
+      ` reasoning_tokens=${info.reasoning_tokens}` +
+      ` total_tokens=${info.total_tokens}` +
+      ` content_chars=${info.content_chars}`
+  );
+}
+
+function createDeepSeekTerminationError(info) {
+  if (info.finish_reason === "length") {
+    return new Error("DeepSeek output was truncated because the generation token limit was reached.");
+  }
+  if (info.finish_reason === "content_filter") {
+    return new Error("DeepSeek response was blocked by the provider content filter.");
+  }
+  if (info.finish_reason === "insufficient_system_resource") {
+    const error = new Error("DeepSeek provider reported insufficient system resources.");
+    error.transient = true;
+    return error;
+  }
+  return null;
+}
+
+async function requestDeepSeekJson(messages, {
+  articleId,
+  mode,
+  call,
+  temperature = 0.2,
+  maxTokens = 20000,
+  retries = 2,
+} = {}) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildDeepSeekRequestBody(messages, { temperature, maxTokens })),
+    });
+
+    const payload = await response.json();
+    logDeepSeekUsage(payload, { articleId, mode, call });
+    const responseInfo = getDeepSeekResponseInfo(payload, { maxTokens, call });
+    logDeepSeekResponseInfo(responseInfo, { articleId, mode });
+
+    if (response.ok) {
+      const terminationError = createDeepSeekTerminationError(responseInfo);
+      if (terminationError) {
+        lastError = terminationError;
+        if (terminationError.transient && attempt < retries) {
+          await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+          continue;
+        }
+        throw terminationError;
+      }
+      return responseInfo;
+    }
+
+    lastError = new Error(payload?.error?.message || `DeepSeek request failed with status ${response.status}.`);
+    if ((response.status === 429 || response.status >= 500) && attempt < retries) {
+      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+      continue;
+    }
+
+    throw lastError;
+  }
+
+  throw lastError || new Error("DeepSeek request failed.");
+}
+
+function buildRawArticleContextPrompt(articleRecord, articleText) {
+  const sourceWordCount = countArticleWords(articleText.combinedText);
+  return `RAW ARTICLE DETAILS
+Publisher category to ignore: ${articleRecord.category || "uncategorized"}
+Feed source: ${articleRecord.feed_source || "unknown"}
+Original title: ${articleRecord.title || ""}
+Original URL: ${articleRecord.source_url}
+Source name: ${articleRecord.feed_source || "RSS"}
+Extracted source word count: ${sourceWordCount}
+`;
+}
+
+function buildCompactVariableArticlePrompt(articleRecord, articleText) {
+  return `${buildRawArticleContextPrompt(articleRecord, articleText)}
+OUTPUT LENGTH REMINDER
+- Return both Hindi and English progressive bodies.
+- Each language's lead_100 + extension_200 + extension_700 must contain 950 to 1050 body words.
+- Do not return only a 300-word summary when the extracted source has enough material.
+
+RAW ARTICLE TEXT
+${truncateText(articleText.combinedText, 14000)}`;
+}
+
+function buildStage1CorePrompt(articleRecord, articleText) {
+  return `${buildRawArticleContextPrompt(articleRecord, articleText)}
+
+STAGE 1 OUTPUT
+- Return classification, Hindi heading/subheadings/photo_caption/lead_100/extension_200 and English heading/subheadings/photo_caption/lead_100/extension_200.
+- Do not return extension_700 yet.
+- The core body must support local cumulative body100 and body300 normalization.
+- In each language, lead_100 + extension_200 should be 280-330 body words total.
+- Do not stop Stage 1 around 150 or 200 body words per language.
+
+RAW ARTICLE TEXT
+${truncateText(articleText.combinedText, 14000)}`;
+}
+
+function getStage1CurrentCounts(stage1Payload = {}) {
+  const hindi = stage1Payload.hindi || {};
+  const english = stage1Payload.english || {};
+  const hindiCurrent = countArticleWords(`${hindi.lead_100 || ""}\n\n${hindi.extension_200 || ""}`);
+  const englishCurrent = countArticleWords(`${english.lead_100 || ""}\n\n${english.extension_200 || ""}`);
+  return {
+    hindiCurrent,
+    englishCurrent,
+    hindiTarget: Math.max(500, 1000 - hindiCurrent),
+    englishTarget: Math.max(500, 1000 - englishCurrent),
+    hindiMin: Math.max(450, 950 - hindiCurrent),
+    hindiMax: Math.max(Math.max(450, 950 - hindiCurrent) + 50, 1050 - hindiCurrent),
+    englishMin: Math.max(450, 950 - englishCurrent),
+    englishMax: Math.max(Math.max(450, 950 - englishCurrent) + 50, 1050 - englishCurrent),
+  };
+}
+
+function buildStage2ContinuationPrompt(articleRecord, articleText, stage1Payload) {
+  const counts = getStage1CurrentCounts(stage1Payload);
+  return `STAGE 2 LONG-FORM CONTINUATION
+
+Original URL: ${articleRecord.source_url}
+Original title: ${articleRecord.title || ""}
+
+Current counts:
+- Hindi lead_100 + extension_200 words: ${counts.hindiCurrent}
+- English lead_100 + extension_200 words: ${counts.englishCurrent}
+- Hindi continuation target: about ${counts.hindiTarget} words, acceptable ${counts.hindiMin}-${counts.hindiMax} words.
+- English continuation target: about ${counts.englishTarget} words, acceptable ${counts.englishMin}-${counts.englishMax} words.
+
+Stable Stage 1 context:
+${JSON.stringify({
+  classification: stage1Payload.classification,
+  hindi: {
+    heading: stage1Payload.hindi?.heading,
+    subheadings: stage1Payload.hindi?.subheadings,
+    photo_caption: stage1Payload.hindi?.photo_caption,
+    lead_100: stage1Payload.hindi?.lead_100,
+    extension_200: stage1Payload.hindi?.extension_200,
+  },
+  english: {
+    heading: stage1Payload.english?.heading,
+    subheadings: stage1Payload.english?.subheadings,
+    photo_caption: stage1Payload.english?.photo_caption,
+    lead_100: stage1Payload.english?.lead_100,
+    extension_200: stage1Payload.english?.extension_200,
+  },
+}, null, 2)}
+
+Return only:
+{"hindi_extension_700":"","english_extension_700":""}
+
+Continuation rules:
+- hindi_extension_700 must be Hindi only and ${counts.hindiMin}-${counts.hindiMax} words when possible.
+- english_extension_700 must be English only and ${counts.englishMin}-${counts.englishMax} words when possible.
+- Continue the existing report without repeating the Stage 1 body.
+- Do not include heading, subheadings, caption, agency label or source label.
+- Use complete sentences so local normalization can trim near 1000 words.
+
+RAW ARTICLE TEXT
+${truncateText(articleText.combinedText, 14000)}`;
+}
+
+function mergeStage2Continuation(stage1Payload, stage2Payload) {
+  const hindiContinuation = coerceRepairValue(
+    stage2Payload?.hindi_extension_700 ||
+      stage2Payload?.hindi?.extension_700 ||
+      stage2Payload?.hindi?.continuation ||
+      stage2Payload?.hindi?.text ||
+      stage2Payload?.hindi
+  );
+  const englishContinuation = coerceRepairValue(
+    stage2Payload?.english_extension_700 ||
+      stage2Payload?.english?.extension_700 ||
+      stage2Payload?.english?.continuation ||
+      stage2Payload?.english?.text ||
+      stage2Payload?.english
+  );
+  return {
+    classification: stage1Payload.classification,
+    hindi: {
+      ...stage1Payload.hindi,
+      extension_700: cleanGeneratedText(hindiContinuation),
+    },
+    english: {
+      ...stage1Payload.english,
+      extension_700: cleanGeneratedText(englishContinuation),
+    },
+  };
+}
+
+function validateStage1CorePayload(stage1Payload, articleRecord, articleText, options = {}) {
+  const compactCandidate = mergeStage2Continuation(stage1Payload, {
+    hindi_extension_700: repeatValidationSentence("हिंदी", 80, "।"),
+    english_extension_700: repeatValidationSentence("english", 80, "."),
+  });
+  const invalidFields = [];
+  const normalized = compactCandidate && typeof compactCandidate === "object" ? compactCandidate : {};
+  const hindi = normalizeCompactLanguagePackage(normalized.hindi, "hindi");
+  const english = normalizeCompactLanguagePackage(normalized.english, "english");
+  const hindiProgressive = normalizeProgressiveBodies({
+    ...hindi,
+    extension_700: "",
+  }, "hindi");
+  const englishProgressive = normalizeProgressiveBodies({
+    ...english,
+    extension_700: "",
+  }, "english");
+
+  try {
+    validateAiGeneratedCategory(normalized.classification?.category, {
+      ...options,
+      articleId: articleRecord?.id,
+      articleTitle: articleRecord?.title,
+      articleText: articleText?.combinedText,
+      sourceTitle: articleText?.title,
+      sourceExcerpt: articleRecord?.source_excerpt,
+      sourceUrl: articleRecord?.source_url,
+    });
+  } catch {
+    invalidFields.push("classification.category");
+  }
+
+  for (const language of ["hindi", "english"]) {
+    const pack = language === "hindi" ? hindi : english;
+    const textCheck = language === "hindi" ? hasHindiText : hasEnglishText;
+    for (const field of ["heading", "lead_100", "extension_200"]) {
+      if (!pack[field] || !textCheck(pack[field])) {
+        invalidFields.push(`${language}.${field}`);
+      }
+    }
+    if (pack.subheadings.length !== 3) {
+      invalidFields.push(`${language}.subheadings`);
+    }
+    pack.subheadings.forEach((subheading, index) => {
+      if (!subheading || !textCheck(subheading) || hasBadSubheadingLabel(subheading)) {
+        invalidFields.push(`${language}.subheadings.${index}`);
+      }
+    });
+  }
+
+  for (const field of hindiProgressive.invalidFields) {
+    if (field !== "hindi.long_cumulative" && field !== "hindi.body300_cumulative") {
+      invalidFields.push(field);
+    }
+  }
+  for (const field of englishProgressive.invalidFields) {
+    if (field !== "english.long_cumulative" && field !== "english.body300_cumulative") {
+      invalidFields.push(field);
+    }
+  }
+
+  if (invalidFields.length) {
+    throw createAiValidationError(
+      `DeepSeek Stage 1 core response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+      invalidFields
+    );
+  }
+
+  return {
+    classification: normalized.classification,
+    hindi,
+    english,
+  };
+}
+
+function repeatValidationSentence(language, count, punctuation) {
+  const word = language === "hindi" ? "समाचार" : "validation";
+  return Array.from({ length: count }, () => `${word} ${word} ${word} ${word} ${word}${punctuation}`).join(" ");
+}
+
+function analyzeVerifiedSourceMaterial(articleText) {
+  const rawText = String(articleText?.combinedText || "");
+  const cleanedText = normalizeWhitespace(
+    rawText
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\b(?:home|menu|subscribe|advertisement|privacy policy|terms of use|follow us|share|login|sign in)\b/gi, " ")
+  );
+  const words = cleanedText.split(/\s+/).filter(Boolean);
+  const distinctWords = new Set(words.map((word) => word.toLowerCase().replace(/[^a-z0-9\u0900-\u097F]/gi, "")).filter(Boolean));
+  const factualTokens = (cleanedText.match(/\b\d+(?:[.,]\d+)*%?\b|[\u0900-\u097F]{4,}|[A-Z][a-z]{3,}/g) || []).length;
+  const sentenceCount = splitCompleteSentences(cleanedText).filter((sentence) => countBodyWords(sentence) >= 6).length;
+  const hasEnoughWords = words.length >= AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE;
+  const hasMeaningfulVariety = distinctWords.size >= Math.min(35, Math.max(18, Math.floor(words.length * 0.35)));
+  const hasFactualMaterial = factualTokens >= AI_MIN_SOURCE_FACT_TOKENS && sentenceCount >= 2;
+
+  return {
+    chars: cleanedText.length,
+    words: words.length,
+    distinct_words: distinctWords.size,
+    factual_tokens: factualTokens,
+    sentence_count: sentenceCount,
+    sufficient: hasEnoughWords && hasMeaningfulVariety && hasFactualMaterial,
+  };
+}
+
+function assertSufficientSourceMaterial(articleRecord, articleText) {
+  const analysis = analyzeVerifiedSourceMaterial(articleText);
+  console.log(
+    `[ai-rewrite-input] news_id=${articleRecord?.id || "unknown"}` +
+      ` extracted_chars=${analysis.chars}` +
+      ` extracted_words=${analysis.words}`
+  );
+
+  if (!analysis.sufficient) {
+    const error = new Error("Insufficient verified source material for a safe bilingual long-form rewrite.");
+    error.sourceAnalysis = analysis;
+    throw error;
+  }
+
+  return analysis;
+}
+
+function mergeCompactRepairs(compactPayload, repairPayload) {
+  const merged = JSON.parse(JSON.stringify(compactPayload || {}));
+  if (repairPayload?.repairs && typeof repairPayload.repairs === "object") {
+    for (const [path, value] of Object.entries(repairPayload.repairs)) {
+      setPathValue(merged, path, coerceRepairValue(value));
+    }
+  }
+  const replaceLanguage = repairPayload?.replace_language && typeof repairPayload.replace_language === "object"
+    ? repairPayload.replace_language
+    : {};
+  const replace = repairPayload?.replace && typeof repairPayload.replace === "object"
+    ? repairPayload.replace
+    : {};
+  const append = repairPayload?.append && typeof repairPayload.append === "object"
+    ? repairPayload.append
+    : {};
+
+  for (const [language, value] of Object.entries(replaceLanguage)) {
+    if ((language === "hindi" || language === "english") && value && typeof value === "object") {
+      merged[language] = value;
+    }
+  }
+
+  for (const [path, value] of Object.entries(replace)) {
+    setPathValue(merged, path, coerceRepairValue(value));
+  }
+
+  for (const [path, value] of Object.entries(append)) {
+    if (!/\.(extension_700)$/.test(path)) {
+      continue;
+    }
+    const existingValue = cleanGeneratedText(getPathValue(merged, path));
+    const repairValue = cleanGeneratedText(coerceRepairValue(value));
+    setPathValue(merged, path, joinBodySegments([existingValue, repairValue]));
+  }
+
+  return merged;
+}
+
+function getCompactContinuationRange(compactPayload, language) {
+  const pack = compactPayload?.[language] || {};
+  const currentWords = countArticleWords(joinBodySegments([pack.lead_100, pack.extension_200, pack.extension_700]));
+  const minimumNeeded = Math.max(0, AI_LONG_REWRITE_MIN_WORDS - currentWords);
+  const targetNeeded = Math.max(0, 1000 - currentWords);
+  const requestedMinimum = minimumNeeded + 20;
+  const requestedMaximum = Math.min(Math.max(requestedMinimum, targetNeeded + 80), 350);
+  return {
+    currentWords,
+    minimumNeeded,
+    targetNeeded,
+    requestedMinimum,
+    requestedMaximum,
+  };
+}
+
+function compactLanguageLooksStructurallyUnusable(compactPayload, invalidFields, language) {
+  if (invalidFields.includes(language)) {
+    return true;
+  }
+  const languageFields = invalidFields.filter((field) => field === language || field.startsWith(`${language}.`));
+  const bodyFieldFailures = ["lead_100", "extension_200", "extension_700"]
+    .filter((field) => languageFields.includes(`${language}.${field}`));
+  const structuralFailures = languageFields.filter((field) => (
+    field === `${language}.heading` ||
+    field === `${language}.photo_caption` ||
+    field.startsWith(`${language}.subheadings`)
+  ));
+  const pack = compactPayload?.[language];
+  return !pack ||
+    typeof pack !== "object" ||
+    bodyFieldFailures.length >= 3 ||
+    (bodyFieldFailures.length >= 2 && structuralFailures.length >= 2);
+}
+
+function planCompactRepairs(compactPayload, invalidFields = [], validationDetails = {}) {
+  const uniqueFields = Array.from(new Set(invalidFields.filter(Boolean)));
+  const plan = {
+    replace_language: {},
+    replace: {},
+    append: {},
+    notes: [],
+  };
+
+  for (const language of ["hindi", "english"]) {
+    if (compactLanguageLooksStructurallyUnusable(compactPayload, uniqueFields, language)) {
+      plan.replace_language[language] = {
+        required: `Replace the full ${language} package with heading, exactly three subheadings, photo_caption, lead_100, extension_200 and extension_700.`,
+      };
+    }
+  }
+
+  for (const fieldPath of uniqueFields) {
+    const [language, field] = fieldPath.split(".");
+    if (plan.replace_language[language]) {
+      continue;
+    }
+
+    if ((language === "hindi" || language === "english") && field === "long_cumulative") {
+      const range = getCompactContinuationRange(compactPayload, language);
+      if (range.currentWords < 500) {
+        plan.replace_language[language] = {
+          required: `Replace the full ${language} package because its progressive body is only ${range.currentWords} words and cannot be rescued by one continuation. Return heading, exactly three subheadings, photo_caption, lead_100, extension_200 and extension_700 with a cumulative 950-1050 body words.`,
+          currentWords: range.currentWords,
+          detail: validationDetails[fieldPath] || null,
+        };
+        delete plan.replace[`${language}.lead_100`];
+        delete plan.replace[`${language}.extension_200`];
+        delete plan.replace[`${language}.extension_700`];
+        continue;
+      }
+      plan.append[`${language}.extension_700`] = {
+        required: `Append a supported ${language} continuation to extension_700.`,
+        ...range,
+        detail: validationDetails[fieldPath] || null,
+      };
+      continue;
+    }
+
+    if ((language === "hindi" || language === "english") && field === "body100_cumulative") {
+      plan.replace[`${language}.lead_100`] = {
+        required: `Replace ${language}.lead_100 with complete supported sentences that let the cumulative stream produce 80-120 words for body100.`,
+        detail: validationDetails[fieldPath] || null,
+      };
+      continue;
+    }
+
+    if ((language === "hindi" || language === "english") && field === "body300_cumulative") {
+      plan.replace[`${language}.extension_200`] = {
+        required: `Replace ${language}.extension_200 with supported additional material so body300 reaches 260-340 words cumulatively.`,
+        detail: validationDetails[fieldPath] || null,
+      };
+      continue;
+    }
+
+    if (/^(hindi|english)\.(heading|photo_caption|lead_100|extension_200|extension_700|subheadings)(?:\.\d+)?$/.test(fieldPath)) {
+      const targetPath = field === "subheadings" ? `${language}.subheadings` : fieldPath.replace(/\.\d+$/, "");
+      plan.replace[targetPath] = getCompactFieldRepairInstruction(compactPayload, targetPath);
+    }
+  }
+
+  if (uniqueFields.includes("english.number_consistency")) {
+    plan.replace["english.extension_700"] = {
+      required: "Replace english.extension_700 so names, numbers, dates and places match the Hindi/source facts without adding unsupported facts.",
+    };
+  }
+
+  return plan;
+}
+
+function getCompactRepairMaxTokens(repairPlan = {}) {
+  const replaceLanguageCount = Object.keys(repairPlan.replace_language || {}).length;
+  const appendCount = Object.keys(repairPlan.append || {}).length;
+  const replaceCount = Object.keys(repairPlan.replace || {}).length;
+  if (replaceLanguageCount > 0) {
+    return 10000;
+  }
+  if (appendCount >= 2) {
+    return 10000;
+  }
+  if (appendCount === 1) {
+    return 6000;
+  }
+  if (replaceCount > 0) {
+    return 2500;
+  }
+  return 2500;
+}
+
+function getCompactRawBodyCounts(compactPayload = {}) {
+  const hindi = compactPayload.hindi || {};
+  const english = compactPayload.english || {};
+  const hindiLead = countBodyWords(hindi.lead_100);
+  const hindiExtension200 = countBodyWords(hindi.extension_200);
+  const hindiExtension700 = countBodyWords(hindi.extension_700);
+  const englishLead = countBodyWords(english.lead_100);
+  const englishExtension200 = countBodyWords(english.extension_200);
+  const englishExtension700 = countBodyWords(english.extension_700);
+  return {
+    hindi_lead: hindiLead,
+    hindi_extension_200: hindiExtension200,
+    hindi_extension_700: hindiExtension700,
+    hindi_cumulative: hindiLead + hindiExtension200 + hindiExtension700,
+    english_lead: englishLead,
+    english_extension_200: englishExtension200,
+    english_extension_700: englishExtension700,
+    english_cumulative: englishLead + englishExtension200 + englishExtension700,
+  };
+}
+
+function logCompactGeneratedCounts(articleId, compactPayload, finishReason) {
+  const counts = getCompactRawBodyCounts(compactPayload);
+  console.log(
+    `[ai-rewrite-generated-counts] news_id=${articleId || "unknown"}` +
+      ` hindi_lead=${counts.hindi_lead}` +
+      ` hindi_extension_200=${counts.hindi_extension_200}` +
+      ` hindi_extension_700=${counts.hindi_extension_700}` +
+      ` hindi_cumulative=${counts.hindi_cumulative}` +
+      ` english_lead=${counts.english_lead}` +
+      ` english_extension_200=${counts.english_extension_200}` +
+      ` english_extension_700=${counts.english_extension_700}` +
+      ` english_cumulative=${counts.english_cumulative}` +
+      ` finish_reason=${finishReason || "unknown"}`
+  );
+}
+
+function logCompactFinalCounts(articleId, payload) {
+  const counts = payload?._compact_counts || {};
+  console.log(
+    `[ai-rewrite-final-counts] news_id=${articleId || "unknown"}` +
+      ` hindi_100=${counts.hindi?.normalized?.body100 ?? ""}` +
+      ` hindi_300=${counts.hindi?.normalized?.body300 ?? ""}` +
+      ` hindi_1000=${counts.hindi?.normalized?.body1000 ?? ""}` +
+      ` english_100=${counts.english?.normalized?.body100 ?? ""}` +
+      ` english_300=${counts.english?.normalized?.body300 ?? ""}` +
+      ` english_1000=${counts.english?.normalized?.body1000 ?? ""}`
+  );
+}
+
+function getCompactFieldRepairInstruction(compactPayload, fieldPath) {
+  const value = getPathValue(compactPayload, fieldPath);
+  const count = typeof value === "string" ? countBodyWords(value) : Array.isArray(value) ? value.length : 0;
+  const ranges = {
+    "hindi.lead_100": `approximately 100 Hindi body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
+    "english.lead_100": `approximately 100 English body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
+    "hindi.extension_200": `approximately 200 additional Hindi body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
+    "english.extension_200": `approximately 200 additional English body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
+    "hindi.extension_700": `approximately 700 additional Hindi body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
+    "english.extension_700": `approximately 700 additional English body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
+    "hindi.subheadings": "exactly three Hindi factual subheadings",
+    "english.subheadings": "exactly three English factual subheadings",
+  };
+  return {
+    field: fieldPath,
+    current_count: count,
+    required: ranges[fieldPath] || "valid replacement for this field",
+    current_value_preview: truncateText(typeof value === "string" ? value : JSON.stringify(value || ""), 900),
+  };
+}
+
+async function repairCompactBilingualPayload({
+  compactPayload,
+  invalidFields,
+  validationDetails,
+  articleRecord,
+  articleText,
+}) {
+  const repairPlan = planCompactRepairs(compactPayload, invalidFields, validationDetails);
+  const repairPrompt = `Repair only these invalid fields:
+${Array.from(new Set(invalidFields || [])).join(", ")}
+
+Return only:
+{"replace_language": {}, "replace": {}, "append": {}}
+
+Repair plan:
+${JSON.stringify(repairPlan, null, 2)}
+
+Use replace_language only when requested in the repair plan. Its values must be full language package objects.
+For replace_language, the returned language package must include lead_100, extension_200 and extension_700 with a cumulative 950-1050 body words.
+Use replace for missing, empty, wrong-language or malformed fields. Replacement body fields replace the old field; they are not appended.
+Use append only for long_cumulative repair, and only at hindi.extension_700 or english.extension_700.
+For append operations, return continuation sentences within requestedMinimum/requestedMaximum words from the repair plan.
+After append, the cumulative body1000 must be 950 to 1050 body words.
+For body100_cumulative, replace lead_100 only.
+For body300_cumulative, replace extension_200 only.
+For long_cumulative, append continuation to extension_700 only.
+If repairing subheadings, return the full array at hindi.subheadings or english.subheadings with exactly three factual mini-headlines.
+For body repairs, use complete sentences and avoid repeating the headline, subheadings or caption.
+Do not regenerate fields not listed above.
+Do not include image_url, image_prompt, link or source.
+
+Article context:
+${buildCompactVariableArticlePrompt(articleRecord, articleText)}
+
+Current compact JSON:
+${truncateText(JSON.stringify(compactPayload), 9000)}`;
+
+  const repairResponse = await requestDeepSeekJson([
+    {
+      role: "system",
+      content: BILINGUAL_REPAIR_SYSTEM_PROMPT,
+    },
+    {
+      role: "user",
+      content: repairPrompt,
+    },
+  ], {
+    articleId: articleRecord.id,
+    mode: AI_REWRITE_MODES.BILINGUAL_COMPACT,
+    call: "targeted-repair",
+    temperature: 0.2,
+    maxTokens: getCompactRepairMaxTokens(repairPlan),
+    retries: 2,
+  });
+
+  const repairedPayload = mergeCompactRepairs(compactPayload, parseJsonResponse(repairResponse.content));
+  repairedPayload._compact_repair_plan = repairPlan;
+  return repairedPayload;
+}
+
+async function generateCompactBilingualRewrite(articleRecord, articleText) {
+  if (!DEEPSEEK_API_KEY) {
+    throw new Error("DEEPSEEK_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
+  }
+
+  const sourceAnalysis = assertSufficientSourceMaterial(articleRecord, articleText);
+  const stage1Prompt = buildStage1CorePrompt(articleRecord, articleText);
+  const stage1Response = await requestDeepSeekJson([
+    {
+      role: "system",
+      content: BILINGUAL_STAGE1_SYSTEM_PROMPT,
+    },
+    {
+      role: "user",
+      content: stage1Prompt,
+    },
+  ], {
+    articleId: articleRecord.id,
+    mode: AI_REWRITE_MODES.BILINGUAL_COMPACT,
+    call: "stage1-core",
+    temperature: 0.2,
+    maxTokens: 9000,
+    retries: 2,
+  });
+
+  let stage1Payload = null;
+  try {
+    stage1Payload = validateStage1CorePayload(
+      parseJsonResponse(stage1Response.content),
+      articleRecord,
+      articleText,
+      { sourceAnalysis }
+    );
+  } catch (error) {
+    const correctionPrompt = `${stage1Prompt}
+
+The previous Stage 1 response was invalid. Return exactly one valid Stage 1 JSON object using the required schema. Do not include explanations.
+
+Previous invalid response preview:
+${truncateText(stage1Response.content, 3000)}`;
+    const correctedResponse = await requestDeepSeekJson([
+      {
+        role: "system",
+        content: BILINGUAL_STAGE1_SYSTEM_PROMPT,
+      },
+      {
+        role: "user",
+        content: correctionPrompt,
+      },
+    ], {
+      articleId: articleRecord.id,
+      mode: AI_REWRITE_MODES.BILINGUAL_COMPACT,
+      call: "json-correction",
+      temperature: 0.2,
+      maxTokens: 20000,
+      retries: 2,
+    });
+    stage1Payload = validateStage1CorePayload(
+      parseJsonResponse(correctedResponse.content),
+      articleRecord,
+      articleText,
+      { sourceAnalysis }
+    );
+  }
+
+  const stage2Prompt = buildStage2ContinuationPrompt(articleRecord, articleText, stage1Payload);
+  const stage2Response = await requestDeepSeekJson([
+    {
+      role: "system",
+      content: BILINGUAL_STAGE2_SYSTEM_PROMPT,
+    },
+    {
+      role: "user",
+      content: stage2Prompt,
+    },
+  ], {
+    articleId: articleRecord.id,
+    mode: AI_REWRITE_MODES.BILINGUAL_COMPACT,
+    call: "stage2-continuation",
+    temperature: 0.2,
+    maxTokens: 14000,
+    retries: 2,
+  });
+
+  let compactPayload = mergeStage2Continuation(stage1Payload, parseJsonResponse(stage2Response.content));
+  logCompactGeneratedCounts(articleRecord.id, compactPayload, stage2Response.finish_reason);
+
+  try {
+    const payload = validateAiPayload(compactPayload, {
+      articleRecord,
+      articleTextObject: articleText,
+      articleId: articleRecord.id,
+      articleTitle: articleRecord.title,
+      articleText: articleText.combinedText,
+      sourceTitle: articleText.title,
+      sourceExcerpt: articleRecord.source_excerpt,
+      sourceUrl: articleRecord.source_url,
+      rawResponse: JSON.stringify(compactPayload),
+      requireClassificationMetadata: true,
+      sourceAnalysis,
+    });
+    logCompactFinalCounts(articleRecord.id, payload);
+    return {
+      model_name: DEEPSEEK_MODEL,
+      raw_response: JSON.stringify(payload),
+      payload,
+    };
+  } catch (error) {
+    const invalidFields = Array.isArray(error.invalidFields) ? error.invalidFields : [];
+    const validationDetails = error.validationDetails && typeof error.validationDetails === "object"
+      ? error.validationDetails
+      : {};
+    if (!invalidFields.length) {
+      throw error;
+    }
+
+    const repairedCompactPayload = await repairCompactBilingualPayload({
+      compactPayload,
+      invalidFields,
+      validationDetails,
+      articleRecord,
+      articleText,
+    });
+    const payload = validateAiPayload(repairedCompactPayload, {
+      articleRecord,
+      articleTextObject: articleText,
+      articleId: articleRecord.id,
+      articleTitle: articleRecord.title,
+      articleText: articleText.combinedText,
+      sourceTitle: articleText.title,
+      sourceExcerpt: articleRecord.source_excerpt,
+      sourceUrl: articleRecord.source_url,
+      rawResponse: JSON.stringify(repairedCompactPayload),
+      requireClassificationMetadata: true,
+      sourceAnalysis,
+    });
+    logCompactFinalCounts(articleRecord.id, payload);
+    return {
+      model_name: DEEPSEEK_MODEL,
+      raw_response: JSON.stringify(payload),
+      payload,
+    };
+  }
+}
+
+async function generateLegacyHindiRewrite(articleRecord, articleText) {
   if (!DEEPSEEK_API_KEY) {
     throw new Error("DEEPSEEK_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
   }
@@ -1552,21 +3227,31 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
         "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: attemptPrompt,
-          },
-        ],
+      body: JSON.stringify(buildDeepSeekRequestBody([
+        {
+          role: "user",
+          content: attemptPrompt,
+        },
+      ], {
         temperature: attempt === 0 ? 0.45 : 0.2,
-        max_tokens: 8000,
-        response_format: { type: "json_object" },
-      }),
+        maxTokens: 8000,
+      })),
     });
 
     const payload = await response.json();
+    logDeepSeekUsage(payload, {
+      articleId: articleRecord?.id,
+      mode: AI_REWRITE_MODES.HINDI_LEGACY,
+      call: "main",
+    });
+    const responseInfo = getDeepSeekResponseInfo(payload, {
+      maxTokens: 8000,
+      call: "legacy",
+    });
+    logDeepSeekResponseInfo(responseInfo, {
+      articleId: articleRecord?.id,
+      mode: AI_REWRITE_MODES.HINDI_LEGACY,
+    });
 
     if (!response.ok) {
       lastError = new Error(payload?.error?.message || `DeepSeek request failed with status ${response.status}.`);
@@ -1576,9 +3261,17 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
       }
       throw lastError;
     }
+    const terminationError = createDeepSeekTerminationError(responseInfo);
+    if (terminationError) {
+      lastError = terminationError;
+      if (terminationError.transient) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        continue;
+      }
+      throw terminationError;
+    }
 
-    rawText =
-      String(payload?.choices?.[0]?.message?.content || "").trim();
+    rawText = responseInfo.content;
 
     try {
       const candidatePayload = await expandLongRewriteIfNeeded(
@@ -1628,6 +3321,18 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
   };
 }
 
+async function generateAiRewrite(articleRecord, articleText) {
+  if (AI_REWRITE_MODE === AI_REWRITE_MODES.HINDI_LEGACY) {
+    return generateLegacyHindiRewrite(articleRecord, articleText);
+  }
+
+  if (AI_REWRITE_MODE && AI_REWRITE_MODE !== AI_REWRITE_MODES.BILINGUAL_COMPACT) {
+    console.warn(`[ai-rewrite] Unknown AI_REWRITE_MODE="${AI_REWRITE_MODE}". Using bilingual-compact.`);
+  }
+
+  return generateCompactBilingualRewrite(articleRecord, articleText);
+}
+
 function formatAiRewriteRecord(record) {
   if (!record) {
     return null;
@@ -1645,7 +3350,13 @@ function formatAiRewriteRecord(record) {
   const parseRawUiPayload = () => {
     try {
       const parsed = JSON.parse(record.raw_response || "{}");
-      return hasUiHindiShape(parsed) ? parsed : null;
+      if (hasUiHindiShape(parsed)) {
+        return parsed;
+      }
+      if (parsed?.ui_hindi && hasUiHindiShape(parsed.ui_hindi)) {
+        return parsed.ui_hindi;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -1705,7 +3416,7 @@ function formatAiRewriteRecord(record) {
     };
   };
 
-  return {
+  const formatted = {
     id: record.id,
     news_id: record.news_id,
     model_name: record.model_name,
@@ -1737,6 +3448,26 @@ function formatAiRewriteRecord(record) {
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
+
+  if (formatted.ui_hindi) {
+    formatted.ui_hindi.subheadings = formatted.hindi.top_summary;
+  }
+
+  formatted.ui_english = {
+    title: formatted.english.headline,
+    short_100: formatted.english.short_description,
+    medium_300: formatted.english.what_to_watch_next,
+    long_500: formatted.english.long_description,
+    subheadings: formatted.english.top_summary,
+    category: formatted.ui_hindi?.category,
+    state: formatted.ui_hindi?.state,
+    source: formatted.ui_hindi?.source,
+    link: formatted.ui_hindi?.link,
+    image_url: "",
+    image_prompt: "",
+  };
+
+  return formatted;
 }
 
 function formatAiRewriteWithNewsRecord(record) {
@@ -1751,6 +3482,10 @@ function formatAiRewriteWithNewsRecord(record) {
   if (rewrite?.ui_hindi) {
     rewrite.ui_hindi.image_url = safeNewsImageLink || "";
     rewrite.ui_hindi.image_prompt = "";
+  }
+  if (rewrite?.ui_english) {
+    rewrite.ui_english.image_url = safeNewsImageLink || "";
+    rewrite.ui_english.image_prompt = "";
   }
 
   return {
@@ -1771,6 +3506,10 @@ function formatAiRewriteWithNewsRecord(record) {
 }
 
 async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage, afterSave = null) {
+  if (!AI_REWRITE_ENABLED) {
+    throw new Error("AI rewriting is currently disabled.");
+  }
+
   let browser = null;
   let page = null;
 
@@ -1956,8 +3695,30 @@ function formatDeliveredRewrite(record, language = "both") {
       words_600: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
       words_500: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
     },
+    raw_articles_by_language: {
+      hindi: {
+        words_100: formatted.hindi?.short_description || formatted.ui_hindi?.short_100 || "",
+        words_300: formatted.hindi?.what_to_watch_next || formatted.ui_hindi?.medium_300 || "",
+        words_1000: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
+        words_500: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
+        words_600: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
+      },
+      english: {
+        words_100: formatted.english?.short_description || "",
+        words_300: formatted.english?.what_to_watch_next || "",
+        words_1000: formatted.english?.long_description || "",
+        words_500: formatted.english?.long_description || "",
+        words_600: formatted.english?.long_description || "",
+      },
+    },
     ui_hindi: {
       ...(formatted.ui_hindi || {}),
+      category: deliveryCategory,
+      image_url: deliveredImageUrl,
+      image_prompt: "",
+    },
+    ui_english: {
+      ...(formatted.ui_english || {}),
       category: deliveryCategory,
       image_url: deliveredImageUrl,
       image_prompt: "",
@@ -2029,6 +3790,13 @@ function removeRepeatedDeliveryImages(records) {
             image_prompt: "",
           }
         : record.ui_hindi,
+      ui_english: record.ui_english
+        ? {
+            ...record.ui_english,
+            image_url: "",
+            image_prompt: "",
+          }
+        : record.ui_english,
     };
   });
 }
@@ -2148,6 +3916,14 @@ async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publis
 }
 
 async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowserPage, afterRewriteSaved = null }) {
+  if (!AI_REWRITE_ENABLED) {
+    return (categories || []).map((category) => ({
+      status: "Skipped",
+      category,
+      message: "AI rewriting is currently disabled.",
+    }));
+  }
+
   const results = [];
 
   for (const category of categories) {
@@ -2481,6 +4257,36 @@ async function invalidateCategoryCache(dbPool) {
 }
 
 module.exports = {
+  __test: {
+    analyzeVerifiedSourceMaterial,
+    assemblePublishableArticle,
+    assertSufficientSourceMaterial,
+    buildDeepSeekRequestBody,
+    buildStage1CorePrompt,
+    buildStage2ContinuationPrompt,
+    buildCompactBilingualPayload,
+    createDeepSeekTerminationError,
+    countBodyWords,
+    countArticleWords,
+    generateAiRewrite,
+    generateCompactBilingualRewrite,
+    generateLegacyHindiRewrite,
+    formatAiRewriteWithNewsRecord,
+    formatDeliveredRewrite,
+    getSubheadingCount,
+    getCompactRawBodyCounts,
+    getStage1CurrentCounts,
+    getDeepSeekResponseInfo,
+    logDeepSeekResponseInfo,
+    hasExactlyOneLabel,
+    mergeCompactRepairs,
+    normalizeDeepSeekModelName,
+    normalizeProgressiveBodies,
+    mergeStage2Continuation,
+    planCompactRepairs,
+    validateStage1CorePayload,
+    validateAiPayload,
+  },
   createOrUpdateRewriteForRecord,
   initializeAiRewriteStorage,
   findDeliveredAiRewrite,
