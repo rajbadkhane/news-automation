@@ -809,6 +809,253 @@ function parseJsonResponse(rawText) {
   return JSON.parse(jsonText);
 }
 
+function insertBeforePhotoCaption(articleText, additionText) {
+  const article = String(articleText || "").trim();
+  const addition = cleanGeneratedText(additionText);
+  if (!article || !addition) {
+    return article;
+  }
+
+  const captionMatch = article.match(/\n\s*Photo Caption\s*:/i);
+  if (!captionMatch || typeof captionMatch.index !== "number") {
+    return `${article}\n\n${addition}`;
+  }
+
+  const beforeCaption = article.slice(0, captionMatch.index).trimEnd();
+  const caption = article.slice(captionMatch.index).trimStart();
+  return `${beforeCaption}\n\n${addition}\n\n${caption}`;
+}
+
+async function addLongRewriteSupplement(payload, articleRecord, articleText) {
+  let nextLong = cleanGeneratedText(payload.long_500);
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const currentCount = countArticleWords(nextLong);
+    if (currentCount >= AI_LONG_REWRITE_MIN_WORDS && currentCount <= AI_LONG_REWRITE_MAX_WORDS) {
+      return nextLong;
+    }
+
+    if (currentCount >= AI_LONG_REWRITE_MAX_WORDS) {
+      throw new Error(
+        `DeepSeek supplemented long_500 word count ${currentCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+      );
+    }
+
+    const needed = AI_LONG_REWRITE_MIN_WORDS - currentCount;
+    const available = AI_LONG_REWRITE_MAX_WORDS - currentCount;
+    const minAdditionWords = Math.max(40, Math.min(needed, available));
+    const maxAdditionWords = Math.max(minAdditionWords, Math.min(available, needed + 80));
+    const prompt = `The Hindi long_500 article is still short.
+Current word count: ${currentCount}
+Required final word count: ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS}
+
+Return only valid JSON:
+{"addition": ""}
+
+Write an addition of ${minAdditionWords} to ${maxAdditionWords} Hindi words.
+Rules:
+- Do not write a new headline, Subheadings section, bullet list, or Photo Caption.
+- Write body paragraphs only, continuing the same report.
+- Safely add background, public impact, official-attribution language, implementation/review process, and reader caution.
+- Do not add new names, numbers, quotes, FIRs, deaths, arrests, dates, legal claims, or unsupported facts.
+- Do not mention any publisher, publication, website, reporter, or agency except GE News Hub.
+- Keep it ready to insert before Photo Caption.
+
+Article title: ${payload.title || articleRecord.title || ""}
+Category: ${payload.category || articleRecord.category || ""}
+State: ${payload.state || ""}
+Raw article:
+${truncateText(articleText.combinedText, 9000)}
+
+Current long_500:
+${truncateText(nextLong, 8000)}`;
+
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 2500,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    const supplementPayload = await response.json();
+    if (!response.ok) {
+      lastError = new Error(
+        supplementPayload?.error?.message || `DeepSeek long_500 supplement failed with status ${response.status}.`
+      );
+      if (response.status === 429 || response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        continue;
+      }
+      throw lastError;
+    }
+
+    const rawSupplementJson = String(supplementPayload?.choices?.[0]?.message?.content || "").trim();
+    const parsedSupplement = parseJsonResponse(rawSupplementJson);
+    const addition = cleanGeneratedText(parsedSupplement.addition);
+    if (!addition) {
+      lastError = new Error("DeepSeek long_500 supplement response was missing addition.");
+      continue;
+    }
+
+    nextLong = insertBeforePhotoCaption(nextLong, addition);
+  }
+
+  const finalCount = countArticleWords(nextLong);
+  if (finalCount >= AI_LONG_REWRITE_MIN_WORDS && finalCount <= AI_LONG_REWRITE_MAX_WORDS) {
+    return nextLong;
+  }
+
+  throw lastError || new Error(
+    `DeepSeek supplemented long_500 word count ${finalCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+  );
+}
+
+async function expandLongRewriteIfNeeded(payload, articleRecord, articleText, previousReason = "") {
+  if (!hasUiHindiShape(payload)) {
+    return payload;
+  }
+
+  const originalCount = countArticleWords(payload.long_500);
+  if (originalCount >= AI_LONG_REWRITE_MIN_WORDS && originalCount <= AI_LONG_REWRITE_MAX_WORDS) {
+    return payload;
+  }
+
+  let lastError = new Error(
+    `DeepSeek response long_500 word count ${originalCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+  );
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const currentCount = countArticleWords(payload.long_500);
+    const prompt = `You returned a Hindi news JSON object, but long_500 is not the required 1000-word version.
+Current long_500 word count: ${currentCount}
+Required word count: ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS}
+Previous rejection reason: ${previousReason || lastError.message}
+
+Return only valid JSON in this exact shape:
+{"long_500": ""}
+
+Rules for long_500:
+- Write only the replacement value for long_500.
+- It must be a complete Hindi GE News Hub article of ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} words.
+- Keep this structure: headline, Subheadings:, four bullet subheadings, Agency GE News Hub body, and Photo Caption: at the end.
+- Body should have 7 to 10 short paragraphs.
+- Safely expand with background, official attribution language, public impact, implementation/review process, and what readers should watch next.
+- Do not invent names, numbers, quotes, FIRs, deaths, arrests, dates, legal claims, or unsupported facts.
+- Do not mention any publisher, publication, website, reporter, or agency except GE News Hub.
+- Use the same event, category, state, source and link context from the original JSON and raw article.
+
+Original JSON context:
+${JSON.stringify({
+  title: payload.title,
+  short_100: payload.short_100,
+  medium_300: payload.medium_300,
+  category: payload.category,
+  state: payload.state,
+  source: payload.source,
+  link: payload.link,
+})}
+
+Current too-short/too-long long_500:
+${truncateText(payload.long_500, 6000)}
+
+Raw article:
+${truncateText(articleText.combinedText, 10000)}`;
+
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 7000,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    const expansionPayload = await response.json();
+    if (!response.ok) {
+      lastError = new Error(
+        expansionPayload?.error?.message || `DeepSeek long_500 expansion failed with status ${response.status}.`
+      );
+      if (response.status === 429 || response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        continue;
+      }
+      throw lastError;
+    }
+
+    const rawLongJson = String(expansionPayload?.choices?.[0]?.message?.content || "").trim();
+    const parsedLong = parseJsonResponse(rawLongJson);
+    const nextLong = cleanGeneratedText(parsedLong.long_500);
+    if (!nextLong) {
+      lastError = new Error("DeepSeek long_500 expansion response was missing long_500.");
+      continue;
+    }
+
+    const nextCount = countArticleWords(nextLong);
+    if (nextCount >= AI_LONG_REWRITE_MIN_WORDS && nextCount <= AI_LONG_REWRITE_MAX_WORDS) {
+      return {
+        ...payload,
+        long_500: nextLong,
+      };
+    }
+
+    if (nextCount < AI_LONG_REWRITE_MIN_WORDS) {
+      try {
+        const supplementedLong = await addLongRewriteSupplement(
+          {
+            ...payload,
+            long_500: nextLong,
+          },
+          articleRecord,
+          articleText
+        );
+        return {
+          ...payload,
+          long_500: supplementedLong,
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    lastError = new Error(
+      `DeepSeek expansion long_500 word count ${nextCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+    );
+    if (nextCount > originalCount && nextCount < AI_LONG_REWRITE_MIN_WORDS) {
+      payload = {
+        ...payload,
+        long_500: nextLong,
+      };
+    }
+  }
+
+  throw lastError;
+}
+
 function validateAiPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object") {
     throw new Error("DeepSeek response was not a valid object.");
@@ -1334,7 +1581,14 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
       String(payload?.choices?.[0]?.message?.content || "").trim();
 
     try {
-      parsed = validateAiPayload(parseJsonResponse(rawText), {
+      const candidatePayload = await expandLongRewriteIfNeeded(
+        parseJsonResponse(rawText),
+        articleRecord,
+        articleText,
+        lastError?.message || ""
+      );
+      rawText = JSON.stringify(candidatePayload);
+      parsed = validateAiPayload(candidatePayload, {
         articleId: articleRecord.id,
         articleTitle: articleRecord.title,
         articleText: articleText.combinedText,
