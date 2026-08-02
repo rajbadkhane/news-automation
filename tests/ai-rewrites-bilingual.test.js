@@ -172,6 +172,14 @@ try {
 assert.ok(capturedLogs[0].includes("finish_reason=stop"));
 assert.ok(capturedLogs[0].includes("reasoning_tokens=0"));
 assert.ok(!capturedLogs[0].includes("FULL GENERATED ARTICLE"));
+assert.strictEqual(
+  __test.isCurrentAiRewritePrompt({ prompt_version: "bilingual-compact-v9-three-fact-subheadings" }),
+  true
+);
+assert.strictEqual(
+  __test.isCurrentAiRewritePrompt({ prompt_version: "hindi-ui-news-v8-journalist-grade-ge" }),
+  false
+);
 
 const compact = makeCompactPayload();
 const stage1Fixture = {

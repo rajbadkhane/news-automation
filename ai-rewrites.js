@@ -1977,6 +1977,10 @@ async function findAiRewriteByNewsId(dbPool, newsId) {
   return rows[0] || null;
 }
 
+function isCurrentAiRewritePrompt(record) {
+  return String(record?.prompt_version || "").trim() === AI_PROMPT_VERSION;
+}
+
 async function saveAiRewrite(dbPool, {
   newsId,
   modelName,
@@ -1993,67 +1997,133 @@ async function saveAiRewrite(dbPool, {
   const uiHindi = normalizedPayload.ui_hindi || (hasUiHindiShape(payload) ? normalizeUiHindiPayload(payload) : null);
 
   const existingRewrite = await findAiRewriteByNewsId(dbPool, newsId);
-  if (existingRewrite) {
+  if (existingRewrite && isCurrentAiRewritePrompt(existingRewrite)) {
     return existingRewrite;
   }
 
-  await dbPool.execute(
-    dbPool.dialect === "postgres"
-      ? `
-          INSERT INTO ai_news_rewrites (
-            news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
-            english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
-            hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
-            ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
-            ui_image_url, ui_image_prompt, ui_source, ui_link,
-            raw_response
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (news_id) DO NOTHING
-        `
-      : `
-          INSERT INTO ai_news_rewrites (
-            news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
-            english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
-            hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
-            ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
-            ui_image_url, ui_image_prompt, ui_source, ui_link,
-            raw_response
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE news_id = news_id
-        `,
-    [
-      newsId,
-      modelName,
-      promptVersion,
-      sourceUrl,
-      sourceTitle,
-      sourceExcerpt,
-      english.headline || null,
-      JSON.stringify(Array.isArray(english.top_summary) ? english.top_summary : []),
-      english.short_description || null,
-      english.long_description || null,
-      english.what_to_watch_next || null,
-      hindi.headline || null,
-      JSON.stringify(Array.isArray(hindi.top_summary) ? hindi.top_summary : []),
-      hindi.short_description || null,
-      hindi.long_description || null,
-      hindi.what_to_watch_next || null,
-      uiHindi?.title || null,
-      uiHindi?.short_100 || null,
-      uiHindi?.medium_300 || null,
-      uiHindi?.long_500 || null,
-      JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
-      uiHindi?.category || null,
-      uiHindi?.state || null,
-      null,
-      null,
-      uiHindi?.source || null,
-      uiHindi?.link || null,
-      rawResponse,
-    ]
-  );
+  if (existingRewrite) {
+    await dbPool.execute(
+      `
+        UPDATE ai_news_rewrites
+        SET model_name = ?,
+            prompt_version = ?,
+            source_url = ?,
+            source_title = ?,
+            source_excerpt = ?,
+            english_headline = ?,
+            english_top_summary = ?,
+            english_short_description = ?,
+            english_long_description = ?,
+            english_what_to_watch_next = ?,
+            hindi_headline = ?,
+            hindi_top_summary = ?,
+            hindi_short_description = ?,
+            hindi_long_description = ?,
+            hindi_what_to_watch_next = ?,
+            ui_title = ?,
+            ui_short_100 = ?,
+            ui_medium_300 = ?,
+            ui_long_500 = ?,
+            ui_keywords_json = ?,
+            ui_category = ?,
+            ui_state = ?,
+            ui_image_url = NULL,
+            ui_image_prompt = NULL,
+            ui_source = ?,
+            ui_link = ?,
+            raw_response = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE news_id = ?
+      `,
+      [
+        modelName,
+        promptVersion,
+        sourceUrl,
+        sourceTitle,
+        sourceExcerpt,
+        english.headline || null,
+        JSON.stringify(Array.isArray(english.top_summary) ? english.top_summary : []),
+        english.short_description || null,
+        english.long_description || null,
+        english.what_to_watch_next || null,
+        hindi.headline || null,
+        JSON.stringify(Array.isArray(hindi.top_summary) ? hindi.top_summary : []),
+        hindi.short_description || null,
+        hindi.long_description || null,
+        hindi.what_to_watch_next || null,
+        uiHindi?.title || null,
+        uiHindi?.short_100 || null,
+        uiHindi?.medium_300 || null,
+        uiHindi?.long_500 || null,
+        JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
+        uiHindi?.category || null,
+        uiHindi?.state || null,
+        uiHindi?.source || null,
+        uiHindi?.link || null,
+        rawResponse,
+        newsId,
+      ]
+    );
+  } else {
+
+    await dbPool.execute(
+      dbPool.dialect === "postgres"
+        ? `
+            INSERT INTO ai_news_rewrites (
+              news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
+              english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
+              hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
+              ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
+              ui_image_url, ui_image_prompt, ui_source, ui_link,
+              raw_response
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (news_id) DO NOTHING
+          `
+        : `
+            INSERT INTO ai_news_rewrites (
+              news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
+              english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
+              hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
+              ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
+              ui_image_url, ui_image_prompt, ui_source, ui_link,
+              raw_response
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE news_id = news_id
+          `,
+      [
+        newsId,
+        modelName,
+        promptVersion,
+        sourceUrl,
+        sourceTitle,
+        sourceExcerpt,
+        english.headline || null,
+        JSON.stringify(Array.isArray(english.top_summary) ? english.top_summary : []),
+        english.short_description || null,
+        english.long_description || null,
+        english.what_to_watch_next || null,
+        hindi.headline || null,
+        JSON.stringify(Array.isArray(hindi.top_summary) ? hindi.top_summary : []),
+        hindi.short_description || null,
+        hindi.long_description || null,
+        hindi.what_to_watch_next || null,
+        uiHindi?.title || null,
+        uiHindi?.short_100 || null,
+        uiHindi?.medium_300 || null,
+        uiHindi?.long_500 || null,
+        JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
+        uiHindi?.category || null,
+        uiHindi?.state || null,
+        null,
+        null,
+        uiHindi?.source || null,
+        uiHindi?.link || null,
+        rawResponse,
+      ]
+    );
+  }
 
   const savedRewrite = await findAiRewriteByNewsId(dbPool, newsId);
   if (AI_REWRITE_AUTO_PUBLISH && savedRewrite?.id && savedRewrite.publication_status !== "published") {
@@ -3515,8 +3585,13 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
 
   try {
     const existingRewrite = await findAiRewriteByNewsId(dbPool, articleRecord.id);
-    if (existingRewrite) {
+    if (existingRewrite && isCurrentAiRewritePrompt(existingRewrite)) {
       return existingRewrite;
+    }
+    if (existingRewrite) {
+      console.log(
+        `[ai-rewrite] Regenerating news_id=${articleRecord.id} because prompt_version=${existingRewrite.prompt_version || "unknown"} is older than ${AI_PROMPT_VERSION}.`
+      );
     }
 
     const scrapedText = normalizeWhitespace(
@@ -4069,7 +4144,7 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
       }
 
       const existingRewrite = await findAiRewriteByNewsId(dbPool, newsId);
-      if (existingRewrite) {
+      if (existingRewrite && isCurrentAiRewritePrompt(existingRewrite)) {
         return res.json({
           status: "Success",
           message: "Existing AI rewrite returned. Regeneration is disabled to prevent duplicate rewrites.",
@@ -4135,7 +4210,7 @@ function registerAiRewriteRoutes(app, { getDbPool, createBrowserPage, normalizeC
       const results = [];
       for (const articleRecord of rows) {
         const existingRewrite = await findAiRewriteByNewsId(dbPool, articleRecord.id);
-        if (existingRewrite) {
+        if (existingRewrite && isCurrentAiRewritePrompt(existingRewrite)) {
           results.push({
             status: "Skipped",
             news_id: articleRecord.id,
@@ -4277,6 +4352,7 @@ module.exports = {
     getCompactRawBodyCounts,
     getStage1CurrentCounts,
     getDeepSeekResponseInfo,
+    isCurrentAiRewritePrompt,
     logDeepSeekResponseInfo,
     hasExactlyOneLabel,
     mergeCompactRepairs,
