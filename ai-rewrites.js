@@ -118,7 +118,7 @@ const MP_CATEGORY_SIGNALS = Object.freeze([
 ]);
 const AI_REWRITE_SYSTEM_PROMPT = `भूमिका: आप राष्ट्रीय समाचार एजेंसी GE News Hub के Lead Investigative Reporter हैं। आपका काम न्यूनतम इनपुट को PCI यानी Press Council of India की मर्यादा, तथ्यात्मक संतुलन और उच्च-विश्वसनीयता वाली हिंदी रिपोर्ट में बदलना है।
 
-काम: दिए गए शीर्षक, संक्षिप्त विवरण, लिंक, चित्र और कच्चे समाचार इनपुट को 100, 300 और 600 शब्दों के अलग-अलग प्रकाशन योग्य हिंदी समाचार संस्करणों में बदलना। आउटपुट केवल वैध JSON हो।
+काम: दिए गए शीर्षक, संक्षिप्त विवरण, लिंक, चित्र और कच्चे समाचार इनपुट को 100, 300 और 1000 शब्दों के अलग-अलग प्रकाशन योग्य हिंदी समाचार संस्करणों में बदलना। आउटपुट केवल वैध JSON हो।
 
 मुख्य संपादकीय नियम:
 - GE News Hub को ही एकमात्र रिपोर्टिंग संस्था मानें। किसी अन्य समाचार एजेंसी, प्रकाशन, अखबार, टीवी चैनल, वेबसाइट, पोर्टल या मैगजीन का नाम article text, title, subheading, caption, keywords या source में न लिखें।
@@ -175,12 +175,12 @@ medium_300 नियम:
 - Photo Caption ठीक 30 शब्दों का हो।
 
 long_500 नियम:
-- यह 600 शब्दों का संस्करण है। field name compatibility के लिए long_500 ही रहेगा।
-- कुल target 520 से 600 शब्द रखें।
+- यह 1000 शब्दों का संस्करण है। field name compatibility के लिए long_500 ही रहेगा।
+- कुल target 950 से 1050 शब्द रखें।
 - ऊपर दिया गया पूरा output structure रखें।
 - heading 10 से 20 शब्दों का हो।
 - चार subheadings 12 से 20 शब्दों की मजबूत mini-headline हों।
-- body 4 से 7 छोटे paragraphs में हो।
+- body 7 से 10 छोटे paragraphs में हो।
 - official response, ground reality, legal action, background और public impact को विस्तार से जोड़ें।
 - कम से कम दो attributed official statements जरूर हों।
 - Photo Caption ठीक 30 शब्दों का हो।
@@ -217,7 +217,7 @@ const AI_REWRITE_SIZE_OVERRIDE = `
 OUTPUT SIZE OVERRIDE:
 - short_100 must be a complete journalist-grade GE News Hub Hindi article version of 90 to 110 words.
 - medium_300 must be a complete journalist-grade GE News Hub Hindi article version of 280 to 320 words.
-- long_500 must be a complete raw Hindi article version of 520 to 600 words. It is the 600-word version; the field name remains long_500 only for database compatibility.
+- long_500 must be a complete raw Hindi article version of 950 to 1050 words. It is the 1000-word version; the field name remains long_500 only for database compatibility.
 - Each version must contain the required structure: poetic Hindi heading, Subheadings:, four angle subheadings, Agency GE News Hub body, and exactly 30-word Photo Caption.
 - Include attribution and official-response language, but do not fabricate direct quotes or unsupported facts.
 - Do not create or change the image. If the input image URL exists, return the exact same image URL.
@@ -1664,6 +1664,7 @@ function formatDeliveredRewrite(record, language = "both") {
     raw_articles: {
       words_100: formatted.ui_hindi?.short_100 || formatted.hindi?.short_description || "",
       words_300: formatted.ui_hindi?.medium_300 || formatted.hindi?.what_to_watch_next || "",
+      words_1000: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
       words_600: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
       words_500: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
     },

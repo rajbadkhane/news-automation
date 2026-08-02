@@ -2679,8 +2679,8 @@ function buildApiDocs() {
       { method: "GET", path: `${API_BASE_PATH}/categories`, description: "Dynamic source category catalog merged into final categories." },
       { method: "POST", path: `${API_BASE_PATH}/sync/rss`, description: "Fetch RSS stories for one category." },
       { method: "POST", path: `${API_BASE_PATH}/sync/rss/all`, description: "Fetch RSS stories for all categories." },
-      { method: "POST", path: `${API_BASE_PATH}/sync/cliff-news`, description: "Fetch English stories from the Cliff News API and optionally create 100/300/600-word AI rewrites." },
-      { method: "POST", path: `${API_BASE_PATH}/sync/sources-ai`, description: "Fetch Google RSS plus configured news sources and optionally create 100/300/600-word AI rewrites." },
+      { method: "POST", path: `${API_BASE_PATH}/sync/cliff-news`, description: "Fetch English stories from the Cliff News API and optionally create 100/300/1000-word AI rewrites." },
+      { method: "POST", path: `${API_BASE_PATH}/sync/sources-ai`, description: "Fetch Google RSS plus configured news sources and optionally create 100/300/1000-word AI rewrites." },
       { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo`, description: "Fetch MP Info stories." },
       { method: "POST", path: `${API_BASE_PATH}/sync/mpinfo-districts`, description: "Fetch MP Info district stories." },
       { method: "GET", path: `${API_BASE_PATH}/cron/status`, description: "Main scheduler status." },
@@ -4005,7 +4005,7 @@ function compactDeliveryRecordForTable(record) {
       title: uiHindi.title || record?.source?.title || "Untitled story",
       short_100: uiHindi.short_100 || rawArticles.words_100 || "",
       medium_300: uiHindi.medium_300 || rawArticles.words_300 || "",
-      long_500: uiHindi.long_500 || rawArticles.words_600 || rawArticles.words_500 || "",
+      long_500: uiHindi.long_500 || rawArticles.words_1000 || rawArticles.words_600 || rawArticles.words_500 || "",
       category: record?.category || uiHindi.category,
       state: uiHindi.state || "",
       district: uiHindi.district || uiHindi.district_name || "",
@@ -7408,6 +7408,7 @@ async function rewriteNewsRecords(records, options = {}) {
         image_link: record.image_link || rewrite.ui_hindi?.image_url || null,
         words_100: rewrite.ui_hindi?.short_100 || "",
         words_300: rewrite.ui_hindi?.medium_300 || "",
+        words_1000: rewrite.ui_hindi?.long_500 || "",
         words_600: rewrite.ui_hindi?.long_500 || "",
       });
     } catch (error) {
@@ -8898,6 +8899,7 @@ app.post("/fetch-sources-ai", async (req, res) => {
       output_sizes: {
         words_100: "ui_hindi.short_100",
         words_300: "ui_hindi.medium_300",
+        words_1000: "ui_hindi.long_500",
         words_600: "ui_hindi.long_500",
       },
       ...result,
@@ -9592,6 +9594,7 @@ apiV1.post("/sync/cliff-news", requireApiScope("sync:write"), async (req, res) =
       output_sizes: {
         words_100: "ui_hindi.short_100",
         words_300: "ui_hindi.medium_300",
+        words_1000: "ui_hindi.long_500",
         words_600: "ui_hindi.long_500",
       },
     });
@@ -9667,6 +9670,7 @@ apiV1.post("/sync/sources-ai", requireApiScope("sync:write"), async (req, res) =
       output_sizes: {
         words_100: "ui_hindi.short_100",
         words_300: "ui_hindi.medium_300",
+        words_1000: "ui_hindi.long_500",
         words_600: "ui_hindi.long_500",
       },
     });
@@ -9710,6 +9714,7 @@ apiV1.post("/sync/primary-sources", requireApiScope("sync:write"), async (req, r
       output_sizes: {
         words_100: "ui_hindi.short_100",
         words_300: "ui_hindi.medium_300",
+        words_1000: "ui_hindi.long_500",
         words_600: "ui_hindi.long_500",
       },
     });

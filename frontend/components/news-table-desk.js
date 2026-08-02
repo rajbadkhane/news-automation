@@ -493,7 +493,8 @@ function flattenPayload(payload, section = "news") {
         short_100: cleanText(record.raw_articles?.words_100 || record.ui_hindi?.short_100 || record.summary),
         medium_300: cleanText(record.raw_articles?.words_300 || record.ui_hindi?.medium_300 || record.summary),
         long_500: cleanText(
-          record.raw_articles?.words_600 ||
+          record.raw_articles?.words_1000 ||
+            record.raw_articles?.words_600 ||
             record.raw_articles?.words_500 ||
             record.ui_hindi?.long_500 ||
             record.article ||
@@ -765,7 +766,7 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
     ? preview.item.image_caption
     : preview?.active === "300"
     ? preview.item.medium_300
-    : preview?.active === "600"
+    : preview?.active === "1000"
       ? preview.item.long_500
       : preview?.item.short_100;
   const paragraphs = splitPreviewParagraphs(activeText);
@@ -773,7 +774,7 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
     { key: "caption", label: "Image Caption", text: preview?.item.image_caption },
     { key: "100", label: "100 Words", text: preview?.item.short_100 },
     { key: "300", label: "300 Words", text: preview?.item.medium_300 },
-    { key: "600", label: "600 Words", text: preview?.item.long_500 },
+    { key: "1000", label: "1000 Words", text: preview?.item.long_500 },
   ];
   const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
   const translatedTextRef = useRef(null);
@@ -1747,7 +1748,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                   <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
                   <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">100 Words</th>
                   <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">300 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">600 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1000 Words</th>
                 </tr>
               </thead>
               <tbody>
@@ -1836,7 +1837,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                     <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
                       <PreviewTextCell
                         item={item}
-                        type="600"
+                        type="1000"
                         text={item.long_500}
                         previewSize={78}
                         setPreview={setPreview}
