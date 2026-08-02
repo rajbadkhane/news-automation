@@ -557,7 +557,15 @@ function getSectionCacheKey(section, variant = "default") {
   return `${CACHE_KEY}:${section}:${variant}`;
 }
 
+function shouldUseSectionCache(section) {
+  return section !== "news";
+}
+
 function readSectionCache(section, variant = "default") {
+  if (!shouldUseSectionCache(section)) {
+    return null;
+  }
+
   try {
     const raw = window.localStorage.getItem(getSectionCacheKey(section, variant));
     if (!raw) {
@@ -576,6 +584,10 @@ function readSectionCache(section, variant = "default") {
 }
 
 function writeSectionCache(section, payload, variant = "default") {
+  if (!shouldUseSectionCache(section)) {
+    return;
+  }
+
   try {
     window.localStorage.setItem(
       getSectionCacheKey(section, variant),
@@ -586,6 +598,20 @@ function writeSectionCache(section, payload, variant = "default") {
     );
   } catch {
     // Storage can be full or disabled. The UI still works from live data.
+  }
+}
+
+function clearNewsSectionCaches() {
+  try {
+    const prefix = `${CACHE_KEY}:news:`;
+    for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith(prefix)) {
+        window.localStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Ignore storage failures; live fetching still works.
   }
 }
 
@@ -1494,6 +1520,10 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       }
     }
   }, [activeSection]);
+
+  useEffect(() => {
+    clearNewsSectionCaches();
+  }, []);
 
   useEffect(() => {
     const hasInitialRecords = hasPayloadRecords(initialPayload);

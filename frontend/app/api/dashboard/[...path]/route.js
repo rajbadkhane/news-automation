@@ -21,11 +21,11 @@ function getCacheSeconds(pathname) {
   }
 
   if (normalized.startsWith("/delivery/news/grouped")) {
-    return 5;
+    return 0;
   }
 
   if (normalized.startsWith("/delivery/news")) {
-    return 5;
+    return 0;
   }
 
   if (normalized.startsWith("/ai/news/grouped")) {
