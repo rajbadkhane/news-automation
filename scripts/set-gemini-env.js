@@ -56,7 +56,7 @@ async function main() {
   const modelArg = process.argv[3] || process.env.NEW_DEEPSEEK_MODEL || "";
   const apiUrlArg = process.argv[4] || process.env.NEW_DEEPSEEK_API_URL || "";
   const apiKey = String(apiKeyArg || await ask("Paste DeepSeek API key and press Enter: ")).trim();
-  const model = String(modelArg || await ask("DeepSeek model [deepseek-v4-flash]: ")).trim() || "deepseek-v4-flash";
+  const model = String(modelArg || await ask("DeepSeek model [deepseek-chat]: ")).trim() || "deepseek-chat";
   const apiUrl = String(apiUrlArg || "https://api.deepseek.com/chat/completions").trim();
 
   if (!apiKey) {

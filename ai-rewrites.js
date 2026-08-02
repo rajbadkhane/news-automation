@@ -1,10 +1,13 @@
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
-const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+const RAW_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const DEEPSEEK_MODEL = RAW_DEEPSEEK_MODEL === "deepseek-v4-flash" ? "deepseek-chat" : RAW_DEEPSEEK_MODEL;
 const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions";
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
 const AI_PROMPT_VERSION = "hindi-ui-news-v8-journalist-grade-ge";
+const AI_LONG_REWRITE_MIN_WORDS = 950;
+const AI_LONG_REWRITE_MAX_WORDS = 1050;
 const AI_ALLOWED_CATEGORIES = Object.freeze([
   "National",
   "International",
@@ -748,6 +751,15 @@ function hasHindiText(value) {
   return /[\u0900-\u097F]/.test(String(value || ""));
 }
 
+function countArticleWords(value) {
+  return String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
 function hasUiHindiShape(payload) {
   return Boolean(
     payload &&
@@ -829,6 +841,13 @@ function validateAiPayload(payload, options = {}) {
       if (!hasHindiText(uiHindi[field])) {
         throw new Error(`DeepSeek response field ${field} is not Hindi.`);
       }
+    }
+
+    const longWordCount = countArticleWords(uiHindi.long_500);
+    if (longWordCount < AI_LONG_REWRITE_MIN_WORDS || longWordCount > AI_LONG_REWRITE_MAX_WORDS) {
+      throw new Error(
+        `DeepSeek response long_500 word count ${longWordCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+      );
     }
 
     return {
@@ -1266,13 +1285,20 @@ ${truncateText(articleText.combinedText, 14000)}`;
   let parsed = null;
   let lastError = null;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const correctionReason = lastError?.message ? ` Previous rejection reason: ${lastError.message}` : "";
     const attemptPrompt = attempt === 0
       ? prompt
       : `${prompt}
 
-कड़ा सुधार निर्देश: पिछला उत्तर अस्वीकार हुआ क्योंकि जरूरी भाषा, structure, category, confidence या reason पूरा नहीं था। अब JSON values मुख्य रूप से हिंदी में लिखें। confidence 0 से 1 के बीच number रखें और reason एक छोटी English sentence रखें। केवल "Subheadings:", "Agency GE News Hub" और "Photo Caption:" ये labels इसी spelling में रह सकते हैं।`;
-
+STRICT CORRECTION INSTRUCTION:${correctionReason}
+- Return only one valid JSON object.
+- All article fields must be Hindi and must keep the required structure.
+- short_100 must be 90 to 110 words.
+- medium_300 must be 280 to 320 words.
+- long_500 must be ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} words. Do not stop near 300 or 600 words.
+- If the raw input is thin, safely expand only with cautious background, public impact, implementation process, official attribution, and review/feedback context. Do not invent names, numbers, quotes, FIRs, deaths, arrests, dates, or unsupported facts.
+- Keep field name long_500 for compatibility, but its content must be the 1000-word version.`;
     const response = await fetch(DEEPSEEK_API_URL, {
       method: "POST",
       headers: {
@@ -1288,6 +1314,7 @@ ${truncateText(articleText.combinedText, 14000)}`;
           },
         ],
         temperature: attempt === 0 ? 0.45 : 0.2,
+        max_tokens: 8000,
         response_format: { type: "json_object" },
       }),
     });
@@ -1320,7 +1347,10 @@ ${truncateText(articleText.combinedText, 14000)}`;
       break;
     } catch (error) {
       lastError = error;
-      if (attempt === 0 && /not Hindi|missing|JSON|confidence|reason|category/i.test(error.message)) {
+      if (
+        attempt < 2 &&
+        /not Hindi|missing|JSON|confidence|reason|category|word count|outside/i.test(error.message)
+      ) {
         continue;
       }
       break;
@@ -1329,6 +1359,10 @@ ${truncateText(articleText.combinedText, 14000)}`;
 
   if (!parsed) {
     const fallbackReason = lastError?.message || "DeepSeek did not return a valid Hindi rewrite.";
+    if (/long_500 word count|outside \d+-\d+/i.test(fallbackReason)) {
+      throw lastError;
+    }
+
     console.warn(`[ai-rewrite] Using fallback payload for news_id=${articleRecord.id}: ${fallbackReason}`);
     parsed = buildFallbackAiPayload(articleRecord, articleText, fallbackReason);
   }

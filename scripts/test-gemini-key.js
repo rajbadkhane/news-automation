@@ -32,7 +32,7 @@ function maskKey(value) {
 async function main() {
   loadEnv();
   const apiKey = String(process.env.DEEPSEEK_API_KEY || "").trim();
-  const model = String(process.env.DEEPSEEK_MODEL || "deepseek-v4-flash").trim();
+  const model = String(process.env.DEEPSEEK_MODEL || "deepseek-chat").trim();
   const apiUrl = String(process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions").trim();
 
   if (!apiKey) {
