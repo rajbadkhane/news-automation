@@ -23,26 +23,26 @@ const AI_REWRITE_MODES = Object.freeze({
 });
 const AI_LONG_REWRITE_MIN_WORDS = 950;
 const AI_LONG_REWRITE_MAX_WORDS = 1050;
-const AI_LEAD_BODY_MIN_WORDS = 95;
-const AI_LEAD_BODY_MAX_WORDS = 105;
-const AI_EXTENSION_200_MIN_WORDS = 190;
-const AI_EXTENSION_200_MAX_WORDS = 210;
+const AI_LEAD_BODY_MIN_WORDS = 240;
+const AI_LEAD_BODY_MAX_WORDS = 260;
+const AI_EXTENSION_200_MIN_WORDS = 230;
+const AI_EXTENSION_200_MAX_WORDS = 270;
 const AI_EXTENSION_700_MIN_WORDS = 680;
 const AI_EXTENSION_700_MAX_WORDS = 720;
-const AI_LEAD_BODY_ACCEPT_MIN_WORDS = 80;
-const AI_LEAD_BODY_ACCEPT_MAX_WORDS = 130;
-const AI_EXTENSION_200_ACCEPT_MIN_WORDS = 140;
-const AI_EXTENSION_200_ACCEPT_MAX_WORDS = 260;
+const AI_LEAD_BODY_ACCEPT_MIN_WORDS = 220;
+const AI_LEAD_BODY_ACCEPT_MAX_WORDS = 280;
+const AI_EXTENSION_200_ACCEPT_MIN_WORDS = 190;
+const AI_EXTENSION_200_ACCEPT_MAX_WORDS = 310;
 const AI_EXTENSION_700_ACCEPT_MIN_WORDS = 500;
 const AI_EXTENSION_700_ACCEPT_MAX_WORDS = 800;
-const AI_BODY_100_MIN_WORDS = 90;
-const AI_BODY_100_MAX_WORDS = 110;
-const AI_BODY_300_MIN_WORDS = 280;
-const AI_BODY_300_MAX_WORDS = 320;
-const AI_BODY_100_EMERGENCY_MIN_WORDS = 80;
-const AI_BODY_100_EMERGENCY_MAX_WORDS = 120;
-const AI_BODY_300_EMERGENCY_MIN_WORDS = 260;
-const AI_BODY_300_EMERGENCY_MAX_WORDS = 340;
+const AI_BODY_100_MIN_WORDS = 235;
+const AI_BODY_100_MAX_WORDS = 265;
+const AI_BODY_300_MIN_WORDS = 475;
+const AI_BODY_300_MAX_WORDS = 525;
+const AI_BODY_100_EMERGENCY_MIN_WORDS = 220;
+const AI_BODY_100_EMERGENCY_MAX_WORDS = 280;
+const AI_BODY_300_EMERGENCY_MIN_WORDS = 450;
+const AI_BODY_300_EMERGENCY_MAX_WORDS = 550;
 const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
 const AI_MIN_SOURCE_FACT_TOKENS = 4;
 const AI_ALLOWED_CATEGORIES = Object.freeze([
@@ -255,8 +255,8 @@ long_500 नियम:
 
 const AI_REWRITE_SIZE_OVERRIDE = `
 OUTPUT SIZE OVERRIDE:
-- short_100 must be a complete journalist-grade GE News Hub Hindi article version of 90 to 110 words.
-- medium_300 must be a complete journalist-grade GE News Hub Hindi article version of 280 to 320 words.
+- short_100 must be a complete journalist-grade GE News Hub Hindi article version of 235 to 265 words. It is the 250-word version; the field name remains short_100 only for database compatibility.
+- medium_300 must be a complete journalist-grade GE News Hub Hindi article version of 475 to 525 words. It is the 500-word version; the field name remains medium_300 only for database compatibility.
 - long_500 must be a complete raw Hindi article version of 950 to 1050 words. It is the 1000-word version; the field name remains long_500 only for database compatibility.
 - Each version must contain the required structure: poetic Hindi heading, Subheadings:, four angle subheadings, Agency GE News Hub body, and exactly 30-word Photo Caption.
 - Include attribution and official-response language, but do not fabricate direct quotes or unsupported facts.
@@ -309,15 +309,15 @@ Compact JSON schema:
 Size rules:
 - Generate progressive body sections once per language.
 - Segment names describe editorial progression, not exact independent word-count contracts.
-- Aim lead_100 at 80 to 130 body words when practical.
-- Aim extension_200 at 160 to 300 additional body words when practical.
+- Aim lead_100 at 220 to 280 body words when practical. It will become the 250-word version.
+- Aim extension_200 at 190 to 310 additional body words when practical. lead_100 + extension_200 will become the 500-word version.
 - extension_700 must usually be 650 to 850 additional supported body words.
 - lead_100 + extension_200 + extension_700 must reach a publishable 950 to 1050 body words in each language, preferably 980 to 1030.
 - Never stop the progressive stream around 300, 500 or 600 words when the supplied source has enough verified material for 950 to 1050 words.
 - This is a hard output contract: each language must contain enough body text for the cumulative stream to validate at 950 to 1050 body words.
 - For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
-- Keep sentences complete and reasonably short so the application can trim at sentence boundaries near 100, 300 and 1000 words.
-- The application will assemble body100/body300/body1000 cumulatively from the progressive stream.
+- Keep sentences complete and reasonably short so the application can trim at sentence boundaries near 250, 500 and 1000 words.
+- The application will assemble the compatibility fields short_100/medium_300/long_500 cumulatively as 250/500/1000-word versions from the progressive stream.
 - Prioritize factual accuracy, clear progression, complete sentences and non-repetition over exact segment counts.
 - Do not repeat the headline, subheadings or caption inside body sections.
 - Each language gets exactly one headline, exactly three factual subheadings and exactly one photo caption.
@@ -355,8 +355,8 @@ Stage 1 core-report mode:
 - Return only the core compact bilingual report.
 - Do not return extension_700 in this stage.
 - Use this exact shape: {"classification":{},"hindi":{"heading":"","subheadings":["","",""],"photo_caption":"","lead_100":"","extension_200":""},"english":{"heading":"","subheadings":["","",""],"photo_caption":"","lead_100":"","extension_200":""}}.
-- lead_100 and extension_200 are progressive body sections. They must contain enough complete sentences for the application to assemble valid 100-word and 300-word article bodies.
-- lead_100 + extension_200 must be 280-330 body words in each language when possible.
+- lead_100 and extension_200 are progressive body sections. They must contain enough complete sentences for the application to assemble valid 250-word and 500-word article bodies.
+- lead_100 + extension_200 must be 475-525 body words in each language when possible.
 - Do not include heading, subheadings, caption, agency label, source, link or image fields inside body sections.`;
 
 const BILINGUAL_STAGE2_SYSTEM_PROMPT = `${FIXED_BILINGUAL_SYSTEM_PROMPT}
@@ -1088,7 +1088,7 @@ function normalizeProgressiveBodies(pack, language) {
     preferredMax: AI_BODY_100_MAX_WORDS,
     emergencyMin: AI_BODY_100_EMERGENCY_MIN_WORDS,
     emergencyMax: AI_BODY_100_EMERGENCY_MAX_WORDS,
-    target: 100,
+    target: 250,
   });
   if (!body100.valid) {
     const field = `${language}.body100_cumulative`;
@@ -1097,7 +1097,7 @@ function normalizeProgressiveBodies(pack, language) {
       words: body100.words,
       min: AI_BODY_100_EMERGENCY_MIN_WORDS,
       max: AI_BODY_100_EMERGENCY_MAX_WORDS,
-      message: "Cumulative progressive stream could not produce a valid body100 prefix.",
+      message: "Cumulative progressive stream could not produce a valid 250-word prefix.",
     };
   }
 
@@ -1106,7 +1106,7 @@ function normalizeProgressiveBodies(pack, language) {
     preferredMax: AI_BODY_300_MAX_WORDS,
     emergencyMin: AI_BODY_300_EMERGENCY_MIN_WORDS,
     emergencyMax: AI_BODY_300_EMERGENCY_MAX_WORDS,
-    target: 300,
+    target: 500,
     requiredPrefix: body100.text,
   });
   if (!body300.valid) {
@@ -1116,7 +1116,7 @@ function normalizeProgressiveBodies(pack, language) {
       words: body300.words,
       min: AI_BODY_300_EMERGENCY_MIN_WORDS,
       max: AI_BODY_300_EMERGENCY_MAX_WORDS,
-      message: "Cumulative progressive stream could not produce a valid body300 prefix.",
+      message: "Cumulative progressive stream could not produce a valid 500-word prefix.",
     };
   }
 
@@ -2577,7 +2577,7 @@ function buildCompactVariableArticlePrompt(articleRecord, articleText) {
 OUTPUT LENGTH REMINDER
 - Return both Hindi and English progressive bodies.
 - Each language's lead_100 + extension_200 + extension_700 must contain 950 to 1050 body words.
-- Do not return only a 300-word summary when the extracted source has enough material.
+- Do not return only a 300-word or 500-word summary when the extracted source has enough material.
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
@@ -2589,9 +2589,9 @@ function buildStage1CorePrompt(articleRecord, articleText) {
 STAGE 1 OUTPUT
 - Return classification, Hindi heading/subheadings/photo_caption/lead_100/extension_200 and English heading/subheadings/photo_caption/lead_100/extension_200.
 - Do not return extension_700 yet.
-- The core body must support local cumulative body100 and body300 normalization.
-- In each language, lead_100 + extension_200 should be 280-330 body words total.
-- Do not stop Stage 1 around 150 or 200 body words per language.
+- The core body must support local cumulative 250-word and 500-word normalization.
+- In each language, lead_100 + extension_200 should be 475-525 body words total.
+- Do not stop Stage 1 around 150, 200 or 300 body words per language.
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
@@ -2605,8 +2605,8 @@ function getStage1CurrentCounts(stage1Payload = {}) {
   return {
     hindiCurrent,
     englishCurrent,
-    hindiTarget: Math.max(500, 1000 - hindiCurrent),
-    englishTarget: Math.max(500, 1000 - englishCurrent),
+    hindiTarget: Math.max(450, 1000 - hindiCurrent),
+    englishTarget: Math.max(450, 1000 - englishCurrent),
     hindiMin: Math.max(450, 950 - hindiCurrent),
     hindiMax: Math.max(Math.max(450, 950 - hindiCurrent) + 50, 1050 - hindiCurrent),
     englishMin: Math.max(450, 950 - englishCurrent),
@@ -2930,7 +2930,7 @@ function planCompactRepairs(compactPayload, invalidFields = [], validationDetail
 
     if ((language === "hindi" || language === "english") && field === "body100_cumulative") {
       plan.replace[`${language}.lead_100`] = {
-        required: `Replace ${language}.lead_100 with complete supported sentences that let the cumulative stream produce 80-120 words for body100.`,
+        required: `Replace ${language}.lead_100 with complete supported sentences that let the cumulative stream produce 220-280 words for the 250-word version.`,
         detail: validationDetails[fieldPath] || null,
       };
       continue;
@@ -2938,7 +2938,7 @@ function planCompactRepairs(compactPayload, invalidFields = [], validationDetail
 
     if ((language === "hindi" || language === "english") && field === "body300_cumulative") {
       plan.replace[`${language}.extension_200`] = {
-        required: `Replace ${language}.extension_200 with supported additional material so body300 reaches 260-340 words cumulatively.`,
+        required: `Replace ${language}.extension_200 with supported additional material so the cumulative 500-word version reaches 450-550 words.`,
         detail: validationDetails[fieldPath] || null,
       };
       continue;
@@ -3032,10 +3032,10 @@ function getCompactFieldRepairInstruction(compactPayload, fieldPath) {
   const value = getPathValue(compactPayload, fieldPath);
   const count = typeof value === "string" ? countBodyWords(value) : Array.isArray(value) ? value.length : 0;
   const ranges = {
-    "hindi.lead_100": `approximately 100 Hindi body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
-    "english.lead_100": `approximately 100 English body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
-    "hindi.extension_200": `approximately 200 additional Hindi body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
-    "english.extension_200": `approximately 200 additional English body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
+    "hindi.lead_100": `approximately 250 Hindi body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
+    "english.lead_100": `approximately 250 English body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
+    "hindi.extension_200": `approximately 250 additional Hindi body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
+    "english.extension_200": `approximately 250 additional English body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
     "hindi.extension_700": `approximately 700 additional Hindi body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
     "english.extension_700": `approximately 700 additional English body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
     "hindi.subheadings": "exactly three Hindi factual subheadings",
@@ -3072,8 +3072,8 @@ Use replace for missing, empty, wrong-language or malformed fields. Replacement 
 Use append only for long_cumulative repair, and only at hindi.extension_700 or english.extension_700.
 For append operations, return continuation sentences within requestedMinimum/requestedMaximum words from the repair plan.
 After append, the cumulative body1000 must be 950 to 1050 body words.
-For body100_cumulative, replace lead_100 only.
-For body300_cumulative, replace extension_200 only.
+For body100_cumulative, replace lead_100 only so the compatibility field short_100 becomes the 250-word version.
+For body300_cumulative, replace extension_200 only so the compatibility field medium_300 becomes the 500-word version.
 For long_cumulative, append continuation to extension_700 only.
 If repairing subheadings, return the full array at hindi.subheadings or english.subheadings with exactly three factual mini-headlines.
 For body repairs, use complete sentences and avoid repeating the headline, subheadings or caption.
@@ -3286,8 +3286,8 @@ ${truncateText(articleText.combinedText, 14000)}`;
 STRICT CORRECTION INSTRUCTION:${correctionReason}
 - Return only one valid JSON object.
 - All article fields must be Hindi and must keep the required structure.
-- short_100 must be 90 to 110 words.
-- medium_300 must be 280 to 320 words.
+- short_100 must be 235 to 265 words. This is the 250-word version; keep the field name short_100 for compatibility.
+- medium_300 must be 475 to 525 words. This is the 500-word version; keep the field name medium_300 for compatibility.
 - long_500 must be ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} words. Do not stop near 300 or 600 words.
 - If the raw input is thin, safely expand only with cautious background, public impact, implementation process, official attribution, and review/feedback context. Do not invent names, numbers, quotes, FIRs, deaths, arrests, dates, or unsupported facts.
 - Keep field name long_500 for compatibility, but its content must be the 1000-word version.`;

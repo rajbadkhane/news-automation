@@ -237,12 +237,12 @@ assert.strictEqual(normalized.ui_hindi.long_500, normalized.hindi.long_descripti
 assert.strictEqual(normalized.ui_english.long_500, normalized.english.long_description);
 assert.strictEqual(normalized.raw_articles, undefined);
 assert.ok(countWords(compact.hindi.lead_100) < 95, "lead segment count is not an independent hard contract");
-assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 80);
-assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 260);
+assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 220);
+assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 450);
 assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 950);
 assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1050);
-assert.ok(normalized._compact_counts.english.normalized.body100 >= 80);
-assert.ok(normalized._compact_counts.english.normalized.body300 >= 260);
+assert.ok(normalized._compact_counts.english.normalized.body100 >= 220);
+assert.ok(normalized._compact_counts.english.normalized.body300 >= 450);
 assert.ok(normalized._compact_counts.english.normalized.body1000 >= 950);
 
 const toppedUpLead = makeCompactPayload({
@@ -257,7 +257,7 @@ const toppedUpLead = makeCompactPayload({
 });
 const toppedNormalized = __test.buildCompactBilingualPayload(toppedUpLead, articleRecord, articleText);
 assert.strictEqual(countWords(toppedUpLead.english.lead_100), 70);
-assert.ok(toppedNormalized._compact_counts.english.normalized.body100 >= 80);
+assert.ok(toppedNormalized._compact_counts.english.normalized.body100 >= 220);
 
 const progressive = __test.normalizeProgressiveBodies(toppedUpLead.english, "english");
 assert.ok(progressive.bodies.body300.startsWith(progressive.bodies.body100));

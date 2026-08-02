@@ -1128,11 +1128,11 @@ export default function NewsDashboard({
 
                 <div className="mt-8 space-y-8">
                   <section>
-                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">100 Words</h3>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">250 Words</h3>
                     <p className="mt-3 text-base leading-8 text-slate-100">{readerStory.ui_hindi.short_100}</p>
                   </section>
                   <section>
-                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">300 Words</h3>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-amber-100">500 Words</h3>
                     <div className="mt-3 space-y-4">
                       {splitUiStoryParagraphs(readerStory.ui_hindi.medium_300).map((paragraph, index) => (
                         <p key={`medium-${index}-${paragraph.slice(0, 20)}`} className="text-base leading-8 text-slate-100">

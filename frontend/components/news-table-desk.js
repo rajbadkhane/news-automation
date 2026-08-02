@@ -18,6 +18,7 @@ const SECTION_CONFIG = {
     label: "News",
     pagePath: "/news-table",
     listPath: `/delivery/news/grouped?language=hindi&limit=${TABLE_RECORD_LIMIT}&compact=table`,
+    categoryListPath: `/delivery/news?language=hindi&limit=${TABLE_RECORD_LIMIT}&compact=table`,
     syncPath: "/sync/cliff-news?limit=200&language=ENGLISH&rewrite=true",
   },
   editorial: {
@@ -33,6 +34,15 @@ const SECTION_CONFIG = {
     syncPath: "/sync/rashifal?limit=50",
   },
 };
+const NEWS_CATEGORY_OPTIONS = Object.freeze([
+  { value: "", label: "All Categories" },
+  { value: "Madhya Pradesh", label: "Madhya Pradesh" },
+  { value: "National", label: "National" },
+  { value: "International", label: "International" },
+  { value: "Business", label: "Business" },
+  { value: "Sports", label: "Sports" },
+  { value: "Entertainment", label: "Entertainment" },
+]);
 const HEADER_FEATURES = [
   { label: "FAST", symbol: "◷" },
   { label: "ACCURATE", symbol: "✓" },
@@ -68,10 +78,44 @@ function normalizeNewsCategory(value) {
     token.startsWith("mpinfo") ||
     token.startsWith("mp info")
   ) {
-    return "Madhyapradesh";
+    return "Madhya Pradesh";
   }
 
   return normalized;
+}
+
+function getNewsCategoryOptions(dynamicCategories = []) {
+  const seen = new Set();
+  const options = [];
+
+  for (const option of NEWS_CATEGORY_OPTIONS) {
+    options.push(option);
+    if (option.value) {
+      seen.add(normalizeNewsCategory(option.value));
+    }
+  }
+
+  for (const category of dynamicCategories) {
+    const normalized = normalizeNewsCategory(category);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    options.push({ value: normalized, label: normalized });
+  }
+
+  return options;
+}
+
+function getSectionListPath(sectionConfig, category = "") {
+  const normalizedCategory = normalizeNewsCategory(category);
+  if (!normalizedCategory || !sectionConfig.categoryListPath) {
+    return sectionConfig.listPath;
+  }
+
+  const separator = sectionConfig.categoryListPath.includes("?") ? "&" : "?";
+  return `${sectionConfig.categoryListPath}${separator}category=${encodeURIComponent(normalizedCategory)}`;
 }
 
 function createEmptyPayload() {
@@ -798,8 +842,8 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
   const paragraphs = splitPreviewParagraphs(activeText);
   const options = [
     { key: "caption", label: "Image Caption", text: preview?.item.image_caption },
-    { key: "100", label: "100 Words", text: preview?.item.short_100 },
-    { key: "300", label: "300 Words", text: preview?.item.medium_300 },
+    { key: "100", label: "250 Words", text: preview?.item.short_100 },
+    { key: "300", label: "500 Words", text: preview?.item.medium_300 },
     { key: "1000", label: "1000 Words", text: preview?.item.long_500 },
   ];
   const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
@@ -1289,12 +1333,18 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       ? Array.from(new Set(categories.map(normalizeNewsCategory).filter(Boolean)))
       : [];
   }, [categoryCatalog]);
-  const categories = useMemo(() => {
-    if (activeSection === "news" && dynamicNewsCategories.length > 0) {
-      return dynamicNewsCategories;
+  const categoryOptions = useMemo(() => {
+    if (activeSection === "news") {
+      return getNewsCategoryOptions(dynamicNewsCategories);
     }
 
-    return uniqueValues(records, (item) => item.category);
+    return [
+      { value: "", label: "--Select Category--" },
+      ...uniqueValues(records, (item) => item.category).map((category) => ({
+        value: category,
+        label: category,
+      })),
+    ];
   }, [activeSection, dynamicNewsCategories, records]);
   const states = useMemo(() => uniqueValues(records, (item) => item.state), [records]);
   const districts = useMemo(() => uniqueValues(records, (item) => item.district), [records]);
@@ -1466,10 +1516,11 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     return () => window.clearTimeout(timeout);
   }, [initialLoadComplete, initialLoadSettled, payloadHasRecords]);
 
-  const refreshNews = useCallback(async ({ force = false, sync = false, section = activeSection } = {}) => {
+  const refreshNews = useCallback(async ({ force = false, sync = false, section = activeSection, category = filters.category } = {}) => {
     const sectionConfig = SECTION_CONFIG[section] || SECTION_CONFIG.news;
+    const categoryVariant = section === "news" ? normalizeNewsCategory(category) || "all" : "default";
     if (!force) {
-      const cached = readSectionCache(section);
+      const cached = readSectionCache(section, categoryVariant);
       if (cached) {
         setPayload(cached.payload);
         setLastReloadAt(new Date(cached.savedAt).toISOString());
@@ -1495,7 +1546,8 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         }
       }
 
-      const listPath = force ? addCacheBuster(sectionConfig.listPath) : sectionConfig.listPath;
+      const baseListPath = getSectionListPath(sectionConfig, section === "news" ? category : "");
+      const listPath = force ? addCacheBuster(baseListPath) : baseListPath;
       const response = await fetchWithTimeout(getDashboardProxyPath(listPath), {
         cache: "no-store",
       }, REQUEST_TIMEOUT_MS);
@@ -1503,7 +1555,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       if (response.ok && nextPayload.status !== "Error") {
         setPayload(nextPayload);
         setLastReloadAt(new Date().toISOString());
-        writeSectionCache(section, nextPayload);
+        writeSectionCache(section, nextPayload, categoryVariant);
         setMessage(`${sectionConfig.label} reload ho gaya.`);
         if (section === activeSection) {
           setLoadProgress(100);
@@ -1519,7 +1571,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         setInitialLoadSettled(true);
       }
     }
-  }, [activeSection]);
+  }, [activeSection, filters.category]);
 
   useEffect(() => {
     clearNewsSectionCaches();
@@ -1531,7 +1583,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     setInitialLoadComplete(hasInitialRecords);
     setLoadProgress(hasInitialRecords ? 100 : 1);
 
-    const cached = readSectionCache(activeSection);
+    const cached = readSectionCache(activeSection, activeSection === "news" ? normalizeNewsCategory(filters.category) || "all" : "default");
     if (cached) {
       setPayload(cached.payload);
       setLastReloadAt(new Date(cached.savedAt).toISOString());
@@ -1543,9 +1595,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     setPayload(initialPayload || createEmptyPayload());
     setLastReloadAt(new Date().toISOString());
     if (hasPayloadRecords(initialPayload)) {
-      writeSectionCache(activeSection, initialPayload);
+      writeSectionCache(activeSection, initialPayload, activeSection === "news" ? normalizeNewsCategory(filters.category) || "all" : "default");
     }
-  }, [activeSection, initialPayload]);
+  }, [activeSection, filters.category, initialPayload]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1571,9 +1623,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
 
   useEffect(() => {
     startTransition(() => {
-      void refreshNews({ section: activeSection });
+      void refreshNews({ section: activeSection, category: filters.category });
     });
-  }, [activeSection, refreshNews]);
+  }, [activeSection, filters.category, refreshNews]);
 
   useEffect(() => {
     function refreshIfVisible() {
@@ -1582,7 +1634,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       }
 
       startTransition(() => {
-        void refreshNews({ section: activeSection });
+        void refreshNews({ section: activeSection, category: filters.category });
       });
     }
 
@@ -1593,7 +1645,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", refreshIfVisible);
     };
-  }, [activeSection, refreshNews]);
+  }, [activeSection, filters.category, refreshNews]);
 
   useEffect(() => {
     if (!message) {
@@ -1637,8 +1689,10 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
               className="mt-2 h-9 w-full border border-[#b7b7b7] bg-white px-3 text-center text-sm text-black"
             >
               <option value="">--Select Category--</option>
-              {categories.map((category) => (
-                <option key={category} value={category}>{category}</option>
+              {categoryOptions
+                .filter((option) => option.value)
+                .map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
           </label>
@@ -1679,7 +1733,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         <div className="mt-3 text-center">
           <button
             type="button"
-            onClick={() => void refreshNews({ force: true })}
+            onClick={() => void refreshNews({ force: true, category: filters.category })}
             className="rounded bg-[#337ab7] px-4 py-2 text-sm text-white hover:bg-[#286090]"
           >
             Search {SECTION_CONFIG[activeSection]?.label || "News"}
@@ -1693,7 +1747,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
             <h2 className="text-base font-bold">{SECTION_CONFIG[activeSection]?.label || "News"}/समाचार</h2>
             <button
               type="button"
-              onClick={() => void refreshNews({ force: true })}
+              onClick={() => void refreshNews({ force: true, category: filters.category })}
               className="text-center text-sm text-[#1f70bd] hover:underline"
             >
               Click here to reload {SECTION_CONFIG[activeSection]?.label || "news"}({formatTime(lastReloadAt)})
@@ -1776,8 +1830,8 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                   <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title/हैडलाइन</th>
                   <th className="w-[145px] border-r border-[#d8e0e8] px-2 py-2 text-center">Image</th>
                   <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
-                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">100 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">300 Words</th>
+                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">250 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">500 Words</th>
                   <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1000 Words</th>
                 </tr>
               </thead>
