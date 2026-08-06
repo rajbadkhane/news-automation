@@ -40,6 +40,7 @@ const AI_BODY_300_EMERGENCY_MIN_WORDS = 600;
 const AI_BODY_300_EMERGENCY_MAX_WORDS = 720;
 const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
 const AI_MIN_SOURCE_FACT_TOKENS = 4;
+const AI_HINDI_ONLY_MAX_REPAIR_ATTEMPTS = 2;
 // Only rewrite articles that are still recent enough to actually be delivered.
 // The delivery feed hides anything older than NEWS_MAX_AGE_HOURS, so rewriting
 // older backlog burns Gemini quota on articles that can never appear on the site.
@@ -3866,7 +3867,7 @@ function planHindiOnlyRepairs(payload, invalidFields = []) {
   return plan;
 }
 
-async function repairHindiOnlyPayload({ payload, invalidFields, articleRecord, articleText }) {
+async function repairHindiOnlyPayload({ payload, invalidFields, articleRecord, articleText, attempt = 0 }) {
   const repairPlan = planHindiOnlyRepairs(payload, invalidFields);
   const appendPlan = repairPlan.append["hindi.body"];
   const replaceKeys = Object.keys(repairPlan.replace);
@@ -3883,7 +3884,8 @@ ${replaceKeys.length
 ${appendPlan
     ? `For append, return key "hindi.body" whose value is ONLY the new continuation text to add onto the END of the existing body.
 The existing body is currently ${appendPlan.current_body_words} Hindi words and must reach at least ${appendPlan.required_total_words} words, so it is short by about ${appendPlan.words_short_by} words.
-Write at least ${appendPlan.requestedMinimum} new Hindi words (ideally ${appendPlan.requestedMinimum} to ${appendPlan.requestedMaximum}).
+Write at least ${appendPlan.requestedMinimum} new Hindi words (ideally ${appendPlan.requestedMinimum} to ${appendPlan.requestedMaximum}).${attempt > 0 ? `
+IMPORTANT: a previous continuation attempt returned too little text and the article is still short. Do not return a brief addition this time. Write the full ${appendPlan.requestedMinimum}+ words of substantive continuation.` : ""}
 This is the tail of the existing body, so you can continue naturally from it and must NOT repeat any of it:
 """
 ${appendPlan.body_tail_preview}
@@ -3909,7 +3911,7 @@ ${truncateText(articleText.combinedText, 10000)}`;
   ], {
     articleId: articleRecord.id,
     mode: AI_REWRITE_MODES.HINDI_ONLY,
-    call: "targeted-repair",
+    call: attempt > 0 ? `targeted-repair-${attempt + 1}` : "targeted-repair",
     temperature: 0.2,
     maxTokens: 8000,
     retries: 2,
@@ -4018,24 +4020,43 @@ ${truncateText(response.content, 3000)}`;
       raw_response: JSON.stringify(payload),
       payload,
     };
-  } catch (error) {
-    const invalidFields = Array.isArray(error.invalidFields) ? error.invalidFields : [];
-    if (!invalidFields.length) {
-      throw error;
+  } catch (initialError) {
+    let lastError = initialError;
+    let workingPayload = rawPayload;
+
+    // A single repair pass often lands just short of the word floor when the first
+    // response undershoots badly, so allow a second continuation before giving up.
+    // Each pass appends to the body it already produced, so progress accumulates.
+    for (let attempt = 0; attempt < AI_HINDI_ONLY_MAX_REPAIR_ATTEMPTS; attempt += 1) {
+      const invalidFields = Array.isArray(lastError.invalidFields) ? lastError.invalidFields : [];
+      if (!invalidFields.length) {
+        throw lastError;
+      }
+
+      workingPayload = await repairHindiOnlyPayload({
+        payload: workingPayload,
+        invalidFields,
+        articleRecord,
+        articleText,
+        attempt,
+      });
+
+      try {
+        const payload = validateAiPayload(workingPayload, {
+          ...validateOptions,
+          rawResponse: JSON.stringify(workingPayload),
+        });
+        return {
+          model_name: GEMINI_MODEL,
+          raw_response: JSON.stringify(payload),
+          payload,
+        };
+      } catch (repairError) {
+        lastError = repairError;
+      }
     }
 
-    const repairedPayload = await repairHindiOnlyPayload({
-      payload: rawPayload,
-      invalidFields,
-      articleRecord,
-      articleText,
-    });
-    const payload = validateAiPayload(repairedPayload, { ...validateOptions, rawResponse: JSON.stringify(repairedPayload) });
-    return {
-      model_name: GEMINI_MODEL,
-      raw_response: JSON.stringify(payload),
-      payload,
-    };
+    throw lastError;
   }
 }
 
