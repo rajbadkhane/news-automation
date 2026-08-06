@@ -420,6 +420,15 @@ You MUST NOT invent, even to reach the length:
 
 The rule: you may explain and contextualise freely, but every concrete fact about this specific news event must come from the supplied source. Expand by going deeper on what is known, not by adding things that are not known.
 
+Names and proper nouns (accuracy is critical):
+- Carry over EVERY proper noun the source gives: people, official designations, ministries, departments, courts, companies, teams, schemes, laws, cities, states and countries. Do not silently drop a named person or organisation from the story.
+- Write each name in Devanagari as it is normally written in Indian Hindi newspapers, and spell it IDENTICALLY every time it appears in the article. Never switch between two spellings of the same name.
+- On first mention of a person, give the name together with the designation exactly as the source states it, for example "केंद्रीय स्वास्थ्य मंत्री" before the name. Afterwards the surname or full name alone is fine.
+- Keep the name attached to the correct role, place and action. Never swap who did what, and never move a designation from one person to another.
+- Do not translate a personal name into its literal Hindi meaning, and do not expand, shorten, initialise or "correct" any name. Keep organisation names, scheme names and law names in the form the source uses; where an English proper noun has a standard Devanagari form, use that standard form consistently.
+- If the source gives only a designation and no personal name, keep it as the designation alone. Never invent a personal name to fill the gap, and never guess the current holder of an office.
+- Reproduce every number, date, amount, percentage and place exactly as given; do not round, convert or restate them differently.
+
 JSON schema:
 {
   "classification": {
@@ -2720,7 +2729,6 @@ async function extractArticleTextFromPage(page, articleUrl) {
     const siteNoisePatterns = [
       /cookie|subscribe|newsletter|follow us|advertisement|read more|click here|download app/i,
       /all rights reserved|beta version|designed and maintained|site version/i,
-      /directory|judiciary|collector|commissioner|district news|minister|cabinet/i,
       /facebook|twitter|instagram|youtube|whatsapp|telegram/i,
       /©\s*2006-20\d{2}[\s\S]*$/i,
       /जनसम्पर्क विभाग[\s\S]*$/i,
@@ -2740,6 +2748,10 @@ async function extractArticleTextFromPage(page, articleUrl) {
       /shared responsibility, stronger outcomes[\s\S]*$/i,
     ];
     const mpInfoNoisePatterns = [
+      // Navigation/menu chrome on the MP government portal. Scoped to this host only:
+      // applied globally it silently dropped any news paragraph containing "Minister",
+      // "collector" or "commissioner", which is routine wording in Indian reporting.
+      /directory|judiciary|collector|commissioner|district news|minister|cabinet/i,
       /© 2006-20\d{2}/i,
       /जनसम्पर्क विभाग/i,
       /साईट का संस्करण/i,
@@ -2835,6 +2847,47 @@ async function extractArticleTextFromPage(page, articleUrl) {
 
       if (paragraphs.length >= 25) {
         break;
+      }
+    }
+
+    // Many publishers (government CMS templates in particular) render article body
+    // text in <div>s or <br>-separated blocks rather than <p>/<li>, so the harvest
+    // above returns only boilerplate. Recover from the innerText of the most
+    // specific content container that actually holds text. This reuses the page
+    // already loaded, so it costs no extra navigation.
+    const countWords = (value) => String(value || "").trim().split(/\s+/).filter(Boolean).length;
+    const harvestedWords = paragraphs.reduce((total, text) => total + countWords(text), 0);
+
+    if (harvestedWords < 120) {
+      for (const root of candidateRoots) {
+        const rootText = normalize(root.innerText || root.textContent);
+        if (countWords(rootText) < 60) {
+          continue;
+        }
+
+        for (const rawBlock of String(root.innerText || root.textContent || "").split(/\n+/)) {
+          const text = removePatternMatches(rawBlock, sourceSpecificNoisePatterns);
+          if (!text || text.length < 40) {
+            continue;
+          }
+          if (activeNoisePatterns.some((pattern) => pattern.test(text))) {
+            continue;
+          }
+          if (seen.has(text)) {
+            continue;
+          }
+
+          seen.add(text);
+          paragraphs.push(text);
+
+          if (paragraphs.length >= 25) {
+            break;
+          }
+        }
+
+        if (paragraphs.reduce((total, text) => total + countWords(text), 0) >= 120) {
+          break;
+        }
       }
     }
 
