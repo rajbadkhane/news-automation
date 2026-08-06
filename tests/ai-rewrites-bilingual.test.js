@@ -233,13 +233,13 @@ assert.strictEqual(normalized.ui_hindi.long_500, normalized.hindi.long_descripti
 assert.strictEqual(normalized.ui_english.long_500, normalized.english.long_description);
 assert.strictEqual(normalized.raw_articles, undefined);
 assert.ok(countWords(compact.hindi.lead_100) < 95, "lead segment count is not an independent hard contract");
-assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 265);
-assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 540);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1050);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1150);
-assert.ok(normalized._compact_counts.english.normalized.body100 >= 265);
-assert.ok(normalized._compact_counts.english.normalized.body300 >= 540);
-assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1050);
+assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 300);
+assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 600);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1100);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1350);
+assert.ok(normalized._compact_counts.english.normalized.body100 >= 300);
+assert.ok(normalized._compact_counts.english.normalized.body300 >= 600);
+assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1100);
 
 const toppedUpLead = makeCompactPayload({
   hindi: {
@@ -253,7 +253,7 @@ const toppedUpLead = makeCompactPayload({
 });
 const toppedNormalized = __test.buildCompactBilingualPayload(toppedUpLead, articleRecord, articleText);
 assert.strictEqual(countWords(toppedUpLead.english.lead_100), 70);
-assert.ok(toppedNormalized._compact_counts.english.normalized.body100 >= 265);
+assert.ok(toppedNormalized._compact_counts.english.normalized.body100 >= 300);
 
 const progressive = __test.normalizeProgressiveBodies(toppedUpLead.english, "english");
 assert.ok(progressive.bodies.body300.startsWith(progressive.bodies.body100));
@@ -264,17 +264,17 @@ const overlong = __test.buildCompactBilingualPayload(makeCompactPayload({
   english: { extension_700: repeatSentences(englishWords, 90) },
 }), articleRecord, articleText);
 assert.ok(overlong._compact_counts.english.segment.extension_700 > 800);
-assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1150);
+assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1350);
 
 assert.throws(
   () => __test.buildCompactBilingualPayload(makeCompactPayload({
-    hindi: { extension_700: repeatSentences(hindiWords, 55, "।") },
-    english: { extension_700: repeatSentences(englishWords, 55) },
+    hindi: { extension_700: repeatSentences(hindiWords, 20, "।") },
+    english: { extension_700: repeatSentences(englishWords, 20) },
   }), articleRecord, articleText),
   (error) => {
     assert.ok(error.invalidFields.includes("hindi.long_cumulative"));
     assert.ok(error.invalidFields.includes("english.long_cumulative"));
-    assert.ok(error.validationDetails["english.long_cumulative"].words < 1050);
+    assert.ok(error.validationDetails["english.long_cumulative"].words < 1100);
     return true;
   }
 );
