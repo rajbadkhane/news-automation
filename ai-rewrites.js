@@ -5,9 +5,10 @@ const GEMINI_API_URL = process.env.GEMINI_API_URL
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
-const AI_PROMPT_VERSION = "bilingual-compact-v10-two-fact-subheadings-newspaper-style";
-const AI_REWRITE_MODE = String(process.env.AI_REWRITE_MODE || "bilingual-compact").trim().toLowerCase();
+const AI_PROMPT_VERSION = "hindi-only-v11-single-shot-newspaper-style";
+const AI_REWRITE_MODE = String(process.env.AI_REWRITE_MODE || "hindi-only").trim().toLowerCase();
 const AI_REWRITE_MODES = Object.freeze({
+  HINDI_ONLY: "hindi-only",
   BILINGUAL_COMPACT: "bilingual-compact",
   HINDI_LEGACY: "hindi-legacy",
 });
@@ -370,6 +371,79 @@ Stage 2 continuation mode:
 - Use only supported facts and directly supported context from the supplied source.
 - Preserve factual agreement between Hindi and English.
 - Add no unsupported names, numbers, quotes or official responses.`;
+
+const HINDI_ONLY_SYSTEM_PROMPT = `You are the GE News Hub Hindi rewrite desk.
+
+Permanent editorial rules:
+- Produce one complete Hindi news rewrite from supplied scraped news, in a single response.
+- Return only valid JSON.
+- Do not mention any publisher, publication, website, reporter, news agency, wire service or portal, including GE News Hub itself. Write the body in plain newspaper reporting style with no agency byline phrase anywhere.
+- Remove source publisher names from generated article text, headlines, captions, source labels and keywords.
+- Do not invent names, numbers, dates, quotes, deaths, injuries, arrests, FIR details, court orders, government decisions, financial figures, police action, official reactions or ground-level scenes.
+- Include official response, claims, allegations and ground reality only when supported by the supplied source.
+- Use every verified detail and safe directly supported context needed to build the requested article length.
+- If the source is too thin for the requested length, use only supported context and avoid fabrication; the application will validate the result.
+- Do not return image_url, image_prompt, link or source. The application sets them locally.
+
+JSON schema:
+{
+  "classification": {
+    "category": "National",
+    "state": "राष्ट्रीय",
+    "confidence": 0.98,
+    "reason": "The primary event is an Indian national issue outside Madhya Pradesh.",
+    "keywords": ["हिंदी कीवर्ड 1", "हिंदी कीवर्ड 2", "हिंदी कीवर्ड 3"]
+  },
+  "hindi": {
+    "heading": "",
+    "secondary_heading": "",
+    "subheadings": ["", ""],
+    "photo_caption": "",
+    "body": ""
+  }
+}
+
+Size rules:
+- body is a hard MINIMUM of 1100 Hindi words. Reaching more is fine and encouraged (up to about 1300 words); reaching less is not acceptable.
+- Write body as one continuous, complete, publishable Hindi news article in a single field — not a summary, not bullet points, not multiple segments.
+- Keep sentences complete so the application can trim body at sentence boundaries to derive 300-word, 600-word and 1100-word publishable versions from this SAME text (each shorter version is the opening portion of the longer one).
+- Never stop writing around 300, 600 or 900 words; continue until the article comfortably clears 1100 words when the supplied source has enough verified material.
+- This is a hard output contract: if body is under 1100 words the response will be rejected and you will be asked to add more. When in doubt, write more, not less.
+- For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
+- Do not repeat the headline, secondary heading, subheadings or caption inside body.
+- Exactly one main headline, exactly one secondary headline, exactly two factual subheadings and exactly one photo caption.
+- Hindi headline: natural newspaper Hindi, 10 to 20 words, factual, restrained, not clickbait.
+- secondary_heading format: 2 to 3 short factual keywords or entity names taken from the story, then a colon ":", then a complete secondary headline of 12 to 14 words that adds a distinct angle beyond the main headline. Example shape: "मध्य प्रदेश, पुलिस : भोपाल में पुलिस ने संदिग्ध तस्करी गिरोह के तीन सदस्यों को हिरासत में लिया।" Do not repeat the main headline's wording in the secondary headline.
+- Extract subheadings as standalone fields, separate from body. Do not restate them inside body; the application displays them in their own column, not inside the article body.
+- Each subheading must be a supported factual mini-headline. Do not use labels such as Fact 1, Key Point, Main Update or Angle.
+- Write body in professional Indian newspaper reporting style (the style of Dainik Bhaskar, Jagran, Patrika, Naidunia), not wire-agency style. Begin body itself with a dateline: the most specific verified city or place name for the story, followed by a period, then continue directly into the report in the same paragraph. Example start: "भोपाल. मध्य प्रदेश सरकार ने...". If no specific place is verifiable from the source, use the most relevant state capital or "नई दिल्ली" as a safe fallback dateline. Do not label this as "Agency" or name any agency; it is a plain place-name dateline only.
+- Captions should be factual, 20 to 30 words when practical, and must not describe unsupported visual details.
+- Include attributed statements only when supported by the supplied source.
+- Include ground-level details only when supported by the supplied source.
+- Never invent a generic official, police, administration, witness or local-resident response merely to satisfy article structure.
+
+Category rules:
+- category must be exactly one of: ${AI_ALLOWED_CATEGORIES.join(", ")}.
+- confidence must be a number from 0 to 1.
+- reason must be one short English sentence explaining the category decision.
+- The RSS/API/source category is optional context only. Never copy it blindly.
+- Priority rule 1: If the primary location or institution is in Madhya Pradesh, return Madhya Pradesh immediately. This includes Bhopal, Indore, Jabalpur, Ujjain, Gwalior, Rewa, Sagar, Satna, Chhindwara, Dewas, Ratlam, Katni, Vidisha, Sehore, Morena, Shivpuri, Neemuch, Mandsaur, Damoh, Panna, Tikamgarh, MP Government, Madhya Pradesh High Court, MP Police, MP Education, MP Elections, MP Crime, MP Weather, MP Business, MP Startups, MP Tourism, MP Sports, MP Entertainment, MP Festivals and MP Infrastructure.
+- Madhya Pradesh overrides Sports, Business and Entertainment.
+- Priority rule 2: If not Madhya Pradesh and the story is about cricket, football, hockey, tennis, kabaddi, IPL, Olympics, athletics, chess, Formula 1, esports, rankings, transfers, match reports or player interviews, return Sports.
+- Priority rule 3: If not Madhya Pradesh or Sports and the story is about economy, finance, banking, RBI, Sensex, Nifty, stock market, IPO, companies, taxation, cryptocurrency, startups, investments or trade, return Business.
+- Priority rule 4: If not Madhya Pradesh, Sports or Business and the story is about Bollywood, Hollywood, OTT, music, television, web series, movies, celebrities, influencers or awards, return Entertainment.
+- Priority rule 5: If the primary event happened outside India, return International.
+- Priority rule 6: For everything else inside India, return National.`;
+
+const HINDI_ONLY_REPAIR_SYSTEM_PROMPT = `${HINDI_ONLY_SYSTEM_PROMPT}
+
+Repair mode:
+- Return only requested repair operations.
+- Use this exact JSON shape: {"replace": {}, "append": {}}.
+- Use replace for missing, empty, wrong-language, malformed or too-short fields (heading, secondary_heading, photo_caption, subheadings). Replacement replaces the old field entirely; it is not appended.
+- Use append only for hindi.body when it is too short overall. Return only the NEW continuation words to add onto the end of the existing body; do not repeat any sentence that already exists in the current body.
+- Do not regenerate fields that were not requested.
+- Do not include image_url, image_prompt, link or source.`;
 
 const AI_CATEGORY_OVERRIDE = `
 CATEGORY OVERRIDE:
@@ -962,6 +1036,28 @@ function hasBilingualPayloadShape(payload) {
       typeof payload === "object" &&
       payload.english &&
       payload.hindi &&
+      payload.ui_hindi &&
+      payload._mode !== "hindi-only"
+  );
+}
+
+function hasHindiOnlyShape(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      payload.classification &&
+      payload.hindi &&
+      typeof payload.hindi === "object" &&
+      payload.hindi.body !== undefined &&
+      payload._mode !== "hindi-only"
+  );
+}
+
+function hasBuiltHindiOnlyShape(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === "object" &&
+      payload._mode === "hindi-only" &&
       payload.ui_hindi
   );
 }
@@ -1167,6 +1263,88 @@ function normalizeProgressiveBodies(pack, language) {
         body100: body100.words,
         body300: body300.words,
         body1000: body1000.words,
+      },
+    },
+  };
+}
+
+function normalizeSingleBodyTiers(bodyText, language) {
+  const invalidFields = [];
+  const details = {};
+  const cleanBody = cleanGeneratedText(bodyText);
+  const rawWords = countBodyWords(cleanBody);
+
+  const body300 = normalizeSentencesClosestToTarget(cleanBody, {
+    preferredMin: AI_BODY_100_MIN_WORDS,
+    preferredMax: AI_BODY_100_MAX_WORDS,
+    emergencyMin: AI_BODY_100_EMERGENCY_MIN_WORDS,
+    emergencyMax: AI_BODY_100_EMERGENCY_MAX_WORDS,
+    target: 300,
+  });
+  if (!body300.valid) {
+    const field = `${language}.body300_cumulative`;
+    invalidFields.push(field);
+    details[field] = {
+      words: body300.words,
+      min: AI_BODY_100_EMERGENCY_MIN_WORDS,
+      max: AI_BODY_100_EMERGENCY_MAX_WORDS,
+      message: "Body could not produce a valid 300-word prefix.",
+    };
+  }
+
+  const body600 = normalizeSentencesClosestToTarget(cleanBody, {
+    preferredMin: AI_BODY_300_MIN_WORDS,
+    preferredMax: AI_BODY_300_MAX_WORDS,
+    emergencyMin: AI_BODY_300_EMERGENCY_MIN_WORDS,
+    emergencyMax: AI_BODY_300_EMERGENCY_MAX_WORDS,
+    target: 600,
+    requiredPrefix: body300.text,
+  });
+  if (!body600.valid) {
+    const field = `${language}.body600_cumulative`;
+    invalidFields.push(field);
+    details[field] = {
+      words: body600.words,
+      min: AI_BODY_300_EMERGENCY_MIN_WORDS,
+      max: AI_BODY_300_EMERGENCY_MAX_WORDS,
+      message: "Body could not produce a valid 600-word prefix.",
+    };
+  }
+
+  const body1100 = normalizeSentencesClosestToTarget(cleanBody, {
+    preferredMin: AI_LONG_REWRITE_MIN_WORDS,
+    preferredMax: AI_LONG_REWRITE_MAX_WORDS,
+    emergencyMin: AI_LONG_REWRITE_MIN_WORDS,
+    emergencyMax: AI_LONG_REWRITE_MAX_WORDS,
+    target: 1100,
+    requiredPrefix: body600.text,
+  });
+  if (!body1100.valid) {
+    const field = `${language}.long_cumulative`;
+    invalidFields.push(field);
+    details[field] = {
+      words: body1100.words,
+      source_words: rawWords,
+      min: AI_LONG_REWRITE_MIN_WORDS,
+      max: AI_LONG_REWRITE_MAX_WORDS,
+      message: "Body could not produce a valid 1100-word minimum article.",
+    };
+  }
+
+  return {
+    invalidFields,
+    details,
+    bodies: {
+      body100: body300.text,
+      body300: body600.text,
+      body1000: body1100.text,
+    },
+    counts: {
+      raw: rawWords,
+      normalized: {
+        body100: body300.words,
+        body300: body600.words,
+        body1000: body1100.words,
       },
     },
   };
@@ -1550,6 +1728,171 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
   };
 }
 
+function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options = {}) {
+  const invalidFields = [];
+  const validationDetails = {};
+  const normalized = rawPayload && typeof rawPayload === "object" ? rawPayload : {};
+  const classification = normalized.classification && typeof normalized.classification === "object"
+    ? normalized.classification
+    : {};
+  const category = validateAiGeneratedCategory(classification.category, {
+    ...options,
+    articleId: articleRecord?.id,
+    articleTitle: articleRecord?.title,
+    articleText: articleText?.combinedText,
+    sourceTitle: articleText?.title,
+    sourceExcerpt: articleRecord?.source_excerpt,
+    sourceUrl: articleRecord?.source_url,
+  });
+  const confidence = normalizeAiConfidence(classification.confidence);
+  const reason = normalizeClassificationReason(classification.reason);
+  const keywords = Array.isArray(classification.keywords)
+    ? classification.keywords.map((item) => removePublisherMentions(item)).filter(Boolean).slice(0, 5)
+    : [];
+
+  const hindiRaw = normalized.hindi && typeof normalized.hindi === "object" ? normalized.hindi : {};
+  const heading = removePublisherMentions(hindiRaw.heading);
+  const secondaryHeading = normalizeSecondaryHeading(hindiRaw.secondary_heading, removePublisherMentions) ||
+    buildFallbackSecondaryHeading(heading, "hindi");
+  const subheadings = normalizeSubheadingList(hindiRaw.subheadings);
+  const photoCaption = removePublisherMentions(hindiRaw.photo_caption);
+  const body = removePublisherMentions(hindiRaw.body);
+
+  if (!normalized.classification || typeof normalized.classification !== "object") {
+    invalidFields.push("classification");
+  }
+  if (!AI_ALLOWED_CATEGORIES.includes(String(classification.category || "").trim())) {
+    invalidFields.push("classification.category");
+  }
+  if (!Number.isFinite(Number(classification.confidence)) || Number(classification.confidence) < 0 || Number(classification.confidence) > 1) {
+    invalidFields.push("classification.confidence");
+  }
+  if (!reason) {
+    invalidFields.push("classification.reason");
+  }
+  if (!heading || !hasHindiText(heading)) {
+    invalidFields.push("hindi.heading");
+  }
+  if (!photoCaption || !hasHindiText(photoCaption)) {
+    invalidFields.push("hindi.photo_caption");
+  }
+  if (!body || !hasHindiText(body)) {
+    invalidFields.push("hindi.body");
+  }
+  if (subheadings.length !== 2) {
+    invalidFields.push("hindi.subheadings");
+  }
+  subheadings.forEach((subheading, index) => {
+    if (!subheading || !hasHindiText(subheading) || hasBadSubheadingLabel(subheading)) {
+      invalidFields.push(`hindi.subheadings.${index}`);
+    }
+  });
+
+  const tiers = normalizeSingleBodyTiers(body, "hindi");
+  invalidFields.push(...tiers.invalidFields);
+  Object.assign(validationDetails, tiers.details);
+
+  if (normalized.image_url || normalized.image_prompt || classification.image_url || classification.image_prompt || hindiRaw.image_url) {
+    invalidFields.push("image_url");
+  }
+
+  if (invalidFields.length) {
+    throw createAiValidationError(
+      `Gemini Hindi-only response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+      invalidFields,
+      validationDetails
+    );
+  }
+
+  let uiHindi = enforceMpCategoryOverride({
+    title: heading,
+    secondary_headline: secondaryHeading,
+    subheadings,
+    short_100: assemblePublishableArticle({
+      heading,
+      secondaryHeading,
+      photoCaption,
+      body: tiers.bodies.body100,
+    }),
+    medium_300: assemblePublishableArticle({
+      heading,
+      secondaryHeading,
+      photoCaption,
+      body: tiers.bodies.body300,
+    }),
+    long_500: assemblePublishableArticle({
+      heading,
+      secondaryHeading,
+      photoCaption,
+      body: tiers.bodies.body1000,
+    }),
+    keywords,
+    category,
+    state: removePublisherMentions(classification.state) || "राष्ट्रीय",
+    confidence,
+    reason,
+    image_url: "",
+    image_prompt: "",
+    source: "GE News Hub रिपोर्ट",
+    link: String(articleRecord?.source_url || "").trim(),
+  }, {
+    articleId: articleRecord?.id,
+    articleTitle: articleRecord?.title,
+    articleText: articleText?.combinedText,
+    sourceTitle: articleText?.title,
+    sourceExcerpt: articleRecord?.source_excerpt,
+    sourceUrl: articleRecord?.source_url,
+  });
+
+  for (const article of [uiHindi.short_100, uiHindi.medium_300, uiHindi.long_500]) {
+    if (!hasExactlyOneLabel(article, "Photo Caption:")) {
+      throw createAiValidationError("Assembled Hindi-only article structure is invalid.", ["hindi.photo_caption"]);
+    }
+  }
+
+  return {
+    _mode: "hindi-only",
+    english: {
+      headline: "",
+      secondary_headline: "",
+      top_summary: [],
+      short_description: "",
+      long_description: "",
+      what_to_watch_next: "",
+    },
+    hindi: {
+      headline: heading,
+      secondary_headline: secondaryHeading,
+      top_summary: subheadings,
+      short_description: uiHindi.short_100,
+      long_description: uiHindi.long_500,
+      what_to_watch_next: uiHindi.medium_300,
+    },
+    ui_hindi: {
+      ...uiHindi,
+      secondary_headline: secondaryHeading,
+      subheadings,
+    },
+    ui_english: {
+      title: "",
+      secondary_headline: "",
+      short_100: "",
+      medium_300: "",
+      long_500: "",
+      subheadings: [],
+      category: uiHindi.category,
+      state: uiHindi.state,
+      source: uiHindi.source,
+      link: uiHindi.link,
+      image_url: "",
+      image_prompt: "",
+    },
+    _compact_counts: {
+      hindi: tiers.counts,
+    },
+  };
+}
+
 function slugifyText(value) {
   return String(value || "")
     .toLowerCase()
@@ -1857,6 +2200,17 @@ ${truncateText(articleText.combinedText, 10000)}`;
 function validateAiPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object") {
     throw new Error("Gemini response was not a valid object.");
+  }
+
+  if (hasBuiltHindiOnlyShape(payload)) {
+    if (!payload.ui_hindi.short_100 || !payload.ui_hindi.medium_300 || !payload.ui_hindi.long_500) {
+      throw new Error("Gemini Hindi-only payload is missing required body fields.");
+    }
+    return payload;
+  }
+
+  if (hasHindiOnlyShape(payload)) {
+    return buildHindiOnlyPayload(payload, options.articleRecord, options.articleTextObject, options);
   }
 
   if (hasCompactBilingualShape(payload)) {
@@ -3442,16 +3796,202 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
   };
 }
 
+function getHindiOnlyFieldRepairInstruction(payload, fieldPath) {
+  const value = getPathValue(payload, fieldPath);
+  const count = typeof value === "string" ? countBodyWords(value) : Array.isArray(value) ? value.length : 0;
+  const ranges = {
+    "hindi.body": `at least ${AI_LONG_REWRITE_MIN_WORDS} Hindi body words opening with a place-name dateline, ideally ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}, never less than ${AI_LONG_REWRITE_MIN_WORDS}`,
+    "hindi.subheadings": "exactly two Hindi factual subheadings, extracted separately from the body",
+    "hindi.heading": "one natural newspaper Hindi headline, 10 to 20 words",
+    "hindi.secondary_heading": "2 to 3 keywords, a colon, then a 12 to 14 word secondary headline distinct from the main heading",
+    "hindi.photo_caption": "one factual Hindi caption, 20 to 30 words",
+  };
+  return {
+    field: fieldPath,
+    current_count: count,
+    required: ranges[fieldPath] || "valid replacement for this field",
+    current_value_preview: truncateText(typeof value === "string" ? value : JSON.stringify(value || ""), 900),
+  };
+}
+
+async function repairHindiOnlyPayload({ payload, invalidFields, articleRecord, articleText }) {
+  const uniqueFields = Array.from(new Set((invalidFields || []).filter(Boolean)));
+  const repairPrompt = `Repair only these invalid fields:
+${uniqueFields.join(", ")}
+
+Return only:
+{"replace": {}, "append": {}}
+
+Invalid field details:
+${JSON.stringify(uniqueFields.map((field) => getHindiOnlyFieldRepairInstruction(payload, field)), null, 2)}
+
+Use replace for missing, empty, wrong-language, malformed or too-short fields among: hindi.heading, hindi.secondary_heading, hindi.photo_caption, hindi.subheadings. Replacement replaces the old field entirely.
+Use append only for hindi.body when it is too short overall. Return only the NEW continuation words to add onto the end of the existing body; do not repeat any sentence that already exists in the current body.
+Do not regenerate fields not listed above.
+Do not include image_url, image_prompt, link or source.
+
+Current payload for context:
+${JSON.stringify(payload)}
+
+RAW ARTICLE TEXT
+${truncateText(articleText.combinedText, 10000)}`;
+
+  const response = await requestGeminiJson([
+    {
+      role: "system",
+      content: HINDI_ONLY_REPAIR_SYSTEM_PROMPT,
+    },
+    {
+      role: "user",
+      content: repairPrompt,
+    },
+  ], {
+    articleId: articleRecord.id,
+    mode: AI_REWRITE_MODES.HINDI_ONLY,
+    call: "targeted-repair",
+    temperature: 0.2,
+    maxTokens: 8000,
+    retries: 2,
+  });
+
+  const repairPayload = parseJsonResponse(response.content);
+  const merged = JSON.parse(JSON.stringify(payload || {}));
+  const replace = repairPayload?.replace && typeof repairPayload.replace === "object" ? repairPayload.replace : {};
+  const append = repairPayload?.append && typeof repairPayload.append === "object" ? repairPayload.append : {};
+
+  for (const [path, value] of Object.entries(replace)) {
+    setPathValue(merged, path, coerceRepairValue(value));
+  }
+
+  for (const [path, value] of Object.entries(append)) {
+    if (path !== "hindi.body") {
+      continue;
+    }
+    const existingValue = cleanGeneratedText(getPathValue(merged, path));
+    const repairValue = cleanGeneratedText(coerceRepairValue(value));
+    setPathValue(merged, path, joinBodySegments([existingValue, repairValue]));
+  }
+
+  return merged;
+}
+
+async function generateHindiOnlyRewrite(articleRecord, articleText) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
+  }
+
+  const sourceAnalysis = assertSufficientSourceMaterial(articleRecord, articleText);
+  const prompt = `${buildRawArticleContextPrompt(articleRecord, articleText)}
+OUTPUT LENGTH REMINDER
+- hindi.body must be at least ${AI_LONG_REWRITE_MIN_WORDS} Hindi words in a single field. More is fine; less is not acceptable.
+- Do not return only a short summary when the extracted source has enough material.
+
+RAW ARTICLE TEXT
+${truncateText(articleText.combinedText, 14000)}`;
+
+  const response = await requestGeminiJson([
+    {
+      role: "system",
+      content: HINDI_ONLY_SYSTEM_PROMPT,
+    },
+    {
+      role: "user",
+      content: prompt,
+    },
+  ], {
+    articleId: articleRecord.id,
+    mode: AI_REWRITE_MODES.HINDI_ONLY,
+    call: "single-shot",
+    temperature: 0.3,
+    maxTokens: 16000,
+    retries: 2,
+  });
+
+  let rawPayload;
+  try {
+    rawPayload = parseJsonResponse(response.content);
+  } catch (error) {
+    const correctionPrompt = `${prompt}
+
+The previous response was invalid JSON. Return exactly one valid JSON object using the required schema. Do not include explanations.
+
+Previous invalid response preview:
+${truncateText(response.content, 3000)}`;
+    const corrected = await requestGeminiJson([
+      {
+        role: "system",
+        content: HINDI_ONLY_SYSTEM_PROMPT,
+      },
+      {
+        role: "user",
+        content: correctionPrompt,
+      },
+    ], {
+      articleId: articleRecord.id,
+      mode: AI_REWRITE_MODES.HINDI_ONLY,
+      call: "json-correction",
+      temperature: 0.2,
+      maxTokens: 16000,
+      retries: 2,
+    });
+    rawPayload = parseJsonResponse(corrected.content);
+  }
+
+  const validateOptions = {
+    articleRecord,
+    articleTextObject: articleText,
+    articleId: articleRecord.id,
+    articleTitle: articleRecord.title,
+    articleText: articleText.combinedText,
+    sourceTitle: articleText.title,
+    sourceExcerpt: articleRecord.source_excerpt,
+    sourceUrl: articleRecord.source_url,
+    requireClassificationMetadata: true,
+    sourceAnalysis,
+  };
+
+  try {
+    const payload = validateAiPayload(rawPayload, { ...validateOptions, rawResponse: JSON.stringify(rawPayload) });
+    return {
+      model_name: GEMINI_MODEL,
+      raw_response: JSON.stringify(payload),
+      payload,
+    };
+  } catch (error) {
+    const invalidFields = Array.isArray(error.invalidFields) ? error.invalidFields : [];
+    if (!invalidFields.length) {
+      throw error;
+    }
+
+    const repairedPayload = await repairHindiOnlyPayload({
+      payload: rawPayload,
+      invalidFields,
+      articleRecord,
+      articleText,
+    });
+    const payload = validateAiPayload(repairedPayload, { ...validateOptions, rawResponse: JSON.stringify(repairedPayload) });
+    return {
+      model_name: GEMINI_MODEL,
+      raw_response: JSON.stringify(payload),
+      payload,
+    };
+  }
+}
+
 async function generateAiRewrite(articleRecord, articleText) {
   if (AI_REWRITE_MODE === AI_REWRITE_MODES.HINDI_LEGACY) {
     return generateLegacyHindiRewrite(articleRecord, articleText);
   }
 
-  if (AI_REWRITE_MODE && AI_REWRITE_MODE !== AI_REWRITE_MODES.BILINGUAL_COMPACT) {
-    console.warn(`[ai-rewrite] Unknown AI_REWRITE_MODE="${AI_REWRITE_MODE}". Using bilingual-compact.`);
+  if (AI_REWRITE_MODE === AI_REWRITE_MODES.BILINGUAL_COMPACT) {
+    return generateCompactBilingualRewrite(articleRecord, articleText);
   }
 
-  return generateCompactBilingualRewrite(articleRecord, articleText);
+  if (AI_REWRITE_MODE && AI_REWRITE_MODE !== AI_REWRITE_MODES.HINDI_ONLY) {
+    console.warn(`[ai-rewrite] Unknown AI_REWRITE_MODE="${AI_REWRITE_MODE}". Using hindi-only.`);
+  }
+
+  return generateHindiOnlyRewrite(articleRecord, articleText);
 }
 
 function formatAiRewriteRecord(record) {
@@ -4439,12 +4979,15 @@ module.exports = {
     buildStage1CorePrompt,
     buildStage2ContinuationPrompt,
     buildCompactBilingualPayload,
+    buildHindiOnlyPayload,
     createGeminiTerminationError,
     countBodyWords,
     countArticleWords,
     generateAiRewrite,
     generateCompactBilingualRewrite,
+    generateHindiOnlyRewrite,
     generateLegacyHindiRewrite,
+    normalizeSingleBodyTiers,
     formatAiRewriteWithNewsRecord,
     formatDeliveredRewrite,
     getSubheadingCount,
