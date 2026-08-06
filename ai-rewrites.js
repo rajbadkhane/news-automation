@@ -3723,7 +3723,12 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
   }
 }
 
-async function listAiRewrites(dbPool, { category = null, limit = 50, publicationStatus = null } = {}) {
+const AI_DELIVERY_FRESH_HOURS = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.NEWS_MAX_AGE_HOURS || "24", 10) || 24, 168)
+);
+
+async function listAiRewrites(dbPool, { category = null, limit = 50, publicationStatus = null, freshSinceHours = null } = {}) {
   const conditions = [];
   const params = [];
 
@@ -3744,7 +3749,15 @@ async function listAiRewrites(dbPool, { category = null, limit = 50, publication
     params.push(publicationStatus);
   }
 
+  if (freshSinceHours) {
+    conditions.push("fn.fetched_at >= (NOW() - INTERVAL ? HOUR)");
+    params.push(freshSinceHours);
+  }
+
   const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const orderByClause = publicationStatus === "published"
+    ? "ORDER BY air.published_at DESC, air.id DESC"
+    : "ORDER BY COALESCE(air.published_at, air.updated_at) DESC, air.id DESC";
   const queryText = `
         SELECT
           air.*,
@@ -3759,7 +3772,7 @@ async function listAiRewrites(dbPool, { category = null, limit = 50, publication
         FROM ai_news_rewrites air
         INNER JOIN fetched_news fn ON fn.id = air.news_id
         ${whereClause}
-        ORDER BY COALESCE(air.published_at, air.updated_at) DESC, air.id DESC
+        ${orderByClause}
         LIMIT ?
       `;
 
@@ -3929,6 +3942,7 @@ async function listDeliveredAiRewrites(dbPool, { category = null, limit = 50, la
     category,
     limit,
     publicationStatus: "published",
+    freshSinceHours: AI_DELIVERY_FRESH_HOURS,
   });
 
   return removeRepeatedDeliveryImages(records.map((record) => formatDeliveredRewrite(record, language)));

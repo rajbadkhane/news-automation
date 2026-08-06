@@ -7,10 +7,10 @@ import { unicodeToKrutidev } from "@/lib/krutidev-converter";
 
 const CACHE_KEY = "gts-news-table-cache-v2";
 const CACHE_TTL_MS = 5 * 1000;
-const REFRESH_INTERVAL_MS = 8 * 1000;
+const REFRESH_INTERVAL_MS = 30 * 1000;
 const INITIAL_LOAD_MAX_WAIT_MS = 12000;
 const REQUEST_TIMEOUT_MS = 60000;
-const TABLE_RECORD_LIMIT = 500;
+const TABLE_RECORD_LIMIT = 150;
 const DEFAULT_PAGE_SIZE = 25;
 const TOI_LEFT_CROP_RATIO = 103 / 1280;
 const SECTION_CONFIG = {
@@ -1322,6 +1322,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   const [preview, setPreview] = useState(null);
   const [relativeNow, setRelativeNow] = useState(null);
   const [translateLanguage, setTranslateLanguage] = useState("hi");
+  const refreshInFlightRef = useRef(false);
 
   const records = useMemo(() => flattenPayload(payload, activeSection), [activeSection, payload]);
   const payloadHasRecords = hasPayloadRecords(payload);
@@ -1534,6 +1535,11 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       }
     }
 
+    if (refreshInFlightRef.current) {
+      return;
+    }
+    refreshInFlightRef.current = true;
+
     try {
       if (force && sync && sectionConfig.syncPath) {
         setMessage(`${sectionConfig.label} sync chal raha hai...`);
@@ -1568,6 +1574,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
     } catch (error) {
       setMessage(error.message || "Backend connection wait kar raha hai; cached data dikhaya ja raha hai.");
     } finally {
+      refreshInFlightRef.current = false;
       if (section === activeSection) {
         setLoadProgress(100);
         setInitialLoadSettled(true);
