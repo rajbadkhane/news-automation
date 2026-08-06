@@ -3728,7 +3728,36 @@ const AI_DELIVERY_FRESH_HOURS = Math.max(
   Math.min(Number.parseInt(process.env.NEWS_MAX_AGE_HOURS || "24", 10) || 24, 168)
 );
 
-async function listAiRewrites(dbPool, { category = null, limit = 50, publicationStatus = null, freshSinceHours = null } = {}) {
+const AI_REWRITE_UI_ONLY_COLUMNS = [
+  "air.id",
+  "air.news_id",
+  "air.model_name",
+  "air.prompt_version",
+  "air.source_url",
+  "air.source_title",
+  "air.source_excerpt",
+  "air.hindi_secondary_headline",
+  "air.hindi_top_summary",
+  "air.ui_title",
+  "air.ui_short_100",
+  "air.ui_medium_300",
+  "air.ui_long_500",
+  "air.ui_keywords_json",
+  "air.ui_category",
+  "air.ui_state",
+  "air.ui_image_url",
+  "air.ui_image_prompt",
+  "air.ui_source",
+  "air.ui_link",
+  "air.publication_status",
+  "air.published_at",
+  "air.published_by",
+  "air.delivery_slug",
+  "air.created_at",
+  "air.updated_at",
+].join(",\n          ");
+
+async function listAiRewrites(dbPool, { category = null, limit = 50, publicationStatus = null, freshSinceHours = null, uiOnly = false } = {}) {
   const conditions = [];
   const params = [];
 
@@ -3760,7 +3789,7 @@ async function listAiRewrites(dbPool, { category = null, limit = 50, publication
     : "ORDER BY COALESCE(air.published_at, air.updated_at) DESC, air.id DESC";
   const queryText = `
         SELECT
-          air.*,
+          ${uiOnly ? AI_REWRITE_UI_ONLY_COLUMNS : "air.*"},
           fn.category,
           fn.title AS news_title,
           fn.source_url AS news_source_url,
@@ -3937,12 +3966,13 @@ function removeRepeatedDeliveryImages(records) {
   });
 }
 
-async function listDeliveredAiRewrites(dbPool, { category = null, limit = 50, language = "both" } = {}) {
+async function listDeliveredAiRewrites(dbPool, { category = null, limit = 50, language = "both", uiOnly = false } = {}) {
   const records = await listAiRewrites(dbPool, {
     category,
     limit,
     publicationStatus: "published",
     freshSinceHours: AI_DELIVERY_FRESH_HOURS,
+    uiOnly,
   });
 
   return removeRepeatedDeliveryImages(records.map((record) => formatDeliveredRewrite(record, language)));

@@ -9403,7 +9403,7 @@ apiV1.get("/delivery/news/grouped", requireApiScope("delivery:read"), async (req
     const language = normalizeDeliveryLanguage(req.query.language);
     const limit = normalizeApiLimit(req.query.limit, 100, 500);
     const compact = String(req.query.compact || "").trim().toLowerCase() === "table";
-    const records = (await listDeliveredAiRewrites(dbPool, { language, limit: Math.min(limit * 3, 500) }))
+    const records = (await listDeliveredAiRewrites(dbPool, { language, limit: Math.min(limit * 3, 500), uiOnly: compact }))
       .filter(isFreshDeliveryRecord)
       .slice(0, limit);
     const grouped = groupDeliveryRecordsByCategory(compact ? records.map(compactDeliveryRecordForTable) : records);
