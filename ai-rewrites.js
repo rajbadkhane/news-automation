@@ -3809,42 +3809,90 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
   };
 }
 
-function getHindiOnlyFieldRepairInstruction(payload, fieldPath) {
-  const value = getPathValue(payload, fieldPath);
-  const count = typeof value === "string" ? countBodyWords(value) : Array.isArray(value) ? value.length : 0;
-  const ranges = {
-    "hindi.body": `at least ${AI_LONG_REWRITE_MIN_WORDS} Hindi body words opening with a place-name dateline, ideally ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}, never less than ${AI_LONG_REWRITE_MIN_WORDS}`,
-    "hindi.subheadings": "exactly two Hindi factual subheadings, extracted separately from the body",
+// Maps validation failures to concrete repair operations. The *_cumulative fields are
+// synthetic validation markers produced by normalizeSingleBodyTiers, not real payload
+// paths, so they must be translated into an append against hindi.body with an explicit
+// word target — otherwise the model is asked to repair a field that does not exist and
+// correctly returns nothing.
+function planHindiOnlyRepairs(payload, invalidFields = []) {
+  const uniqueFields = Array.from(new Set((invalidFields || []).filter(Boolean)));
+  const plan = { replace: {}, append: {} };
+  const bodyWords = countBodyWords(getPathValue(payload, "hindi.body"));
+  const replaceSpecs = {
     "hindi.heading": "one natural newspaper Hindi headline, 10 to 20 words",
-    "hindi.secondary_heading": "2 to 3 keywords, a colon, then a 12 to 14 word secondary headline distinct from the main heading",
+    "hindi.secondary_heading": "2 to 3 keywords, then a colon, then a 12 to 14 word secondary headline distinct from the main heading",
     "hindi.photo_caption": "one factual Hindi caption, 20 to 30 words",
+    "hindi.subheadings": "exactly two Hindi factual subheadings as an array of two strings, extracted separately from the body",
   };
-  return {
-    field: fieldPath,
-    current_count: count,
-    required: ranges[fieldPath] || "valid replacement for this field",
-    current_value_preview: truncateText(typeof value === "string" ? value : JSON.stringify(value || ""), 900),
-  };
+
+  let needsBodyExtension = false;
+  for (const field of uniqueFields) {
+    if (/_cumulative$/.test(field)) {
+      needsBodyExtension = true;
+      continue;
+    }
+
+    const basePath = field.replace(/\.\d+$/, "");
+    if (basePath === "hindi.body") {
+      needsBodyExtension = true;
+      continue;
+    }
+
+    if (replaceSpecs[basePath]) {
+      plan.replace[basePath] = {
+        required: replaceSpecs[basePath],
+        current_value_preview: truncateText(
+          JSON.stringify(getPathValue(payload, basePath) || ""),
+          400
+        ),
+      };
+    }
+  }
+
+  if (needsBodyExtension) {
+    const shortfall = Math.max(0, AI_LONG_REWRITE_MIN_WORDS - bodyWords);
+    const requestedMinimum = shortfall + 40;
+    plan.append["hindi.body"] = {
+      required: "Continuation text to append to the end of the existing hindi.body.",
+      current_body_words: bodyWords,
+      required_total_words: AI_LONG_REWRITE_MIN_WORDS,
+      words_short_by: shortfall,
+      requestedMinimum,
+      requestedMaximum: requestedMinimum + 250,
+      body_tail_preview: truncateText(String(getPathValue(payload, "hindi.body") || "").slice(-600), 600),
+    };
+  }
+
+  return plan;
 }
 
 async function repairHindiOnlyPayload({ payload, invalidFields, articleRecord, articleText }) {
-  const uniqueFields = Array.from(new Set((invalidFields || []).filter(Boolean)));
-  const repairPrompt = `Repair only these invalid fields:
-${uniqueFields.join(", ")}
+  const repairPlan = planHindiOnlyRepairs(payload, invalidFields);
+  const appendPlan = repairPlan.append["hindi.body"];
+  const replaceKeys = Object.keys(repairPlan.replace);
+  const repairPrompt = `Repair plan:
+${JSON.stringify(repairPlan, null, 2)}
 
 Return only:
 {"replace": {}, "append": {}}
 
-Invalid field details:
-${JSON.stringify(uniqueFields.map((field) => getHindiOnlyFieldRepairInstruction(payload, field)), null, 2)}
+${replaceKeys.length
+    ? `For replace, return full replacement values for exactly these keys: ${replaceKeys.join(", ")}.`
+    : "Return an empty replace object; no field replacements are needed."}
 
-Use replace for missing, empty, wrong-language, malformed or too-short fields among: hindi.heading, hindi.secondary_heading, hindi.photo_caption, hindi.subheadings. Replacement replaces the old field entirely.
-Use append only for hindi.body when it is too short overall. Return only the NEW continuation words to add onto the end of the existing body; do not repeat any sentence that already exists in the current body.
-Do not regenerate fields not listed above.
+${appendPlan
+    ? `For append, return key "hindi.body" whose value is ONLY the new continuation text to add onto the END of the existing body.
+The existing body is currently ${appendPlan.current_body_words} Hindi words and must reach at least ${appendPlan.required_total_words} words, so it is short by about ${appendPlan.words_short_by} words.
+Write at least ${appendPlan.requestedMinimum} new Hindi words (ideally ${appendPlan.requestedMinimum} to ${appendPlan.requestedMaximum}).
+This is the tail of the existing body, so you can continue naturally from it and must NOT repeat any of it:
+"""
+${appendPlan.body_tail_preview}
+"""
+Continue the same report with further supported detail: verified background, process, implications, official positions already present in the source, and what happens next. Use only facts supported by the raw article text below. Do not invent names, numbers, dates, quotes or official responses. Do not write a new headline, subheadings or photo caption.`
+    : "Return an empty append object; the body length is acceptable."}
+
+Do not regenerate fields that are not in the repair plan.
 Do not include image_url, image_prompt, link or source.
-
-Current payload for context:
-${JSON.stringify(payload)}
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 10000)}`;
@@ -5001,6 +5049,7 @@ module.exports = {
     generateHindiOnlyRewrite,
     generateLegacyHindiRewrite,
     normalizeSingleBodyTiers,
+    planHindiOnlyRepairs,
     formatAiRewriteWithNewsRecord,
     formatDeliveredRewrite,
     getSubheadingCount,
