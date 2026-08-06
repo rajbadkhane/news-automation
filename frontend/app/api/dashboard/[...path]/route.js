@@ -305,6 +305,8 @@ async function proxyToBackend(request, { params }) {
       status: backendResponse.status,
       headers: {
         "Cache-Control": responseCacheControl,
+        "x-debug-backend-url": API_BASE_URL,
+        "x-debug-target-url": targetUrl,
       },
     });
   }
