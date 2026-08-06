@@ -4003,6 +4003,8 @@ function compactDeliveryRecordForTable(record) {
     },
     ui_hindi: {
       title: uiHindi.title || record?.source?.title || "Untitled story",
+      secondary_headline: uiHindi.secondary_headline || "",
+      subheadings: Array.isArray(uiHindi.subheadings) ? uiHindi.subheadings : [],
       short_100: uiHindi.short_100 || rawArticles.words_100 || "",
       medium_300: uiHindi.medium_300 || rawArticles.words_300 || "",
       long_500: uiHindi.long_500 || rawArticles.words_1000 || rawArticles.words_600 || rawArticles.words_500 || "",

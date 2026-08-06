@@ -393,8 +393,26 @@ Permanent editorial rules:
 - Do not invent names, numbers, dates, quotes, deaths, injuries, arrests, FIR details, court orders, government decisions, financial figures, police action, official reactions or ground-level scenes.
 - Include official response, claims, allegations and ground reality only when supported by the supplied source.
 - Use every verified detail and safe directly supported context needed to build the requested article length.
-- If the source is too thin for the requested length, use only supported context and avoid fabrication; the application will validate the result.
 - Do not return image_url, image_prompt, link or source. The application sets them locally.
+
+Handling a short source (IMPORTANT):
+The supplied source is often much shorter than the required article length. A short source is NOT a reason to write a short article. Plan the full article before you start writing, then reach the required length in this one response by adding EXPLANATORY DEPTH, never invented events.
+
+You MAY expand with, because this is established background rather than new reporting:
+- What the subject actually is and why it matters: explain the disease, scheme, law, technology, court, ministry, tournament, company or office involved in plain terms for a general Hindi reader.
+- How the relevant process or system normally works: the approval process, legal procedure, administrative chain, regulatory framework, election process, medical mechanism, or sporting format referred to in the source.
+- Well-established general background on the topic that an informed desk editor would already know and that is not specific to this particular incident.
+- Why this development matters: who is affected, what typically follows a step like this, what the practical impact on ordinary people or the sector is.
+- What to watch next, framed as expectation rather than fact: pending steps, review stages or scheduled processes that the source itself implies.
+- Careful attribution and framing language such as "आधिकारिक जानकारी के अनुसार", "प्रक्रिया के तहत", "आमतौर पर ऐसे मामलों में", "अधिकारियों के स्तर पर".
+
+You MUST NOT invent, even to reach the length:
+- Any new name, number, date, statistic, casualty figure, amount, percentage or location that is not in the source.
+- Any quote or any statement attributed to a specific named person or body that is not in the source.
+- Any new event, decision, arrest, order, reaction or ground scene that is not in the source.
+- Any claim about THIS specific incident that the source does not support.
+
+The rule: you may explain and contextualise freely, but every concrete fact about this specific news event must come from the supplied source. Expand by going deeper on what is known, not by adding things that are not known.
 
 JSON schema:
 {
@@ -3944,10 +3962,23 @@ async function generateHindiOnlyRewrite(articleRecord, articleText) {
   }
 
   const sourceAnalysis = assertSufficientSourceMaterial(articleRecord, articleText);
+  const sourceWordCount = countArticleWords(articleText.combinedText);
+  // A short source still has to produce a full-length article, so spell out the
+  // expansion budget explicitly rather than letting the model stop early and
+  // burn a repair round-trip.
+  const expansionBrief = sourceWordCount < AI_LONG_REWRITE_MIN_WORDS
+    ? `
+SHORT SOURCE NOTICE
+- The extracted source is only about ${sourceWordCount} words, but hindi.body must still be at least ${AI_LONG_REWRITE_MIN_WORDS} Hindi words. You must roughly ${Math.max(2, Math.ceil(AI_LONG_REWRITE_MIN_WORDS / Math.max(sourceWordCount, 1)))}x the length in this single response.
+- Do not stop early and do not pad by repeating sentences. Follow the "Handling a short source" rules: lead with every verified fact from the source, then go deeper by explaining the subject, the process or system involved, the established background, the practical impact, and what the source implies comes next.
+- Before writing, plan roughly 8 to 12 paragraphs so the article reaches the full length in one pass.
+- Every concrete fact about this specific event must still come only from the source below.`
+    : "";
   const prompt = `${buildRawArticleContextPrompt(articleRecord, articleText)}
 OUTPUT LENGTH REMINDER
 - hindi.body must be at least ${AI_LONG_REWRITE_MIN_WORDS} Hindi words in a single field. More is fine; less is not acceptable.
-- Do not return only a short summary when the extracted source has enough material.
+- Do not return only a short summary; a short source is not a reason to write a short article.
+${expansionBrief}
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
