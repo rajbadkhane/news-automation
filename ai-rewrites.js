@@ -5,34 +5,37 @@ const GEMINI_API_URL = process.env.GEMINI_API_URL
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
-const AI_PROMPT_VERSION = "bilingual-compact-v9-three-fact-subheadings";
+const AI_PROMPT_VERSION = "bilingual-compact-v10-two-fact-subheadings-newspaper-style";
 const AI_REWRITE_MODE = String(process.env.AI_REWRITE_MODE || "bilingual-compact").trim().toLowerCase();
 const AI_REWRITE_MODES = Object.freeze({
   BILINGUAL_COMPACT: "bilingual-compact",
   HINDI_LEGACY: "hindi-legacy",
 });
-const AI_LONG_REWRITE_MIN_WORDS = 950;
-const AI_LONG_REWRITE_MAX_WORDS = 1050;
-const AI_LEAD_BODY_MIN_WORDS = 240;
-const AI_LEAD_BODY_MAX_WORDS = 260;
-const AI_EXTENSION_200_MIN_WORDS = 230;
-const AI_EXTENSION_200_MAX_WORDS = 270;
-const AI_EXTENSION_700_MIN_WORDS = 680;
-const AI_EXTENSION_700_MAX_WORDS = 720;
-const AI_LEAD_BODY_ACCEPT_MIN_WORDS = 220;
-const AI_LEAD_BODY_ACCEPT_MAX_WORDS = 280;
-const AI_EXTENSION_200_ACCEPT_MIN_WORDS = 190;
-const AI_EXTENSION_200_ACCEPT_MAX_WORDS = 310;
-const AI_EXTENSION_700_ACCEPT_MIN_WORDS = 500;
-const AI_EXTENSION_700_ACCEPT_MAX_WORDS = 800;
-const AI_BODY_100_MIN_WORDS = 235;
-const AI_BODY_100_MAX_WORDS = 265;
-const AI_BODY_300_MIN_WORDS = 475;
-const AI_BODY_300_MAX_WORDS = 525;
-const AI_BODY_100_EMERGENCY_MIN_WORDS = 220;
-const AI_BODY_100_EMERGENCY_MAX_WORDS = 280;
-const AI_BODY_300_EMERGENCY_MIN_WORDS = 450;
-const AI_BODY_300_EMERGENCY_MAX_WORDS = 550;
+// Word-count anchors: short version targets 300 words, medium 600, long 1100.
+// Field names (body100/body300/body1000, short_100/medium_300/long_500) are kept
+// for DB/API compatibility even though their actual targets moved.
+const AI_LONG_REWRITE_MIN_WORDS = 1050;
+const AI_LONG_REWRITE_MAX_WORDS = 1150;
+const AI_LEAD_BODY_MIN_WORDS = 285;
+const AI_LEAD_BODY_MAX_WORDS = 315;
+const AI_EXTENSION_200_MIN_WORDS = 275;
+const AI_EXTENSION_200_MAX_WORDS = 325;
+const AI_EXTENSION_700_MIN_WORDS = 750;
+const AI_EXTENSION_700_MAX_WORDS = 790;
+const AI_LEAD_BODY_ACCEPT_MIN_WORDS = 260;
+const AI_LEAD_BODY_ACCEPT_MAX_WORDS = 340;
+const AI_EXTENSION_200_ACCEPT_MIN_WORDS = 230;
+const AI_EXTENSION_200_ACCEPT_MAX_WORDS = 370;
+const AI_EXTENSION_700_ACCEPT_MIN_WORDS = 550;
+const AI_EXTENSION_700_ACCEPT_MAX_WORDS = 880;
+const AI_BODY_100_MIN_WORDS = 285;
+const AI_BODY_100_MAX_WORDS = 315;
+const AI_BODY_300_MIN_WORDS = 570;
+const AI_BODY_300_MAX_WORDS = 630;
+const AI_BODY_100_EMERGENCY_MIN_WORDS = 265;
+const AI_BODY_100_EMERGENCY_MAX_WORDS = 335;
+const AI_BODY_300_EMERGENCY_MIN_WORDS = 540;
+const AI_BODY_300_EMERGENCY_MAX_WORDS = 660;
 const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
 const AI_MIN_SOURCE_FACT_TOKENS = 4;
 const AI_ALLOWED_CATEGORIES = Object.freeze([
@@ -259,7 +262,7 @@ const FIXED_BILINGUAL_SYSTEM_PROMPT = `You are the GE News Hub bilingual rewrite
 Permanent editorial rules:
 - Produce one compact bilingual rewrite package from supplied scraped news.
 - Return only valid JSON.
-- Do not mention any publisher, publication, website, reporter, news agency, wire service or portal except GE News Hub.
+- Do not mention any publisher, publication, website, reporter, news agency, wire service or portal, including GE News Hub itself. Write the body in plain newspaper reporting style with no agency byline phrase anywhere.
 - Remove source publisher names from generated article text, headlines, captions, source labels and keywords.
 - Do not invent names, numbers, dates, quotes, deaths, injuries, arrests, FIR details, court orders, government decisions, financial figures, police action, official reactions or ground-level scenes.
 - Include official response, claims, allegations and ground reality only when supported by the supplied source.
@@ -280,7 +283,8 @@ Compact JSON schema:
   },
   "hindi": {
     "heading": "",
-    "subheadings": ["", "", ""],
+    "secondary_heading": "",
+    "subheadings": ["", ""],
     "photo_caption": "",
     "lead_100": "",
     "extension_200": "",
@@ -288,7 +292,8 @@ Compact JSON schema:
   },
   "english": {
     "heading": "",
-    "subheadings": ["", "", ""],
+    "secondary_heading": "",
+    "subheadings": ["", ""],
     "photo_caption": "",
     "lead_100": "",
     "extension_200": "",
@@ -299,21 +304,24 @@ Compact JSON schema:
 Size rules:
 - Generate progressive body sections once per language.
 - Segment names describe editorial progression, not exact independent word-count contracts.
-- Aim lead_100 at 220 to 280 body words when practical. It will become the 250-word version.
-- Aim extension_200 at 190 to 310 additional body words when practical. lead_100 + extension_200 will become the 500-word version.
-- extension_700 must usually be 650 to 850 additional supported body words.
-- lead_100 + extension_200 + extension_700 must reach a publishable 950 to 1050 body words in each language, preferably 980 to 1030.
-- Never stop the progressive stream around 300, 500 or 600 words when the supplied source has enough verified material for 950 to 1050 words.
-- This is a hard output contract: each language must contain enough body text for the cumulative stream to validate at 950 to 1050 body words.
+- Aim lead_100 at 260 to 340 body words when practical. It will become the 300-word version.
+- Aim extension_200 at 230 to 370 additional body words when practical. lead_100 + extension_200 will become the 600-word version.
+- extension_700 must usually be 550 to 880 additional supported body words.
+- lead_100 + extension_200 + extension_700 must reach a publishable 1050 to 1150 body words in each language, preferably 1070 to 1130.
+- Never stop the progressive stream around 350, 600 or 700 words when the supplied source has enough verified material for 1050 to 1150 words.
+- This is a hard output contract: each language must contain enough body text for the cumulative stream to validate at 1050 to 1150 body words.
 - For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
-- Keep sentences complete and reasonably short so the application can trim at sentence boundaries near 250, 500 and 1000 words.
-- The application will assemble the compatibility fields short_100/medium_300/long_500 cumulatively as 250/500/1000-word versions from the progressive stream.
+- Keep sentences complete and reasonably short so the application can trim at sentence boundaries near 300, 600 and 1100 words.
+- The application will assemble the compatibility fields short_100/medium_300/long_500 cumulatively as 300/600/1100-word versions from the progressive stream.
 - Prioritize factual accuracy, clear progression, complete sentences and non-repetition over exact segment counts.
-- Do not repeat the headline, subheadings or caption inside body sections.
-- Each language gets exactly one headline, exactly three factual subheadings and exactly one photo caption.
+- Do not repeat the headline, secondary heading, subheadings or caption inside body sections.
+- Each language gets exactly one main headline, exactly one secondary headline, exactly two factual subheadings and exactly one photo caption.
 - Hindi headline: natural newspaper Hindi, 10 to 20 words, factual, restrained, not clickbait.
 - English headline: natural newspaper English, 8 to 18 words, faithful to the same central event, not an awkward word-for-word translation.
+- secondary_heading format (both languages): 2 to 3 short factual keywords or entity names taken from the story, then a colon ":", then a complete secondary headline of 12 to 14 words that adds a distinct angle beyond the main headline. Example shape: "मध्य प्रदेश, पुलिस : भोपाल में पुलिस ने संदिग्ध तस्करी गिरोह के तीन सदस्यों को हिरासत में लिया।" Do not repeat the main headline's wording in the secondary headline.
+- Extract subheadings as standalone fields, separate from the body. Do not restate them inside lead_100, extension_200 or extension_700; the application displays them in their own column, not inside the article body.
 - Each subheading must be a supported factual mini-headline. Do not use labels such as Fact 1, Key Point, Main Update or Angle.
+- Write the body in professional Indian newspaper reporting style (the style of Dainik Bhaskar, Jagran, Patrika, Naidunia), not wire-agency style. Begin the body text itself with a dateline: the most specific verified city or place name for the story, followed by a period, then continue directly into the report in the same paragraph. Hindi example start: "भोपाल. मध्य प्रदेश सरकार ने...". English example start: "Bhopal: The Madhya Pradesh government...". If no specific place is verifiable from the source, use the most relevant state capital or "नई दिल्ली" / "New Delhi" as a safe fallback dateline. Do not label this as "Agency" or name any agency; it is a plain place-name dateline only.
 - Captions should be factual, 20 to 30 words when practical, and must not describe unsupported visual details.
 - Include attributed statements only when supported by the supplied source.
 - Include ground-level details only when supported by the supplied source.
@@ -344,18 +352,19 @@ const BILINGUAL_STAGE1_SYSTEM_PROMPT = `${FIXED_BILINGUAL_SYSTEM_PROMPT}
 Stage 1 core-report mode:
 - Return only the core compact bilingual report.
 - Do not return extension_700 in this stage.
-- Use this exact shape: {"classification":{},"hindi":{"heading":"","subheadings":["","",""],"photo_caption":"","lead_100":"","extension_200":""},"english":{"heading":"","subheadings":["","",""],"photo_caption":"","lead_100":"","extension_200":""}}.
-- lead_100 and extension_200 are progressive body sections. They must contain enough complete sentences for the application to assemble valid 250-word and 500-word article bodies.
-- lead_100 + extension_200 must be 475-525 body words in each language when possible.
-- Do not include heading, subheadings, caption, agency label, source, link or image fields inside body sections.`;
+- Use this exact shape: {"classification":{},"hindi":{"heading":"","secondary_heading":"","subheadings":["",""],"photo_caption":"","lead_100":"","extension_200":""},"english":{"heading":"","secondary_heading":"","subheadings":["",""],"photo_caption":"","lead_100":"","extension_200":""}}.
+- lead_100 and extension_200 are progressive body sections. They must contain enough complete sentences for the application to assemble valid 300-word and 600-word article bodies.
+- lead_100 must open with a place-name dateline followed by a period, then continue directly into the report (newspaper style, not agency style).
+- lead_100 + extension_200 must be 570-630 body words in each language when possible.
+- Do not include heading, secondary heading, subheadings, caption, agency label, source, link or image fields inside body sections.`;
 
 const BILINGUAL_STAGE2_SYSTEM_PROMPT = `${FIXED_BILINGUAL_SYSTEM_PROMPT}
 
 Stage 2 continuation mode:
 - Return only JSON with this exact shape: {"hindi_extension_700":"","english_extension_700":""}.
 - Continue the supplied Stage 1 reports.
-- Do not return classification, headings, subheadings, captions, links, source labels, image fields or agency labels.
-- Do not repeat the first 300 words.
+- Do not return classification, headings, secondary headings, subheadings, captions, links, source labels, image fields or agency labels.
+- Do not repeat the first 350 words.
 - Use only supported facts and directly supported context from the supplied source.
 - Preserve factual agreement between Hindi and English.
 - Add no unsupported names, numbers, quotes or official responses.`;
@@ -405,11 +414,13 @@ async function initializeAiRewriteStorage(dbPool) {
         source_title TEXT,
         source_excerpt TEXT,
         english_headline TEXT,
+        english_secondary_headline TEXT,
         english_top_summary TEXT,
         english_short_description TEXT,
         english_long_description TEXT,
         english_what_to_watch_next TEXT,
         hindi_headline TEXT,
+        hindi_secondary_headline TEXT,
         hindi_top_summary TEXT,
         hindi_short_description TEXT,
         hindi_long_description TEXT,
@@ -455,11 +466,13 @@ async function initializeAiRewriteStorage(dbPool) {
         source_title TEXT,
         source_excerpt MEDIUMTEXT,
         english_headline TEXT,
+        english_secondary_headline TEXT,
         english_top_summary TEXT,
         english_short_description MEDIUMTEXT,
         english_long_description LONGTEXT,
         english_what_to_watch_next TEXT,
         hindi_headline TEXT,
+        hindi_secondary_headline TEXT,
         hindi_top_summary TEXT,
         hindi_short_description MEDIUMTEXT,
         hindi_long_description LONGTEXT,
@@ -514,6 +527,8 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_url TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN hindi_secondary_headline TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN english_secondary_headline TEXT",
         "CREATE UNIQUE INDEX unique_delivery_slug ON ai_news_rewrites (delivery_slug)",
         "CREATE INDEX IF NOT EXISTS idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
         "CREATE INDEX IF NOT EXISTS idx_rewrites_published_at ON ai_news_rewrites (published_at)",
@@ -535,6 +550,8 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_link TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN hindi_secondary_headline TEXT",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN english_secondary_headline TEXT",
         "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
         "CREATE INDEX idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
         "CREATE INDEX idx_rewrites_published_at ON ai_news_rewrites (published_at)",
@@ -1078,7 +1095,7 @@ function normalizeProgressiveBodies(pack, language) {
     preferredMax: AI_BODY_100_MAX_WORDS,
     emergencyMin: AI_BODY_100_EMERGENCY_MIN_WORDS,
     emergencyMax: AI_BODY_100_EMERGENCY_MAX_WORDS,
-    target: 250,
+    target: 300,
   });
   if (!body100.valid) {
     const field = `${language}.body100_cumulative`;
@@ -1087,7 +1104,7 @@ function normalizeProgressiveBodies(pack, language) {
       words: body100.words,
       min: AI_BODY_100_EMERGENCY_MIN_WORDS,
       max: AI_BODY_100_EMERGENCY_MAX_WORDS,
-      message: "Cumulative progressive stream could not produce a valid 250-word prefix.",
+      message: "Cumulative progressive stream could not produce a valid 300-word prefix.",
     };
   }
 
@@ -1096,7 +1113,7 @@ function normalizeProgressiveBodies(pack, language) {
     preferredMax: AI_BODY_300_MAX_WORDS,
     emergencyMin: AI_BODY_300_EMERGENCY_MIN_WORDS,
     emergencyMax: AI_BODY_300_EMERGENCY_MAX_WORDS,
-    target: 500,
+    target: 600,
     requiredPrefix: body100.text,
   });
   if (!body300.valid) {
@@ -1106,7 +1123,7 @@ function normalizeProgressiveBodies(pack, language) {
       words: body300.words,
       min: AI_BODY_300_EMERGENCY_MIN_WORDS,
       max: AI_BODY_300_EMERGENCY_MAX_WORDS,
-      message: "Cumulative progressive stream could not produce a valid 500-word prefix.",
+      message: "Cumulative progressive stream could not produce a valid 600-word prefix.",
     };
   }
 
@@ -1115,7 +1132,7 @@ function normalizeProgressiveBodies(pack, language) {
     preferredMax: AI_LONG_REWRITE_MAX_WORDS,
     emergencyMin: AI_LONG_REWRITE_MIN_WORDS,
     emergencyMax: AI_LONG_REWRITE_MAX_WORDS,
-    target: 1000,
+    target: 1100,
     requiredPrefix: body300.text,
   });
   if (!body1000.valid) {
@@ -1151,17 +1168,15 @@ function normalizeProgressiveBodies(pack, language) {
 
 function assemblePublishableArticle({
   heading,
-  subheadings,
+  secondaryHeading,
   photoCaption,
   body,
 }) {
   return [
     cleanGeneratedText(heading),
+    cleanGeneratedText(secondaryHeading),
     "",
-    "Subheadings:",
-    ...subheadings.map((item) => `\u2022 ${cleanGeneratedText(item)}`),
-    "",
-    `Agency GE News Hub ${cleanGeneratedText(body)}`,
+    cleanGeneratedText(body),
     "",
     `Photo Caption: ${cleanGeneratedText(photoCaption)}`,
   ].join("\n");
@@ -1254,7 +1269,7 @@ function normalizeSubheadingList(values) {
   return (Array.isArray(values) ? values : [])
     .map((item) => removePublisherMentions(item).replace(/^\s*(?:Fact|Key Point|Main Update|Angle)\s*\d*\s*[:.-]?\s*/i, "").trim())
     .filter(Boolean)
-    .slice(0, 3);
+    .slice(0, 2);
 }
 
 function hasBadSubheadingLabel(value) {
@@ -1273,11 +1288,30 @@ function assertSameNumberFacts(hindiBody, englishBody, invalidFields) {
   }
 }
 
+function normalizeSecondaryHeading(value, cleaner) {
+  const cleaned = cleaner(value).replace(/\s*[:：]\s*/, " : ").trim();
+  return cleaned;
+}
+
+function buildFallbackSecondaryHeading(heading, language) {
+  const words = cleanGeneratedText(heading).split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return "";
+  }
+  const keywordCount = Math.min(3, Math.max(2, Math.floor(words.length / 4)));
+  const keywords = words.slice(0, keywordCount).join(language === "hindi" ? ", " : ", ");
+  return `${keywords} : ${cleanGeneratedText(heading)}`;
+}
+
 function normalizeCompactLanguagePackage(languagePayload, language) {
   const normalized = languagePayload && typeof languagePayload === "object" ? languagePayload : {};
   const cleaner = language === "hindi" ? removePublisherMentions : cleanGeneratedText;
+  const heading = cleaner(normalized.heading);
+  const secondaryHeading = normalizeSecondaryHeading(normalized.secondary_heading, cleaner) ||
+    buildFallbackSecondaryHeading(heading, language);
   return {
-    heading: cleaner(normalized.heading),
+    heading,
+    secondary_heading: secondaryHeading,
     subheadings: normalizeSubheadingList(normalized.subheadings),
     photo_caption: cleaner(normalized.photo_caption),
     lead_100: cleaner(normalized.lead_100),
@@ -1341,7 +1375,7 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
       }
     }
 
-    if (!Array.isArray(pack.subheadings) || pack.subheadings.length !== 3) {
+    if (!Array.isArray(pack.subheadings) || pack.subheadings.length !== 2) {
       invalidFields.push(`${language}.subheadings`);
     }
     pack.subheadings.forEach((subheading, index) => {
@@ -1395,21 +1429,23 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
 
   let uiHindi = enforceMpCategoryOverride({
     title: hindi.heading,
+    secondary_headline: hindi.secondary_heading,
+    subheadings: hindi.subheadings,
     short_100: assemblePublishableArticle({
       heading: hindi.heading,
-      subheadings: hindi.subheadings,
+      secondaryHeading: hindi.secondary_heading,
       photoCaption: hindi.photo_caption,
       body: hindiProgressive.bodies.body100,
     }),
     medium_300: assemblePublishableArticle({
       heading: hindi.heading,
-      subheadings: hindi.subheadings,
+      secondaryHeading: hindi.secondary_heading,
       photoCaption: hindi.photo_caption,
       body: hindiProgressive.bodies.body300,
     }),
     long_500: assemblePublishableArticle({
       heading: hindi.heading,
-      subheadings: hindi.subheadings,
+      secondaryHeading: hindi.secondary_heading,
       photoCaption: hindi.photo_caption,
       body: hindiProgressive.bodies.body1000,
     }),
@@ -1433,19 +1469,19 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
 
   const englishShort100 = assemblePublishableArticle({
     heading: english.heading,
-    subheadings: english.subheadings,
+    secondaryHeading: english.secondary_heading,
     photoCaption: english.photo_caption,
     body: englishProgressive.bodies.body100,
   });
   const englishMedium300 = assemblePublishableArticle({
     heading: english.heading,
-    subheadings: english.subheadings,
+    secondaryHeading: english.secondary_heading,
     photoCaption: english.photo_caption,
     body: englishProgressive.bodies.body300,
   });
   const englishLong1000 = assemblePublishableArticle({
     heading: english.heading,
-    subheadings: english.subheadings,
+    secondaryHeading: english.secondary_heading,
     photoCaption: english.photo_caption,
     body: englishProgressive.bodies.body1000,
   });
@@ -1459,14 +1495,15 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
     englishLong1000,
   ];
   for (const article of assembledArticles) {
-    if (!hasExactlyOneLabel(article, "Subheadings:") || !hasExactlyOneLabel(article, "Photo Caption:") || getSubheadingCount(article) !== 3) {
-      throw createAiValidationError("Assembled bilingual article structure is invalid.", ["hindi.subheadings", "english.subheadings"]);
+    if (!hasExactlyOneLabel(article, "Photo Caption:")) {
+      throw createAiValidationError("Assembled bilingual article structure is invalid.", ["hindi.photo_caption", "english.photo_caption"]);
     }
   }
 
   return {
     english: {
       headline: english.heading,
+      secondary_headline: english.secondary_heading,
       top_summary: english.subheadings,
       short_description: englishShort100,
       long_description: englishLong1000,
@@ -1474,6 +1511,7 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
     },
     hindi: {
       headline: hindi.heading,
+      secondary_headline: hindi.secondary_heading,
       top_summary: hindi.subheadings,
       short_description: uiHindi.short_100,
       long_description: uiHindi.long_500,
@@ -1481,10 +1519,12 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
     },
     ui_hindi: {
       ...uiHindi,
+      secondary_headline: hindi.secondary_heading,
       subheadings: hindi.subheadings,
     },
     ui_english: {
       title: english.heading,
+      secondary_headline: english.secondary_heading,
       short_100: englishShort100,
       medium_300: englishMedium300,
       long_500: englishLong1000,
@@ -2001,11 +2041,13 @@ async function saveAiRewrite(dbPool, {
             source_title = ?,
             source_excerpt = ?,
             english_headline = ?,
+            english_secondary_headline = ?,
             english_top_summary = ?,
             english_short_description = ?,
             english_long_description = ?,
             english_what_to_watch_next = ?,
             hindi_headline = ?,
+            hindi_secondary_headline = ?,
             hindi_top_summary = ?,
             hindi_short_description = ?,
             hindi_long_description = ?,
@@ -2032,11 +2074,13 @@ async function saveAiRewrite(dbPool, {
         sourceTitle,
         sourceExcerpt,
         english.headline || null,
+        english.secondary_headline || null,
         JSON.stringify(Array.isArray(english.top_summary) ? english.top_summary : []),
         english.short_description || null,
         english.long_description || null,
         english.what_to_watch_next || null,
         hindi.headline || null,
+        hindi.secondary_headline || null,
         JSON.stringify(Array.isArray(hindi.top_summary) ? hindi.top_summary : []),
         hindi.short_description || null,
         hindi.long_description || null,
@@ -2061,25 +2105,25 @@ async function saveAiRewrite(dbPool, {
         ? `
             INSERT INTO ai_news_rewrites (
               news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
-              english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
-              hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
+              english_headline, english_secondary_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
+              hindi_headline, hindi_secondary_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
               ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
               ui_image_url, ui_image_prompt, ui_source, ui_link,
               raw_response
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (news_id) DO NOTHING
           `
         : `
             INSERT INTO ai_news_rewrites (
               news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
-              english_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
-              hindi_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
+              english_headline, english_secondary_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
+              hindi_headline, hindi_secondary_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
               ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
               ui_image_url, ui_image_prompt, ui_source, ui_link,
               raw_response
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE news_id = news_id
           `,
       [
@@ -2090,11 +2134,13 @@ async function saveAiRewrite(dbPool, {
         sourceTitle,
         sourceExcerpt,
         english.headline || null,
+        english.secondary_headline || null,
         JSON.stringify(Array.isArray(english.top_summary) ? english.top_summary : []),
         english.short_description || null,
         english.long_description || null,
         english.what_to_watch_next || null,
         hindi.headline || null,
+        hindi.secondary_headline || null,
         JSON.stringify(Array.isArray(hindi.top_summary) ? hindi.top_summary : []),
         hindi.short_description || null,
         hindi.long_description || null,
@@ -2563,8 +2609,8 @@ function buildCompactVariableArticlePrompt(articleRecord, articleText) {
   return `${buildRawArticleContextPrompt(articleRecord, articleText)}
 OUTPUT LENGTH REMINDER
 - Return both Hindi and English progressive bodies.
-- Each language's lead_100 + extension_200 + extension_700 must contain 950 to 1050 body words.
-- Do not return only a 300-word or 500-word summary when the extracted source has enough material.
+- Each language's lead_100 + extension_200 + extension_700 must contain 1050 to 1150 body words.
+- Do not return only a 350-word or 600-word summary when the extracted source has enough material.
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
@@ -2574,11 +2620,11 @@ function buildStage1CorePrompt(articleRecord, articleText) {
   return `${buildRawArticleContextPrompt(articleRecord, articleText)}
 
 STAGE 1 OUTPUT
-- Return classification, Hindi heading/subheadings/photo_caption/lead_100/extension_200 and English heading/subheadings/photo_caption/lead_100/extension_200.
+- Return classification, Hindi heading/secondary_heading/subheadings/photo_caption/lead_100/extension_200 and English heading/secondary_heading/subheadings/photo_caption/lead_100/extension_200.
 - Do not return extension_700 yet.
-- The core body must support local cumulative 250-word and 500-word normalization.
-- In each language, lead_100 + extension_200 should be 475-525 body words total.
-- Do not stop Stage 1 around 150, 200 or 300 body words per language.
+- The core body must support local cumulative 300-word and 600-word normalization.
+- In each language, lead_100 + extension_200 should be 570-630 body words total.
+- Do not stop Stage 1 around 150, 250 or 350 body words per language.
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
@@ -2592,12 +2638,12 @@ function getStage1CurrentCounts(stage1Payload = {}) {
   return {
     hindiCurrent,
     englishCurrent,
-    hindiTarget: Math.max(450, 1000 - hindiCurrent),
-    englishTarget: Math.max(450, 1000 - englishCurrent),
-    hindiMin: Math.max(450, 950 - hindiCurrent),
-    hindiMax: Math.max(Math.max(450, 950 - hindiCurrent) + 50, 1050 - hindiCurrent),
-    englishMin: Math.max(450, 950 - englishCurrent),
-    englishMax: Math.max(Math.max(450, 950 - englishCurrent) + 50, 1050 - englishCurrent),
+    hindiTarget: Math.max(500, 1100 - hindiCurrent),
+    englishTarget: Math.max(500, 1100 - englishCurrent),
+    hindiMin: Math.max(500, 1050 - hindiCurrent),
+    hindiMax: Math.max(Math.max(500, 1050 - hindiCurrent) + 50, 1150 - hindiCurrent),
+    englishMin: Math.max(500, 1050 - englishCurrent),
+    englishMax: Math.max(Math.max(500, 1050 - englishCurrent) + 50, 1150 - englishCurrent),
   };
 }
 
@@ -2640,8 +2686,8 @@ Continuation rules:
 - hindi_extension_700 must be Hindi only and ${counts.hindiMin}-${counts.hindiMax} words when possible.
 - english_extension_700 must be English only and ${counts.englishMin}-${counts.englishMax} words when possible.
 - Continue the existing report without repeating the Stage 1 body.
-- Do not include heading, subheadings, caption, agency label or source label.
-- Use complete sentences so local normalization can trim near 1000 words.
+- Do not include heading, secondary heading, subheadings, caption, agency label or source label.
+- Use complete sentences so local normalization can trim near 1100 words.
 
 RAW ARTICLE TEXT
 ${truncateText(articleText.combinedText, 14000)}`;
@@ -2715,7 +2761,7 @@ function validateStage1CorePayload(stage1Payload, articleRecord, articleText, op
         invalidFields.push(`${language}.${field}`);
       }
     }
-    if (pack.subheadings.length !== 3) {
+    if (pack.subheadings.length !== 2) {
       invalidFields.push(`${language}.subheadings`);
     }
     pack.subheadings.forEach((subheading, index) => {
@@ -2883,7 +2929,7 @@ function planCompactRepairs(compactPayload, invalidFields = [], validationDetail
   for (const language of ["hindi", "english"]) {
     if (compactLanguageLooksStructurallyUnusable(compactPayload, uniqueFields, language)) {
       plan.replace_language[language] = {
-        required: `Replace the full ${language} package with heading, exactly three subheadings, photo_caption, lead_100, extension_200 and extension_700.`,
+        required: `Replace the full ${language} package with heading, secondary_heading, exactly two subheadings, photo_caption, lead_100, extension_200 and extension_700.`,
       };
     }
   }
@@ -2898,7 +2944,7 @@ function planCompactRepairs(compactPayload, invalidFields = [], validationDetail
       const range = getCompactContinuationRange(compactPayload, language);
       if (range.currentWords < 500) {
         plan.replace_language[language] = {
-          required: `Replace the full ${language} package because its progressive body is only ${range.currentWords} words and cannot be rescued by one continuation. Return heading, exactly three subheadings, photo_caption, lead_100, extension_200 and extension_700 with a cumulative 950-1050 body words.`,
+          required: `Replace the full ${language} package because its progressive body is only ${range.currentWords} words and cannot be rescued by one continuation. Return heading, secondary_heading, exactly two subheadings, photo_caption, lead_100, extension_200 and extension_700 with a cumulative 1050-1150 body words.`,
           currentWords: range.currentWords,
           detail: validationDetails[fieldPath] || null,
         };
@@ -2917,7 +2963,7 @@ function planCompactRepairs(compactPayload, invalidFields = [], validationDetail
 
     if ((language === "hindi" || language === "english") && field === "body100_cumulative") {
       plan.replace[`${language}.lead_100`] = {
-        required: `Replace ${language}.lead_100 with complete supported sentences that let the cumulative stream produce 220-280 words for the 250-word version.`,
+        required: `Replace ${language}.lead_100 with complete supported sentences that let the cumulative stream produce 260-340 words for the 300-word version.`,
         detail: validationDetails[fieldPath] || null,
       };
       continue;
@@ -2925,7 +2971,7 @@ function planCompactRepairs(compactPayload, invalidFields = [], validationDetail
 
     if ((language === "hindi" || language === "english") && field === "body300_cumulative") {
       plan.replace[`${language}.extension_200`] = {
-        required: `Replace ${language}.extension_200 with supported additional material so the cumulative 500-word version reaches 450-550 words.`,
+        required: `Replace ${language}.extension_200 with supported additional material so the cumulative 600-word version reaches 540-660 words.`,
         detail: validationDetails[fieldPath] || null,
       };
       continue;
@@ -3019,14 +3065,14 @@ function getCompactFieldRepairInstruction(compactPayload, fieldPath) {
   const value = getPathValue(compactPayload, fieldPath);
   const count = typeof value === "string" ? countBodyWords(value) : Array.isArray(value) ? value.length : 0;
   const ranges = {
-    "hindi.lead_100": `approximately 250 Hindi body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
-    "english.lead_100": `approximately 250 English body words, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
-    "hindi.extension_200": `approximately 250 additional Hindi body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
-    "english.extension_200": `approximately 250 additional English body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
-    "hindi.extension_700": `approximately 700 additional Hindi body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
-    "english.extension_700": `approximately 700 additional English body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
-    "hindi.subheadings": "exactly three Hindi factual subheadings",
-    "english.subheadings": "exactly three English factual subheadings",
+    "hindi.lead_100": `approximately 300 Hindi body words opening with a place-name dateline, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
+    "english.lead_100": `approximately 300 English body words opening with a place-name dateline, acceptable ${AI_LEAD_BODY_ACCEPT_MIN_WORDS}-${AI_LEAD_BODY_ACCEPT_MAX_WORDS}`,
+    "hindi.extension_200": `approximately 300 additional Hindi body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
+    "english.extension_200": `approximately 300 additional English body words, acceptable ${AI_EXTENSION_200_ACCEPT_MIN_WORDS}-${AI_EXTENSION_200_ACCEPT_MAX_WORDS}`,
+    "hindi.extension_700": `approximately 750 additional Hindi body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
+    "english.extension_700": `approximately 750 additional English body words, acceptable ${AI_EXTENSION_700_ACCEPT_MIN_WORDS}-${AI_EXTENSION_700_ACCEPT_MAX_WORDS}`,
+    "hindi.subheadings": "exactly two Hindi factual subheadings, extracted separately from the body",
+    "english.subheadings": "exactly two English factual subheadings, extracted separately from the body",
   };
   return {
     field: fieldPath,
@@ -3483,6 +3529,7 @@ function formatAiRewriteRecord(record) {
     source_excerpt: record.source_excerpt,
     english: {
       headline: cleanGeneratedText(record.english_headline),
+      secondary_headline: cleanGeneratedText(record.english_secondary_headline),
       top_summary: cleanSummaryList(parseSummary(record.english_top_summary)),
       short_description: cleanGeneratedText(record.english_short_description),
       long_description: cleanGeneratedText(record.english_long_description),
@@ -3490,6 +3537,7 @@ function formatAiRewriteRecord(record) {
     },
     hindi: {
       headline: cleanGeneratedText(record.hindi_headline),
+      secondary_headline: cleanGeneratedText(record.hindi_secondary_headline),
       top_summary: cleanSummaryList(parseSummary(record.hindi_top_summary)),
       short_description: cleanGeneratedText(record.hindi_short_description),
       long_description: cleanGeneratedText(record.hindi_long_description),
@@ -3508,10 +3556,12 @@ function formatAiRewriteRecord(record) {
 
   if (formatted.ui_hindi) {
     formatted.ui_hindi.subheadings = formatted.hindi.top_summary;
+    formatted.ui_hindi.secondary_headline = formatted.hindi.secondary_headline || formatted.ui_hindi.secondary_headline || "";
   }
 
   formatted.ui_english = {
     title: formatted.english.headline,
+    secondary_headline: formatted.english.secondary_headline,
     short_100: formatted.english.short_description,
     medium_300: formatted.english.what_to_watch_next,
     long_500: formatted.english.long_description,

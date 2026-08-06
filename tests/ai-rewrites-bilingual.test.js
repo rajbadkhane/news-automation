@@ -50,27 +50,27 @@ function makeCompactPayload(overrides = {}) {
     },
     hindi: {
       heading: "केंद्र की नई व्यवस्था पर विभागों ने समीक्षा प्रक्रिया तेज की",
+      secondary_heading: "केंद्र, समीक्षा : विभागों ने नई व्यवस्था पर जवाबदेही तय करने के लिए ठोस कदम उठाए",
       subheadings: [
         "विभागीय समीक्षा में प्रक्रिया और जवाबदेही पर मुख्य ध्यान रखा गया",
         "नागरिक सेवाओं से जुड़े असर को सावधानी से परखा जा रहा है",
-        "आगे की कार्ययोजना आधिकारिक निर्देशों के आधार पर तय होगी",
       ],
       photo_caption: "प्रशासनिक समीक्षा से जुड़ी प्रतीकात्मक तस्वीर, जिसमें नीति और नागरिक सेवाओं पर ध्यान केंद्रित है।",
-      lead_100: repeatSentences(hindiWords, 8, "।"),
-      extension_200: repeatSentences(hindiWords, 18, "।"),
-      extension_700: repeatSentences(hindiWords, 75, "।"),
+      lead_100: repeatSentences(hindiWords, 9, "।"),
+      extension_200: repeatSentences(hindiWords, 23, "।"),
+      extension_700: repeatSentences(hindiWords, 88, "।"),
     },
     english: {
       heading: "Departments Step Up Review Of New Central Administrative Process",
+      secondary_heading: "Center, review : Departments take concrete steps to fix accountability under the new system",
       subheadings: [
         "Departmental review focuses on process clarity and accountability",
         "Potential impact on citizen services is being assessed carefully",
-        "Further action will depend on official instructions and review outcomes",
       ],
       photo_caption: "A representative context image related to policy review and citizen service processes under administrative assessment.",
-      lead_100: repeatSentences(englishWords, 8),
-      extension_200: repeatSentences(englishWords, 18),
-      extension_700: repeatSentences(englishWords, 75),
+      lead_100: repeatSentences(englishWords, 9),
+      extension_200: repeatSentences(englishWords, 23),
+      extension_700: repeatSentences(englishWords, 88),
     },
   };
 
@@ -169,7 +169,7 @@ assert.ok(capturedLogs[0].includes("finish_reason=stop"));
 assert.ok(capturedLogs[0].includes("reasoning_tokens=0"));
 assert.ok(!capturedLogs[0].includes("FULL GENERATED ARTICLE"));
 assert.strictEqual(
-  __test.isCurrentAiRewritePrompt({ prompt_version: "bilingual-compact-v9-three-fact-subheadings" }),
+  __test.isCurrentAiRewritePrompt({ prompt_version: "bilingual-compact-v10-two-fact-subheadings-newspaper-style" }),
   true
 );
 assert.strictEqual(
@@ -201,8 +201,8 @@ assert.ok(stage1Prompt.includes("RAW ARTICLE TEXT"));
 assert.strictEqual(Object.prototype.hasOwnProperty.call(stage1Fixture.hindi, "extension_700"), false);
 const validatedStage1 = __test.validateStage1CorePayload(stage1Fixture, articleRecord, articleText);
 const stage1Counts = __test.getStage1CurrentCounts(validatedStage1);
-assert.ok(stage1Counts.hindiCurrent >= 260);
-assert.ok(stage1Counts.englishCurrent >= 260);
+assert.ok(stage1Counts.hindiCurrent >= 300);
+assert.ok(stage1Counts.englishCurrent >= 300);
 const stage2Prompt = __test.buildStage2ContinuationPrompt(articleRecord, articleText, validatedStage1);
 assert.ok(stage2Prompt.includes(String(stage1Counts.hindiCurrent)));
 assert.ok(stage2Prompt.includes(validatedStage1.hindi.lead_100.slice(0, 30)));
@@ -219,27 +219,27 @@ assert.strictEqual(twoStageMerged.hindi.extension_700, compact.hindi.extension_7
 
 const normalized = __test.buildCompactBilingualPayload(compact, articleRecord, articleText);
 
-assert.strictEqual(__test.getSubheadingCount(normalized.hindi.short_description), 3);
-assert.strictEqual(__test.getSubheadingCount(normalized.english.short_description), 3);
-assert.strictEqual(__test.hasExactlyOneLabel(normalized.hindi.short_description, "Subheadings:"), true);
-assert.strictEqual(__test.hasExactlyOneLabel(normalized.english.short_description, "Subheadings:"), true);
+assert.strictEqual(__test.hasExactlyOneLabel(normalized.hindi.short_description, "Subheadings:"), false);
+assert.strictEqual(__test.hasExactlyOneLabel(normalized.english.short_description, "Subheadings:"), false);
 assert.strictEqual(__test.hasExactlyOneLabel(normalized.hindi.short_description, "Photo Caption:"), true);
 assert.strictEqual(__test.hasExactlyOneLabel(normalized.english.short_description, "Photo Caption:"), true);
-assert.strictEqual(normalized.hindi.top_summary.length, 3);
-assert.strictEqual(normalized.english.top_summary.length, 3);
-assert.strictEqual(normalized.ui_hindi.subheadings.length, 3);
-assert.strictEqual(normalized.ui_english.subheadings.length, 3);
+assert.strictEqual(normalized.hindi.top_summary.length, 2);
+assert.strictEqual(normalized.english.top_summary.length, 2);
+assert.strictEqual(normalized.ui_hindi.subheadings.length, 2);
+assert.strictEqual(normalized.ui_english.subheadings.length, 2);
+assert.ok(normalized.hindi.short_description.includes(normalized.ui_hindi.secondary_headline));
+assert.ok(normalized.english.short_description.includes(normalized.ui_english.secondary_headline));
 assert.strictEqual(normalized.ui_hindi.long_500, normalized.hindi.long_description);
 assert.strictEqual(normalized.ui_english.long_500, normalized.english.long_description);
 assert.strictEqual(normalized.raw_articles, undefined);
 assert.ok(countWords(compact.hindi.lead_100) < 95, "lead segment count is not an independent hard contract");
-assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 220);
-assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 450);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 950);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1050);
-assert.ok(normalized._compact_counts.english.normalized.body100 >= 220);
-assert.ok(normalized._compact_counts.english.normalized.body300 >= 450);
-assert.ok(normalized._compact_counts.english.normalized.body1000 >= 950);
+assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 265);
+assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 540);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1050);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1150);
+assert.ok(normalized._compact_counts.english.normalized.body100 >= 265);
+assert.ok(normalized._compact_counts.english.normalized.body300 >= 540);
+assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1050);
 
 const toppedUpLead = makeCompactPayload({
   hindi: {
@@ -253,7 +253,7 @@ const toppedUpLead = makeCompactPayload({
 });
 const toppedNormalized = __test.buildCompactBilingualPayload(toppedUpLead, articleRecord, articleText);
 assert.strictEqual(countWords(toppedUpLead.english.lead_100), 70);
-assert.ok(toppedNormalized._compact_counts.english.normalized.body100 >= 220);
+assert.ok(toppedNormalized._compact_counts.english.normalized.body100 >= 265);
 
 const progressive = __test.normalizeProgressiveBodies(toppedUpLead.english, "english");
 assert.ok(progressive.bodies.body300.startsWith(progressive.bodies.body100));
@@ -264,7 +264,7 @@ const overlong = __test.buildCompactBilingualPayload(makeCompactPayload({
   english: { extension_700: repeatSentences(englishWords, 90) },
 }), articleRecord, articleText);
 assert.ok(overlong._compact_counts.english.segment.extension_700 > 800);
-assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1050);
+assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1150);
 
 assert.throws(
   () => __test.buildCompactBilingualPayload(makeCompactPayload({
@@ -274,7 +274,7 @@ assert.throws(
   (error) => {
     assert.ok(error.invalidFields.includes("hindi.long_cumulative"));
     assert.ok(error.invalidFields.includes("english.long_cumulative"));
-    assert.ok(error.validationDetails["english.long_cumulative"].words < 950);
+    assert.ok(error.validationDetails["english.long_cumulative"].words < 1050);
     return true;
   }
 );
@@ -323,7 +323,7 @@ const repaired = __test.mergeCompactRepairs(makeCompactPayload(), {
   },
 });
 assert.strictEqual(countWords(repaired.english.lead_100), 90);
-assert.strictEqual(countWords(repaired.english.extension_700), 800);
+assert.strictEqual(countWords(repaired.english.extension_700), 930);
 
 assert.throws(
   () => __test.buildCompactBilingualPayload(makeCompactPayload({

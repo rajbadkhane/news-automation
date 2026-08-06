@@ -552,6 +552,8 @@ function flattenPayload(payload, section = "news") {
         fetched_at: record.fetched_at || record.published_at || record.updated_at || payload?.loaded_at || null,
         category: normalizeNewsCategory(record.category || group.category || "uncategorized"),
         title: record.ui_hindi?.title || record.title || "Untitled story",
+        secondary_headline: record.ui_hindi?.secondary_headline || record.secondary_headline || "",
+        subheadings: Array.isArray(record.ui_hindi?.subheadings) ? record.ui_hindi.subheadings : [],
         state: record.ui_hindi?.state || record.state || "राष्ट्रीय",
         district:
           record.ui_hindi?.district ||
@@ -842,9 +844,9 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
   const paragraphs = splitPreviewParagraphs(activeText);
   const options = [
     { key: "caption", label: "Image Caption", text: preview?.item.image_caption },
-    { key: "100", label: "250 Words", text: preview?.item.short_100 },
-    { key: "300", label: "500 Words", text: preview?.item.medium_300 },
-    { key: "1000", label: "1000 Words", text: preview?.item.long_500 },
+    { key: "100", label: "300 Words", text: preview?.item.short_100 },
+    { key: "300", label: "600 Words", text: preview?.item.medium_300 },
+    { key: "1000", label: "1100 Words", text: preview?.item.long_500 },
   ];
   const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
   const translatedTextRef = useRef(null);
@@ -1821,18 +1823,20 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
           </div>
 
           <div className="overflow-x-auto rounded border border-[#cfd8e3] bg-white">
-            <table className="w-full min-w-[1450px] table-fixed border-collapse text-[13px]">
+            <table className="w-full min-w-[1750px] table-fixed border-collapse text-[13px]">
               <thead>
                 <tr className="sticky top-0 border-b border-[#b9c6d4] bg-[#f5f5f5] text-left text-[11px] uppercase text-[#333]">
                   <th className="w-[68px] border-r border-[#d8e0e8] px-2 py-2">Id</th>
                   <th className="w-[110px] border-r border-[#d8e0e8] px-2 py-2">Category</th>
                   <th className="w-[120px] border-r border-[#d8e0e8] px-2 py-2">Uploaded</th>
                   <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title/हैडलाइन</th>
+                  <th className="w-[220px] border-r border-[#d8e0e8] px-2 py-2">Secondary Headline</th>
+                  <th className="w-[220px] border-r border-[#d8e0e8] px-2 py-2">Subheadings</th>
                   <th className="w-[145px] border-r border-[#d8e0e8] px-2 py-2 text-center">Image</th>
                   <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
-                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">250 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">500 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1000 Words</th>
+                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">300 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">600 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1100 Words</th>
                 </tr>
               </thead>
               <tbody>
@@ -1857,6 +1861,36 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                           <div className="mt-1 text-xs text-[#687789]">{item.state || "-"}</div>
                         </div>
                         <CopyActions text={item.title} setMessage={setMessage} translateLanguage={translateLanguage} />
+                      </div>
+                    </td>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <div className="flex min-w-0 flex-col gap-2">
+                        <div className="min-w-0 flex-1 leading-5 text-[#17293b]">
+                          {item.secondary_headline || <span className="text-[#687789]">-</span>}
+                        </div>
+                        {item.secondary_headline ? (
+                          <CopyActions text={item.secondary_headline} setMessage={setMessage} translateLanguage={translateLanguage} />
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2">
+                      <div className="flex min-w-0 flex-col gap-2">
+                        {item.subheadings && item.subheadings.length ? (
+                          <ul className="min-w-0 list-disc space-y-1 pl-4 leading-5 text-[#17293b]">
+                            {item.subheadings.map((subheading, subIndex) => (
+                              <li key={subIndex}>{subheading}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <span className="text-[#687789]">-</span>
+                        )}
+                        {item.subheadings && item.subheadings.length ? (
+                          <CopyActions
+                            text={item.subheadings.join("\n")}
+                            setMessage={setMessage}
+                            translateLanguage={translateLanguage}
+                          />
+                        ) : null}
                       </div>
                     </td>
                     <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center">
@@ -1933,7 +1967,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                 ))}
                 {!visibleRecords.length ? (
                   <tr>
-                    <td colSpan={9} className="px-3 py-8 text-center text-[#555]">
+                    <td colSpan={11} className="px-3 py-8 text-center text-[#555]">
                       {filters.category || filters.state || filters.district
                         ? "No results for selected filters. Try clearing filters or reload data."
                         : "No news found. Reload news button to refresh data."}
