@@ -81,9 +81,9 @@ API_CORS_ORIGINS=https://site-one.com,https://site-two.com
 API_RATE_LIMIT_WINDOW_MS=60000
 API_RATE_LIMIT_MAX=120
 
-DEEPSEEK_API_KEY=your-real-key
-DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
+GEMINI_API_KEY=your-real-key
+GEMINI_MODEL=gemini-flash-lite-latest
+GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
 
 NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain.onrender.com
 ADMIN_PANEL_MASTER_API_KEY=replace-with-the-same-master-key-used-by-the-backend

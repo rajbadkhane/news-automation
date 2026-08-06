@@ -1,5 +1,5 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
 const EDITORIAL_RSS_URL = "https://www.thehindu.com/opinion/editorial/feeder/default.rss";
 const EDITORIAL_DAILY_LIMIT = Math.max(1, Number.parseInt(process.env.EDITORIAL_DAILY_LIMIT || "15", 10) || 15);
 const EDITORIAL_MIN_SYNC_INTERVAL_MS = Math.max(

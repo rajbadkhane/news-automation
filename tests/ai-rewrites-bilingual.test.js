@@ -101,22 +101,18 @@ const articleText = {
   combinedText: repeatSentences(englishWords, 40),
 };
 
-assert.strictEqual(__test.normalizeDeepSeekModelName("deepseek-v4-flash"), "deepseek-v4-flash");
-assert.strictEqual(__test.normalizeDeepSeekModelName("deepseek-chat"), "deepseek-v4-flash");
-assert.strictEqual(__test.normalizeDeepSeekModelName("deepseek-reasoner"), "deepseek-v4-flash");
-
-const compactRequestBody = __test.buildDeepSeekRequestBody([{ role: "user", content: "Return JSON." }], {
+const compactRequestBody = __test.buildGeminiRequestBody([{ role: "user", content: "Return JSON." }], {
   temperature: 0.2,
   maxTokens: 20000,
 });
-assert.strictEqual(compactRequestBody.model, "deepseek-v4-flash");
-assert.deepStrictEqual(compactRequestBody.thinking, { type: "disabled" });
+assert.strictEqual(compactRequestBody.model, "gemini-flash-lite-latest");
+assert.strictEqual(Object.prototype.hasOwnProperty.call(compactRequestBody, "thinking"), false);
 assert.strictEqual(compactRequestBody.max_tokens, 20000);
 assert.deepStrictEqual(compactRequestBody.response_format, { type: "json_object" });
 assert.strictEqual(Object.prototype.hasOwnProperty.call(compactRequestBody, "extra_body"), false);
 
-const stoppedInfo = __test.getDeepSeekResponseInfo({
-  model: "deepseek-v4-flash",
+const stoppedInfo = __test.getGeminiResponseInfo({
+  model: "gemini-flash-lite-latest",
   choices: [{
     finish_reason: "stop",
     message: { content: "{\"ok\":true}" },
@@ -131,7 +127,7 @@ const stoppedInfo = __test.getDeepSeekResponseInfo({
 assert.strictEqual(stoppedInfo.finish_reason, "stop");
 assert.strictEqual(stoppedInfo.reasoning_tokens, 0);
 assert.strictEqual(stoppedInfo.content_chars, 11);
-assert.strictEqual(__test.createDeepSeekTerminationError(stoppedInfo), null);
+assert.strictEqual(__test.createGeminiTerminationError(stoppedInfo), null);
 
 const lengthInfo = {
   ...stoppedInfo,
@@ -139,7 +135,7 @@ const lengthInfo = {
 };
 assert.throws(
   () => {
-    const error = __test.createDeepSeekTerminationError(lengthInfo);
+    const error = __test.createGeminiTerminationError(lengthInfo);
     if (error) throw error;
   },
   /generation token limit/
@@ -149,9 +145,9 @@ const capturedLogs = [];
 const originalLog = console.log;
 console.log = (line) => capturedLogs.push(String(line));
 try {
-  __test.logDeepSeekResponseInfo({
-    requested_model: "deepseek-v4-flash",
-    returned_model: "deepseek-v4-flash",
+  __test.logGeminiResponseInfo({
+    requested_model: "gemini-flash-lite-latest",
+    returned_model: "gemini-flash-lite-latest",
     thinking: "disabled",
     max_tokens: 20000,
     finish_reason: "stop",
@@ -348,7 +344,7 @@ assert.throws(
 const formattedDelivery = __test.formatDeliveredRewrite({
   id: 99,
   news_id: 123,
-  model_name: "deepseek-chat",
+  model_name: "gemini-flash-lite-latest",
   prompt_version: "test",
   source_url: articleRecord.source_url,
   source_title: articleRecord.title,

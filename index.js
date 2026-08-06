@@ -2714,7 +2714,7 @@ function buildOpenApiSpec(req) {
   const exampleAiRecord = {
     id: 44,
     news_id: 44,
-    model_name: "gemini-2.5-flash-lite",
+    model_name: "gemini-flash-lite-latest",
     prompt_version: "the-cliff-news-v1",
     source_url: "https://example.com/story",
     source_title: "Sample source title",
@@ -4570,8 +4570,8 @@ function validateProductionConfig() {
     console.warn("Production is running without REDIS_URL. Rate limiting and quota control will fall back to per-instance memory.");
   }
 
-  if (AI_SCHEDULER_ENABLED && !String(process.env.DEEPSEEK_API_KEY || "").trim()) {
-    throw new Error("AI_SCHEDULER_ENABLED is true, but DEEPSEEK_API_KEY is missing.");
+  if (AI_SCHEDULER_ENABLED && !String(process.env.GEMINI_API_KEY || "").trim()) {
+    throw new Error("AI_SCHEDULER_ENABLED is true, but GEMINI_API_KEY is missing.");
   }
 }
 

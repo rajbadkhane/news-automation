@@ -76,9 +76,9 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: DEEPSEEK_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
-      - key: DEEPSEEK_MODEL
-        value: deepseek-v4-flash
-      - key: DEEPSEEK_API_URL
-        value: https://api.deepseek.com/chat/completions
+      - key: GEMINI_MODEL
+        value: gemini-flash-lite-latest
+      - key: GEMINI_API_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions

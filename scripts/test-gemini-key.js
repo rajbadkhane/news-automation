@@ -31,15 +31,15 @@ function maskKey(value) {
 
 async function main() {
   loadEnv();
-  const apiKey = String(process.env.DEEPSEEK_API_KEY || "").trim();
-  const model = String(process.env.DEEPSEEK_MODEL || "deepseek-chat").trim();
-  const apiUrl = String(process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions").trim();
+  const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
+  const model = String(process.env.GEMINI_MODEL || "gemini-flash-lite-latest").trim();
+  const apiUrl = String(process.env.GEMINI_API_URL || "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions").trim();
 
   if (!apiKey) {
-    throw new Error("DEEPSEEK_API_KEY is missing in .env.");
+    throw new Error("GEMINI_API_KEY is missing in .env.");
   }
 
-  console.log(`Testing DeepSeek key ${maskKey(apiKey)} with model ${model}...`);
+  console.log(`Testing Gemini key ${maskKey(apiKey)} with model ${model}...`);
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
@@ -60,13 +60,13 @@ async function main() {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    console.error(`DeepSeek test failed: HTTP ${response.status}`);
+    console.error(`Gemini test failed: HTTP ${response.status}`);
     console.error(payload?.error?.message || JSON.stringify(payload));
     process.exit(2);
   }
 
   const text = String(payload?.choices?.[0]?.message?.content || "").trim();
-  console.log(`DeepSeek test success: ${text || "response received"}`);
+  console.log(`Gemini test success: ${text || "response received"}`);
 }
 
 main().catch((error) => {

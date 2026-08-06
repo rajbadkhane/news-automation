@@ -1,17 +1,7 @@
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
-const RAW_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
-function normalizeDeepSeekModelName(value) {
-  const model = String(value || "deepseek-v4-flash").trim() || "deepseek-v4-flash";
-  if (model === "deepseek-chat" || model === "deepseek-reasoner") {
-    return "deepseek-v4-flash";
-  }
-  return model;
-}
-const DEEPSEEK_MODEL = normalizeDeepSeekModelName(RAW_DEEPSEEK_MODEL);
-if (DEEPSEEK_MODEL !== RAW_DEEPSEEK_MODEL) {
-  console.warn(`[ai-rewrite] Configured DeepSeek model "${RAW_DEEPSEEK_MODEL}" is retired. Using "${DEEPSEEK_MODEL}".`);
-}
-const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || "https://api.deepseek.com/chat/completions";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = String(process.env.GEMINI_MODEL || "gemini-flash-lite-latest").trim() || "gemini-flash-lite-latest";
+const GEMINI_API_URL = process.env.GEMINI_API_URL
+  || "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
@@ -1397,7 +1387,7 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
 
   if (invalidFields.length) {
     throw createAiValidationError(
-      `DeepSeek compact bilingual response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+      `Gemini compact bilingual response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
       invalidFields,
       validationDetails
     );
@@ -1525,7 +1515,7 @@ function slugifyText(value) {
 function parseJsonResponse(rawText) {
   const normalized = String(rawText || "").trim();
   if (!normalized) {
-    throw new Error("DeepSeek returned an empty response.");
+    throw new Error("Gemini returned an empty response.");
   }
 
   const fencedMatch = normalized.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -1562,7 +1552,7 @@ async function addLongRewriteSupplement(payload, articleRecord, articleText) {
 
     if (currentCount >= AI_LONG_REWRITE_MAX_WORDS) {
       throw new Error(
-        `DeepSeek supplemented long_500 word count ${currentCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+        `Gemini supplemented long_500 word count ${currentCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
       );
     }
 
@@ -1595,13 +1585,13 @@ ${truncateText(articleText.combinedText, 9000)}
 Current long_500:
 ${truncateText(nextLong, 8000)}`;
 
-    const response = await fetch(DEEPSEEK_API_URL, {
+    const response = await fetch(GEMINI_API_URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Authorization": `Bearer ${GEMINI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildDeepSeekRequestBody([
+      body: JSON.stringify(buildGeminiRequestBody([
         {
           role: "user",
           content: prompt,
@@ -1613,22 +1603,22 @@ ${truncateText(nextLong, 8000)}`;
     });
 
     const supplementPayload = await response.json();
-    logDeepSeekUsage(supplementPayload, {
+    logGeminiUsage(supplementPayload, {
       articleId: articleRecord?.id,
       mode: AI_REWRITE_MODES.HINDI_LEGACY,
       call: "legacy-long-supplement",
     });
-    const supplementInfo = getDeepSeekResponseInfo(supplementPayload, {
+    const supplementInfo = getGeminiResponseInfo(supplementPayload, {
       maxTokens: 2500,
       call: "legacy-long-supplement",
     });
-    logDeepSeekResponseInfo(supplementInfo, {
+    logGeminiResponseInfo(supplementInfo, {
       articleId: articleRecord?.id,
       mode: AI_REWRITE_MODES.HINDI_LEGACY,
     });
     if (!response.ok) {
       lastError = new Error(
-        supplementPayload?.error?.message || `DeepSeek long_500 supplement failed with status ${response.status}.`
+        supplementPayload?.error?.message || `Gemini long_500 supplement failed with status ${response.status}.`
       );
       if (response.status === 429 || response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
@@ -1636,7 +1626,7 @@ ${truncateText(nextLong, 8000)}`;
       }
       throw lastError;
     }
-    const supplementTerminationError = createDeepSeekTerminationError(supplementInfo);
+    const supplementTerminationError = createGeminiTerminationError(supplementInfo);
     if (supplementTerminationError) {
       lastError = supplementTerminationError;
       if (supplementTerminationError.transient) {
@@ -1650,7 +1640,7 @@ ${truncateText(nextLong, 8000)}`;
     const parsedSupplement = parseJsonResponse(rawSupplementJson);
     const addition = cleanGeneratedText(parsedSupplement.addition);
     if (!addition) {
-      lastError = new Error("DeepSeek long_500 supplement response was missing addition.");
+      lastError = new Error("Gemini long_500 supplement response was missing addition.");
       continue;
     }
 
@@ -1663,7 +1653,7 @@ ${truncateText(nextLong, 8000)}`;
   }
 
   throw lastError || new Error(
-    `DeepSeek supplemented long_500 word count ${finalCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+    `Gemini supplemented long_500 word count ${finalCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
   );
 }
 
@@ -1678,7 +1668,7 @@ async function expandLongRewriteIfNeeded(payload, articleRecord, articleText, pr
   }
 
   let lastError = new Error(
-    `DeepSeek response long_500 word count ${originalCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+    `Gemini response long_500 word count ${originalCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
   );
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1718,13 +1708,13 @@ ${truncateText(payload.long_500, 6000)}
 Raw article:
 ${truncateText(articleText.combinedText, 10000)}`;
 
-    const response = await fetch(DEEPSEEK_API_URL, {
+    const response = await fetch(GEMINI_API_URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Authorization": `Bearer ${GEMINI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildDeepSeekRequestBody([
+      body: JSON.stringify(buildGeminiRequestBody([
         {
           role: "user",
           content: prompt,
@@ -1736,22 +1726,22 @@ ${truncateText(articleText.combinedText, 10000)}`;
     });
 
     const expansionPayload = await response.json();
-    logDeepSeekUsage(expansionPayload, {
+    logGeminiUsage(expansionPayload, {
       articleId: articleRecord?.id,
       mode: AI_REWRITE_MODES.HINDI_LEGACY,
       call: "legacy-long-expansion",
     });
-    const expansionInfo = getDeepSeekResponseInfo(expansionPayload, {
+    const expansionInfo = getGeminiResponseInfo(expansionPayload, {
       maxTokens: 7000,
       call: "legacy-long-expansion",
     });
-    logDeepSeekResponseInfo(expansionInfo, {
+    logGeminiResponseInfo(expansionInfo, {
       articleId: articleRecord?.id,
       mode: AI_REWRITE_MODES.HINDI_LEGACY,
     });
     if (!response.ok) {
       lastError = new Error(
-        expansionPayload?.error?.message || `DeepSeek long_500 expansion failed with status ${response.status}.`
+        expansionPayload?.error?.message || `Gemini long_500 expansion failed with status ${response.status}.`
       );
       if (response.status === 429 || response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
@@ -1759,7 +1749,7 @@ ${truncateText(articleText.combinedText, 10000)}`;
       }
       throw lastError;
     }
-    const expansionTerminationError = createDeepSeekTerminationError(expansionInfo);
+    const expansionTerminationError = createGeminiTerminationError(expansionInfo);
     if (expansionTerminationError) {
       lastError = expansionTerminationError;
       if (expansionTerminationError.transient) {
@@ -1773,7 +1763,7 @@ ${truncateText(articleText.combinedText, 10000)}`;
     const parsedLong = parseJsonResponse(rawLongJson);
     const nextLong = cleanGeneratedText(parsedLong.long_500);
     if (!nextLong) {
-      lastError = new Error("DeepSeek long_500 expansion response was missing long_500.");
+      lastError = new Error("Gemini long_500 expansion response was missing long_500.");
       continue;
     }
 
@@ -1805,7 +1795,7 @@ ${truncateText(articleText.combinedText, 10000)}`;
     }
 
     lastError = new Error(
-      `DeepSeek expansion long_500 word count ${nextCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+      `Gemini expansion long_500 word count ${nextCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
     );
     if (nextCount > originalCount && nextCount < AI_LONG_REWRITE_MIN_WORDS) {
       payload = {
@@ -1820,7 +1810,7 @@ ${truncateText(articleText.combinedText, 10000)}`;
 
 function validateAiPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object") {
-    throw new Error("DeepSeek response was not a valid object.");
+    throw new Error("Gemini response was not a valid object.");
   }
 
   if (hasCompactBilingualShape(payload)) {
@@ -1864,7 +1854,7 @@ function validateAiPayload(payload, options = {}) {
 
     if (invalidFields.length) {
       throw createAiValidationError(
-        `DeepSeek bilingual payload failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+        `Gemini bilingual payload failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
         invalidFields
       );
     }
@@ -1900,11 +1890,11 @@ function validateAiPayload(payload, options = {}) {
     if (options.requireClassificationMetadata) {
       const rawConfidence = Number(payload.confidence);
       if (!Number.isFinite(rawConfidence) || rawConfidence < 0 || rawConfidence > 1) {
-        throw new Error("DeepSeek response confidence must be a number between 0 and 1.");
+        throw new Error("Gemini response confidence must be a number between 0 and 1.");
       }
 
       if (!cleanGeneratedText(payload.reason)) {
-        throw new Error("DeepSeek response is missing reason.");
+        throw new Error("Gemini response is missing reason.");
       }
     }
 
@@ -1915,20 +1905,20 @@ function validateAiPayload(payload, options = {}) {
     const requiredFields = ["title", "short_100", "medium_300", "long_500", "category", "state", "source", "link"];
     for (const field of requiredFields) {
       if (!uiHindi[field]) {
-        throw new Error(`DeepSeek response is missing ${field}.`);
+        throw new Error(`Gemini response is missing ${field}.`);
       }
     }
 
     for (const field of ["title", "short_100", "medium_300", "long_500"]) {
       if (!hasHindiText(uiHindi[field])) {
-        throw new Error(`DeepSeek response field ${field} is not Hindi.`);
+        throw new Error(`Gemini response field ${field} is not Hindi.`);
       }
     }
 
     const longWordCount = countArticleWords(uiHindi.long_500);
     if (longWordCount < AI_LONG_REWRITE_MIN_WORDS || longWordCount > AI_LONG_REWRITE_MAX_WORDS) {
       throw new Error(
-        `DeepSeek response long_500 word count ${longWordCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
+        `Gemini response long_500 word count ${longWordCount} is outside ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS}.`
       );
     }
 
@@ -1940,7 +1930,7 @@ function validateAiPayload(payload, options = {}) {
 
   for (const language of ["english", "hindi"]) {
     if (!payload[language] || typeof payload[language] !== "object") {
-      throw new Error(`DeepSeek response is missing the ${language} section.`);
+      throw new Error(`Gemini response is missing the ${language} section.`);
     }
   }
 
@@ -2414,7 +2404,7 @@ async function withTransientRetry(task, { retries = 2, delayMs = 1200 } = {}) {
   throw lastError;
 }
 
-function getDeepSeekCacheHitTokens(usage = {}) {
+function getGeminiCacheHitTokens(usage = {}) {
   return usage.cache_hit_tokens ??
     usage.prompt_cache_hit_tokens ??
     usage.prompt_cache_hit ??
@@ -2422,11 +2412,11 @@ function getDeepSeekCacheHitTokens(usage = {}) {
     null;
 }
 
-function getDeepSeekReasoningTokens(usage = {}) {
+function getGeminiReasoningTokens(usage = {}) {
   return usage?.completion_tokens_details?.reasoning_tokens || 0;
 }
 
-function logDeepSeekUsage(payload, { articleId, mode, call }) {
+function logGeminiUsage(payload, { articleId, mode, call }) {
   const usage = payload?.usage;
   if (!usage || typeof usage !== "object") {
     return;
@@ -2437,40 +2427,37 @@ function logDeepSeekUsage(payload, { articleId, mode, call }) {
       ` prompt_tokens=${usage.prompt_tokens ?? ""}` +
       ` completion_tokens=${usage.completion_tokens ?? ""}` +
       ` total_tokens=${usage.total_tokens ?? ""}` +
-      ` cache_hit_tokens=${getDeepSeekCacheHitTokens(usage) ?? ""}`
+      ` cache_hit_tokens=${getGeminiCacheHitTokens(usage) ?? ""}`
   );
 }
 
-function buildDeepSeekRequestBody(messages, {
+function buildGeminiRequestBody(messages, {
   temperature = 0.2,
   maxTokens = 20000,
   responseFormat = { type: "json_object" },
 } = {}) {
   return {
-    model: DEEPSEEK_MODEL,
+    model: GEMINI_MODEL,
     messages,
-    thinking: {
-      type: "disabled",
-    },
     temperature,
     max_tokens: maxTokens,
     response_format: responseFormat,
   };
 }
 
-function getDeepSeekResponseInfo(payload, { maxTokens, call }) {
+function getGeminiResponseInfo(payload, { maxTokens, call }) {
   const choice = payload?.choices?.[0];
   const usage = payload?.usage || {};
   const content = String(choice?.message?.content || "").trim();
   return {
-    requested_model: DEEPSEEK_MODEL,
+    requested_model: GEMINI_MODEL,
     returned_model: payload?.model || "",
     thinking: "disabled",
     max_tokens: maxTokens,
     finish_reason: choice?.finish_reason || "unknown",
     prompt_tokens: usage.prompt_tokens ?? 0,
     completion_tokens: usage.completion_tokens ?? 0,
-    reasoning_tokens: getDeepSeekReasoningTokens(usage),
+    reasoning_tokens: getGeminiReasoningTokens(usage),
     total_tokens: usage.total_tokens ?? 0,
     content_chars: content.length,
     call,
@@ -2478,7 +2465,7 @@ function getDeepSeekResponseInfo(payload, { maxTokens, call }) {
   };
 }
 
-function logDeepSeekResponseInfo(info, { articleId, mode }) {
+function logGeminiResponseInfo(info, { articleId, mode }) {
   console.log(
     `[ai-rewrite-response] news_id=${articleId || "unknown"}` +
       ` mode=${mode || ""}` +
@@ -2496,22 +2483,22 @@ function logDeepSeekResponseInfo(info, { articleId, mode }) {
   );
 }
 
-function createDeepSeekTerminationError(info) {
+function createGeminiTerminationError(info) {
   if (info.finish_reason === "length") {
-    return new Error("DeepSeek output was truncated because the generation token limit was reached.");
+    return new Error("Gemini output was truncated because the generation token limit was reached.");
   }
   if (info.finish_reason === "content_filter") {
-    return new Error("DeepSeek response was blocked by the provider content filter.");
+    return new Error("Gemini response was blocked by the provider content filter.");
   }
   if (info.finish_reason === "insufficient_system_resource") {
-    const error = new Error("DeepSeek provider reported insufficient system resources.");
+    const error = new Error("Gemini provider reported insufficient system resources.");
     error.transient = true;
     return error;
   }
   return null;
 }
 
-async function requestDeepSeekJson(messages, {
+async function requestGeminiJson(messages, {
   articleId,
   mode,
   call,
@@ -2521,22 +2508,22 @@ async function requestDeepSeekJson(messages, {
 } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const response = await fetch(DEEPSEEK_API_URL, {
+    const response = await fetch(GEMINI_API_URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Authorization": `Bearer ${GEMINI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildDeepSeekRequestBody(messages, { temperature, maxTokens })),
+      body: JSON.stringify(buildGeminiRequestBody(messages, { temperature, maxTokens })),
     });
 
     const payload = await response.json();
-    logDeepSeekUsage(payload, { articleId, mode, call });
-    const responseInfo = getDeepSeekResponseInfo(payload, { maxTokens, call });
-    logDeepSeekResponseInfo(responseInfo, { articleId, mode });
+    logGeminiUsage(payload, { articleId, mode, call });
+    const responseInfo = getGeminiResponseInfo(payload, { maxTokens, call });
+    logGeminiResponseInfo(responseInfo, { articleId, mode });
 
     if (response.ok) {
-      const terminationError = createDeepSeekTerminationError(responseInfo);
+      const terminationError = createGeminiTerminationError(responseInfo);
       if (terminationError) {
         lastError = terminationError;
         if (terminationError.transient && attempt < retries) {
@@ -2548,7 +2535,7 @@ async function requestDeepSeekJson(messages, {
       return responseInfo;
     }
 
-    lastError = new Error(payload?.error?.message || `DeepSeek request failed with status ${response.status}.`);
+    lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
     if ((response.status === 429 || response.status >= 500) && attempt < retries) {
       await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
       continue;
@@ -2557,7 +2544,7 @@ async function requestDeepSeekJson(messages, {
     throw lastError;
   }
 
-  throw lastError || new Error("DeepSeek request failed.");
+  throw lastError || new Error("Gemini request failed.");
 }
 
 function buildRawArticleContextPrompt(articleRecord, articleText) {
@@ -2751,7 +2738,7 @@ function validateStage1CorePayload(stage1Payload, articleRecord, articleText, op
 
   if (invalidFields.length) {
     throw createAiValidationError(
-      `DeepSeek Stage 1 core response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
+      `Gemini Stage 1 core response failed validation: ${Array.from(new Set(invalidFields)).join(", ")}.`,
       invalidFields
     );
   }
@@ -3086,7 +3073,7 @@ ${buildCompactVariableArticlePrompt(articleRecord, articleText)}
 Current compact JSON:
 ${truncateText(JSON.stringify(compactPayload), 9000)}`;
 
-  const repairResponse = await requestDeepSeekJson([
+  const repairResponse = await requestGeminiJson([
     {
       role: "system",
       content: BILINGUAL_REPAIR_SYSTEM_PROMPT,
@@ -3110,13 +3097,13 @@ ${truncateText(JSON.stringify(compactPayload), 9000)}`;
 }
 
 async function generateCompactBilingualRewrite(articleRecord, articleText) {
-  if (!DEEPSEEK_API_KEY) {
-    throw new Error("DEEPSEEK_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
   }
 
   const sourceAnalysis = assertSufficientSourceMaterial(articleRecord, articleText);
   const stage1Prompt = buildStage1CorePrompt(articleRecord, articleText);
-  const stage1Response = await requestDeepSeekJson([
+  const stage1Response = await requestGeminiJson([
     {
       role: "system",
       content: BILINGUAL_STAGE1_SYSTEM_PROMPT,
@@ -3149,7 +3136,7 @@ The previous Stage 1 response was invalid. Return exactly one valid Stage 1 JSON
 
 Previous invalid response preview:
 ${truncateText(stage1Response.content, 3000)}`;
-    const correctedResponse = await requestDeepSeekJson([
+    const correctedResponse = await requestGeminiJson([
       {
         role: "system",
         content: BILINGUAL_STAGE1_SYSTEM_PROMPT,
@@ -3175,7 +3162,7 @@ ${truncateText(stage1Response.content, 3000)}`;
   }
 
   const stage2Prompt = buildStage2ContinuationPrompt(articleRecord, articleText, stage1Payload);
-  const stage2Response = await requestDeepSeekJson([
+  const stage2Response = await requestGeminiJson([
     {
       role: "system",
       content: BILINGUAL_STAGE2_SYSTEM_PROMPT,
@@ -3212,7 +3199,7 @@ ${truncateText(stage1Response.content, 3000)}`;
     });
     logCompactFinalCounts(articleRecord.id, payload);
     return {
-      model_name: DEEPSEEK_MODEL,
+      model_name: GEMINI_MODEL,
       raw_response: JSON.stringify(payload),
       payload,
     };
@@ -3247,7 +3234,7 @@ ${truncateText(stage1Response.content, 3000)}`;
     });
     logCompactFinalCounts(articleRecord.id, payload);
     return {
-      model_name: DEEPSEEK_MODEL,
+      model_name: GEMINI_MODEL,
       raw_response: JSON.stringify(payload),
       payload,
     };
@@ -3255,8 +3242,8 @@ ${truncateText(stage1Response.content, 3000)}`;
 }
 
 async function generateLegacyHindiRewrite(articleRecord, articleText) {
-  if (!DEEPSEEK_API_KEY) {
-    throw new Error("DEEPSEEK_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
+  if (!GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured. Set it in .env before using AI rewrite routes.");
   }
 
   const prompt = `${AI_REWRITE_SYSTEM_PROMPT}
@@ -3291,13 +3278,13 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
 - long_500 must be ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} words. Do not stop near 300 or 600 words.
 - If the raw input is thin, safely expand only with cautious background, public impact, implementation process, official attribution, and review/feedback context. Do not invent names, numbers, quotes, FIRs, deaths, arrests, dates, or unsupported facts.
 - Keep field name long_500 for compatibility, but its content must be the 1000-word version.`;
-    const response = await fetch(DEEPSEEK_API_URL, {
+    const response = await fetch(GEMINI_API_URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+        "Authorization": `Bearer ${GEMINI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildDeepSeekRequestBody([
+      body: JSON.stringify(buildGeminiRequestBody([
         {
           role: "user",
           content: attemptPrompt,
@@ -3309,29 +3296,29 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
     });
 
     const payload = await response.json();
-    logDeepSeekUsage(payload, {
+    logGeminiUsage(payload, {
       articleId: articleRecord?.id,
       mode: AI_REWRITE_MODES.HINDI_LEGACY,
       call: "main",
     });
-    const responseInfo = getDeepSeekResponseInfo(payload, {
+    const responseInfo = getGeminiResponseInfo(payload, {
       maxTokens: 8000,
       call: "legacy",
     });
-    logDeepSeekResponseInfo(responseInfo, {
+    logGeminiResponseInfo(responseInfo, {
       articleId: articleRecord?.id,
       mode: AI_REWRITE_MODES.HINDI_LEGACY,
     });
 
     if (!response.ok) {
-      lastError = new Error(payload?.error?.message || `DeepSeek request failed with status ${response.status}.`);
+      lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
       if (response.status === 429 || response.status >= 500) {
         await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
         continue;
       }
       throw lastError;
     }
-    const terminationError = createDeepSeekTerminationError(responseInfo);
+    const terminationError = createGeminiTerminationError(responseInfo);
     if (terminationError) {
       lastError = terminationError;
       if (terminationError.transient) {
@@ -3375,7 +3362,7 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
   }
 
   if (!parsed) {
-    const fallbackReason = lastError?.message || "DeepSeek did not return a valid Hindi rewrite.";
+    const fallbackReason = lastError?.message || "Gemini did not return a valid Hindi rewrite.";
     if (/long_500 word count|outside \d+-\d+/i.test(fallbackReason)) {
       throw lastError;
     }
@@ -3385,7 +3372,7 @@ STRICT CORRECTION INSTRUCTION:${correctionReason}
   }
 
   return {
-    model_name: DEEPSEEK_MODEL,
+    model_name: GEMINI_MODEL,
     raw_response: rawText,
     payload: parsed,
   };
@@ -4336,11 +4323,11 @@ module.exports = {
     analyzeVerifiedSourceMaterial,
     assemblePublishableArticle,
     assertSufficientSourceMaterial,
-    buildDeepSeekRequestBody,
+    buildGeminiRequestBody,
     buildStage1CorePrompt,
     buildStage2ContinuationPrompt,
     buildCompactBilingualPayload,
-    createDeepSeekTerminationError,
+    createGeminiTerminationError,
     countBodyWords,
     countArticleWords,
     generateAiRewrite,
@@ -4351,12 +4338,11 @@ module.exports = {
     getSubheadingCount,
     getCompactRawBodyCounts,
     getStage1CurrentCounts,
-    getDeepSeekResponseInfo,
+    getGeminiResponseInfo,
     isCurrentAiRewritePrompt,
-    logDeepSeekResponseInfo,
+    logGeminiResponseInfo,
     hasExactlyOneLabel,
     mergeCompactRepairs,
-    normalizeDeepSeekModelName,
     normalizeProgressiveBodies,
     mergeStage2Continuation,
     planCompactRepairs,

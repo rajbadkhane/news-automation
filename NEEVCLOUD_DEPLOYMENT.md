@@ -21,7 +21,7 @@ Keep inbound access narrow:
 
 Allow outbound traffic needed by this service:
 
-- DNS, HTTP, and HTTPS for package installs, RSS/news sources, DeepSeek, and image fetches
+- DNS, HTTP, and HTTPS for package installs, RSS/news sources, Gemini, and image fetches
 - the remote database port when the database is outside the server, such as a
   Supabase/Postgres pooler port
 - Redis egress when `REDIS_URL` points outside the server
@@ -88,14 +88,14 @@ MPINFO_DISTRICT_BROWSER_ENABLED=true
 
 MASTER_API_KEY=...
 API_CORS_ORIGINS=https://your-frontend-domain.com
-DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-flash-lite-latest
+GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
 REDIS_URL=...
 ```
 
 Carry over the scheduler limits, retention settings, API keys, CORS origins,
-DeepSeek settings, and Redis URL from Render when they are already in use.
+Gemini settings, and Redis URL from Render when they are already in use.
 
 Install repository dependencies from the backend root:
 

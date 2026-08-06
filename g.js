@@ -4,7 +4,7 @@ const path = require("path");
 const readline = require("readline");
 
 const envPath = path.resolve(__dirname, ".env");
-const defaultModel = "gemini-2.5-flash-lite";
+const defaultModel = "gemini-flash-lite-latest";
 
 function ask(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
