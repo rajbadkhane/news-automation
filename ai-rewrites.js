@@ -1876,7 +1876,7 @@ function validateAiPayload(payload, options = {}) {
         }
       }
       const summary = cleanSummaryList(block.top_summary);
-      if (summary.length !== 3 || summary.some(hasBadSubheadingLabel)) {
+      if (summary.length !== 2 || summary.some(hasBadSubheadingLabel)) {
         invalidFields.push(`${language}.top_summary`);
       }
     }
@@ -1904,23 +1904,26 @@ function validateAiPayload(payload, options = {}) {
     return {
       english: {
         headline: cleanGeneratedText(english.headline),
-        top_summary: cleanSummaryList(english.top_summary).slice(0, 3),
+        secondary_headline: cleanGeneratedText(english.secondary_headline) || payload.ui_english?.secondary_headline || "",
+        top_summary: cleanSummaryList(english.top_summary).slice(0, 2),
         short_description: cleanGeneratedText(english.short_description),
         long_description: cleanGeneratedText(english.long_description),
         what_to_watch_next: cleanGeneratedText(english.what_to_watch_next),
       },
       hindi: {
         headline: cleanGeneratedText(hindi.headline),
-        top_summary: cleanSummaryList(hindi.top_summary).slice(0, 3),
+        secondary_headline: cleanGeneratedText(hindi.secondary_headline) || payload.ui_hindi?.secondary_headline || "",
+        top_summary: cleanSummaryList(hindi.top_summary).slice(0, 2),
         short_description: cleanGeneratedText(hindi.short_description),
         long_description: cleanGeneratedText(hindi.long_description),
         what_to_watch_next: cleanGeneratedText(hindi.what_to_watch_next),
       },
       ui_hindi: {
         ...uiHindi,
+        secondary_headline: cleanGeneratedText(hindi.secondary_headline) || payload.ui_hindi?.secondary_headline || "",
         subheadings: Array.isArray(payload.ui_hindi?.subheadings)
-          ? cleanSummaryList(payload.ui_hindi.subheadings).slice(0, 3)
-          : cleanSummaryList(hindi.top_summary).slice(0, 3),
+          ? cleanSummaryList(payload.ui_hindi.subheadings).slice(0, 2)
+          : cleanSummaryList(hindi.top_summary).slice(0, 2),
       },
       ui_english: payload.ui_english && typeof payload.ui_english === "object"
         ? payload.ui_english
