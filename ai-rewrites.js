@@ -14,7 +14,7 @@ const AI_REWRITE_MODES = Object.freeze({
 // Word-count anchors: short version targets 300 words, medium 600, long 1100.
 // Field names (body100/body300/body1000, short_100/medium_300/long_500) are kept
 // for DB/API compatibility even though their actual targets moved.
-const AI_LONG_REWRITE_MIN_WORDS = 1050;
+const AI_LONG_REWRITE_MIN_WORDS = 1000;
 const AI_LONG_REWRITE_MAX_WORDS = 1150;
 const AI_LEAD_BODY_MIN_WORDS = 285;
 const AI_LEAD_BODY_MAX_WORDS = 315;
@@ -2421,14 +2421,23 @@ function isTransientBrowserError(error) {
 
 function isSkippableRewriteInputError(error) {
   const message = String(error?.message || "");
-  return (
+  if (
     message.includes("Could not extract enough article text") ||
     message.includes("Waiting for selector") ||
     message.includes("Navigation timeout") ||
     message.includes("ERR_ABORTED") ||
     message.includes("ERR_CONNECTION_RESET") ||
     message.includes("ERR_TIMED_OUT")
-  );
+  ) {
+    return true;
+  }
+
+  const invalidFields = Array.isArray(error?.invalidFields) ? error.invalidFields : [];
+  if (invalidFields.length && invalidFields.every((field) => /_cumulative$/.test(field))) {
+    return true;
+  }
+
+  return false;
 }
 
 async function withTransientRetry(task, { retries = 2, delayMs = 1200 } = {}) {
@@ -2886,9 +2895,9 @@ function getCompactContinuationRange(compactPayload, language) {
   const pack = compactPayload?.[language] || {};
   const currentWords = countArticleWords(joinBodySegments([pack.lead_100, pack.extension_200, pack.extension_700]));
   const minimumNeeded = Math.max(0, AI_LONG_REWRITE_MIN_WORDS - currentWords);
-  const targetNeeded = Math.max(0, 1000 - currentWords);
+  const targetNeeded = Math.max(0, 1100 - currentWords);
   const requestedMinimum = minimumNeeded + 20;
-  const requestedMaximum = Math.min(Math.max(requestedMinimum, targetNeeded + 80), 350);
+  const requestedMaximum = Math.max(requestedMinimum + 80, Math.min(targetNeeded + 120, 650));
   return {
     currentWords,
     minimumNeeded,
@@ -3100,16 +3109,16 @@ Repair plan:
 ${JSON.stringify(repairPlan, null, 2)}
 
 Use replace_language only when requested in the repair plan. Its values must be full language package objects.
-For replace_language, the returned language package must include lead_100, extension_200 and extension_700 with a cumulative 950-1050 body words.
+For replace_language, the returned language package must include lead_100, extension_200 and extension_700 with a cumulative ${AI_LONG_REWRITE_MIN_WORDS}-${AI_LONG_REWRITE_MAX_WORDS} body words.
 Use replace for missing, empty, wrong-language or malformed fields. Replacement body fields replace the old field; they are not appended.
 Use append only for long_cumulative repair, and only at hindi.extension_700 or english.extension_700.
 For append operations, return continuation sentences within requestedMinimum/requestedMaximum words from the repair plan.
-After append, the cumulative body1000 must be 950 to 1050 body words.
-For body100_cumulative, replace lead_100 only so the compatibility field short_100 becomes the 250-word version.
-For body300_cumulative, replace extension_200 only so the compatibility field medium_300 becomes the 500-word version.
+After append, the cumulative body1000 must be ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} body words.
+For body100_cumulative, replace lead_100 only so the compatibility field short_100 becomes the 300-word version.
+For body300_cumulative, replace extension_200 only so the compatibility field medium_300 becomes the 600-word version.
 For long_cumulative, append continuation to extension_700 only.
-If repairing subheadings, return the full array at hindi.subheadings or english.subheadings with exactly three factual mini-headlines.
-For body repairs, use complete sentences and avoid repeating the headline, subheadings or caption.
+If repairing subheadings, return the full array at hindi.subheadings or english.subheadings with exactly two factual mini-headlines.
+For body repairs, use complete sentences and avoid repeating the headline, secondary heading, subheadings or caption.
 Do not regenerate fields not listed above.
 Do not include image_url, image_prompt, link or source.
 
