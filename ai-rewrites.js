@@ -1008,8 +1008,13 @@ function normalizeSentencesClosestToTarget(sourceText, {
   const cleanSourceText = cleanGeneratedText(sourceText).replace(/\s+/g, " ").trim();
   const sourceSentences = splitCompleteSentences(cleanSourceText);
   const prefixSentences = prefixText ? splitCompleteSentences(prefixText) : [];
-  const remainingText = prefixText && cleanSourceText.startsWith(prefixText)
-    ? cleanSourceText.slice(prefixText.length).trim()
+  // Skip by word count rather than exact string prefix matching: the prefix text may have
+  // gone through cleanGeneratedText/word-slicing and no longer be an exact substring of
+  // cleanSourceText, which previously made startsWith() silently fail and re-walk the
+  // source from the beginning, duplicating already-used sentences into the result.
+  const sourceWordsForSkip = cleanSourceText.split(/\s+/).filter(Boolean);
+  const remainingText = prefixText && prefixWords > 0
+    ? sourceWordsForSkip.slice(prefixWords).join(" ").trim()
     : cleanSourceText;
   const remainingSentences = prefixText
     ? splitCompleteSentences(remainingText)
@@ -1052,15 +1057,14 @@ function normalizeSentencesClosestToTarget(sourceText, {
 
   let bestWords = countBodyWords(bestText);
   if ((bestWords < emergencyMin || bestWords > emergencyMax) && countBodyWords(cleanSourceText) >= emergencyMin) {
-    const sourceWords = cleanSourceText.split(/\s+/).filter(Boolean);
     const prefixWordList = prefixText ? prefixText.split(/\s+/).filter(Boolean) : [];
     const desiredTotal = Math.min(Math.max(target, emergencyMin), emergencyMax);
-    const fallbackWords = prefixText && cleanSourceText.startsWith(prefixText)
+    const fallbackWords = prefixText && prefixWords > 0
       ? [
           ...prefixWordList,
-          ...cleanSourceText.slice(prefixText.length).trim().split(/\s+/).filter(Boolean).slice(0, Math.max(0, desiredTotal - prefixWordList.length)),
+          ...sourceWordsForSkip.slice(prefixWords, prefixWords + Math.max(0, desiredTotal - prefixWordList.length)),
         ]
-      : sourceWords.slice(0, desiredTotal);
+      : sourceWordsForSkip.slice(0, desiredTotal);
     const fallbackText = cleanGeneratedText(fallbackWords.join(" "));
     const fallbackCount = countBodyWords(fallbackText);
     if (fallbackCount >= emergencyMin && fallbackCount <= emergencyMax) {
