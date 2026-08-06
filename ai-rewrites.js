@@ -40,6 +40,16 @@ const AI_BODY_300_EMERGENCY_MIN_WORDS = 600;
 const AI_BODY_300_EMERGENCY_MAX_WORDS = 720;
 const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
 const AI_MIN_SOURCE_FACT_TOKENS = 4;
+// Only rewrite articles that are still recent enough to actually be delivered.
+// The delivery feed hides anything older than NEWS_MAX_AGE_HOURS, so rewriting
+// older backlog burns Gemini quota on articles that can never appear on the site.
+const AI_REWRITE_MAX_SOURCE_AGE_HOURS = Math.max(
+  1,
+  Math.min(
+    Number.parseInt(process.env.AI_REWRITE_MAX_SOURCE_AGE_HOURS || process.env.NEWS_MAX_AGE_HOURS || "24", 10) || 24,
+    168
+  )
+);
 const AI_ALLOWED_CATEGORIES = Object.freeze([
   "National",
   "International",
@@ -2558,11 +2568,14 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
       FROM fetched_news fn
       LEFT JOIN ai_news_rewrites air ON air.news_id = fn.id
       LEFT JOIN ai_rewrite_skips ars ON ars.news_id = fn.id
-      WHERE fn.category = ? AND air.news_id IS NULL AND ars.news_id IS NULL
+      WHERE fn.category = ?
+        AND air.news_id IS NULL
+        AND ars.news_id IS NULL
+        AND fn.fetched_at >= (NOW() - INTERVAL ? HOUR)
       ORDER BY fn.id DESC
       LIMIT ?
     `,
-    [category, limit]
+    [category, AI_REWRITE_MAX_SOURCE_AGE_HOURS, limit]
   );
 
   return rows;
