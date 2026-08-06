@@ -41,6 +41,12 @@ const AI_BODY_300_EMERGENCY_MAX_WORDS = 720;
 const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
 const AI_MIN_SOURCE_FACT_TOKENS = 4;
 const AI_HINDI_ONLY_MAX_REPAIR_ATTEMPTS = 2;
+// Secondary headline is "<2-3 keywords> : <headline>", counted as a whole:
+// the keywords are part of the 10-14 word budget, not additional to it.
+const AI_SECONDARY_HEADLINE_MIN_WORDS = 10;
+const AI_SECONDARY_HEADLINE_MAX_WORDS = 14;
+const AI_SECONDARY_KEYWORDS_MIN = 2;
+const AI_SECONDARY_KEYWORDS_MAX = 3;
 // Only rewrite articles that are still recent enough to actually be delivered.
 // The delivery feed hides anything older than NEWS_MAX_AGE_HOURS, so rewriting
 // older backlog burns Gemini quota on articles that can never appear on the site.
@@ -442,7 +448,11 @@ Size rules:
 - Do not repeat the headline, secondary heading, subheadings or caption inside body.
 - Exactly one main headline, exactly one secondary headline, exactly two factual subheadings and exactly one photo caption.
 - Hindi headline: natural newspaper Hindi, 10 to 20 words, factual, restrained, not clickbait.
-- secondary_heading format: 2 to 3 short factual keywords or entity names taken from the story, then a colon ":", then a complete secondary headline of 12 to 14 words that adds a distinct angle beyond the main headline. Example shape: "मध्य प्रदेश, पुलिस : भोपाल में पुलिस ने संदिग्ध तस्करी गिरोह के तीन सदस्यों को हिरासत में लिया।" Do not repeat the main headline's wording in the secondary headline.
+- secondary_heading is a STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL. Format: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} short factual keywords or entity names from the story, then a colon ":", then a complete short secondary headline that adds a distinct angle beyond the main headline.
+- The keyword words COUNT TOWARD the ${AI_SECONDARY_HEADLINE_MIN_WORDS}-${AI_SECONDARY_HEADLINE_MAX_WORDS} total; they are not extra. So with 3 keywords, the part after the colon must be about 7 to 11 words. The colon itself is not counted.
+- Correct example (14 words total): "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"
+- Correct example (11 words total): "स्वास्थ्य मंत्रालय, दवा : फर्जी डेटा देने वालों पर होगी सख्त कार्रवाई"
+- Write it as one tight newspaper-style line. Do not write a full sentence explaining the whole story, and do not exceed ${AI_SECONDARY_HEADLINE_MAX_WORDS} words in total. Do not repeat the main headline's wording.
 - Extract subheadings as standalone fields, separate from body. Do not restate them inside body; the application displays them in their own column, not inside the article body.
 - Each subheading must be a supported factual mini-headline. Do not use labels such as Fact 1, Key Point, Main Update or Angle.
 - Write body in professional Indian newspaper reporting style (the style of Dainik Bhaskar, Jagran, Patrika, Naidunia), not wire-agency style. Begin body itself with a dateline: the most specific verified city or place name for the story, followed by a period, then continue directly into the report in the same paragraph. Example start: "भोपाल. मध्य प्रदेश सरकार ने...". If no specific place is verifiable from the source, use the most relevant state capital or "नई दिल्ली" as a safe fallback dateline. Do not label this as "Agency" or name any agency; it is a plain place-name dateline only.
@@ -1506,6 +1516,36 @@ function normalizeSecondaryHeading(value, cleaner) {
   return cleaned;
 }
 
+// The colon is a separator, not a word, so it must not consume part of the
+// 10-14 word budget.
+function countSecondaryHeadlineWords(value) {
+  return countBodyWords(String(value || "").replace(/\s*[:：]\s*/g, " "));
+}
+
+function inspectSecondaryHeadline(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^([\s\S]*?)\s*[:：]\s*([\s\S]*)$/);
+  if (!match) {
+    return { valid: false, reason: "missing_colon", totalWords: countSecondaryHeadlineWords(text), keywordWords: 0 };
+  }
+
+  const keywordWords = countBodyWords(match[1].replace(/[,،]/g, " "));
+  const headlineWords = countBodyWords(match[2]);
+  const totalWords = keywordWords + headlineWords;
+
+  if (keywordWords < AI_SECONDARY_KEYWORDS_MIN || keywordWords > AI_SECONDARY_KEYWORDS_MAX) {
+    return { valid: false, reason: "keyword_count", totalWords, keywordWords };
+  }
+  if (!headlineWords) {
+    return { valid: false, reason: "missing_headline", totalWords, keywordWords };
+  }
+  if (totalWords < AI_SECONDARY_HEADLINE_MIN_WORDS || totalWords > AI_SECONDARY_HEADLINE_MAX_WORDS) {
+    return { valid: false, reason: "total_word_count", totalWords, keywordWords };
+  }
+
+  return { valid: true, reason: null, totalWords, keywordWords };
+}
+
 function buildFallbackSecondaryHeading(heading, language) {
   const words = cleanGeneratedText(heading).split(/\s+/).filter(Boolean);
   if (!words.length) {
@@ -1801,6 +1841,17 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
   }
   if (!heading || !hasHindiText(heading)) {
     invalidFields.push("hindi.heading");
+  }
+  const secondaryCheck = inspectSecondaryHeadline(secondaryHeading);
+  if (!secondaryHeading || !hasHindiText(secondaryHeading) || !secondaryCheck.valid) {
+    invalidFields.push("hindi.secondary_heading");
+    validationDetails["hindi.secondary_heading"] = {
+      reason: secondaryCheck.reason || "missing",
+      total_words: secondaryCheck.totalWords,
+      keyword_words: secondaryCheck.keywordWords,
+      min: AI_SECONDARY_HEADLINE_MIN_WORDS,
+      max: AI_SECONDARY_HEADLINE_MAX_WORDS,
+    };
   }
   if (!photoCaption || !hasHindiText(photoCaption)) {
     invalidFields.push("hindi.photo_caption");
@@ -3839,7 +3890,7 @@ function planHindiOnlyRepairs(payload, invalidFields = []) {
   const bodyWords = countBodyWords(getPathValue(payload, "hindi.body"));
   const replaceSpecs = {
     "hindi.heading": "one natural newspaper Hindi headline, 10 to 20 words",
-    "hindi.secondary_heading": "2 to 3 keywords, then a colon, then a 12 to 14 word secondary headline distinct from the main heading",
+    "hindi.secondary_heading": `STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} factual keywords, then a colon, then a short headline distinct from the main heading. The keywords count toward the total, so with 3 keywords the part after the colon is about 7 to 11 words. Do not write a long explanatory sentence. Example: "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"`,
     "hindi.photo_caption": "one factual Hindi caption, 20 to 30 words",
     "hindi.subheadings": "exactly two Hindi factual subheadings as an array of two strings, extracted separately from the body",
   };
@@ -3865,6 +3916,14 @@ function planHindiOnlyRepairs(payload, invalidFields = []) {
           400
         ),
       };
+
+      if (basePath === "hindi.secondary_heading") {
+        const check = inspectSecondaryHeadline(getPathValue(payload, basePath));
+        plan.replace[basePath].current_total_words = check.totalWords;
+        plan.replace[basePath].current_keyword_words = check.keywordWords;
+        plan.replace[basePath].problem = check.reason;
+        plan.replace[basePath].required_total_words = `${AI_SECONDARY_HEADLINE_MIN_WORDS}-${AI_SECONDARY_HEADLINE_MAX_WORDS}`;
+      }
     }
   }
 
