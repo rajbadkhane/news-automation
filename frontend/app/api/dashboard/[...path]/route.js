@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { getAdminMasterApiKey, getServerApiBaseUrl } from "@/lib/runtime-env";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
 const API_BASE_URL = getServerApiBaseUrl();
 const ADMIN_MASTER_API_KEY = getAdminMasterApiKey();
 const DEFAULT_CACHE_SECONDS = 30;
