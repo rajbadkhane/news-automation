@@ -107,7 +107,7 @@ category-wise feed: fetch once, then read `grouped_records[i].category` /
             "subheadings": ["उप-शीर्षक 1 (factual, ~8-18 words)", "उप-शीर्षक 2 (factual, ~8-18 words)", "उप-शीर्षक 3 (standalone, 5-7 words)"],
             "short_100": "≈300-शब्द बॉडी (headline + secondary + body टेक्स्ट सहित)",
             "medium_300": "≈600-शब्द बॉडी",
-            "long_500": "≈1100+-शब्द पूरी बॉडी",
+            "long_500": "≈1300-1500-शब्द पूरी बॉडी",
             "category": "Madhya Pradesh",
             "state": "मध्य प्रदेश",
             "place_name": "भोपाल",
@@ -181,7 +181,7 @@ the `slug` field.
 | Secondary headline   | `ui_hindi.secondary_headline` (10–14 words total, incl. 2–3 lead keywords before the colon) |
 | Subheading 1 / 2     | `ui_hindi.subheadings[0]` / `[1]` — factual mini-headlines, ~8-18 words each |
 | Subheading 3          | `ui_hindi.subheadings[2]` — a short, standalone, self-contained mini-headline, strictly 5-7 words, meaningful without reading the article |
-| Body text            | Pick one length tier: `ui_hindi.short_100` (~300 words), `.medium_300` (~600 words), `.long_500` (~1100+ words). Field names are legacy — the word counts were upgraded from 100/300/1000 to 300/600/1100, but the field names were kept for compatibility. |
+| Body text            | Pick one length tier: `ui_hindi.short_100` (~300 words), `.medium_300` (~600 words), `.long_500` (1300-1500 words). Field names are legacy — the word counts were upgraded from 100/300/1000 to 300/600/1300-1500, but the field names were kept for compatibility. |
 | Article image        | `image_link` (empty string if no image was found)     |
 | Photo caption         | `image_caption`                                        |
 | State                | `ui_hindi.state`                                        |

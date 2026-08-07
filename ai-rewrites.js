@@ -5,19 +5,19 @@ const GEMINI_API_URL = process.env.GEMINI_API_URL
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
-const AI_PROMPT_VERSION = "hindi-only-v11-single-shot-newspaper-style";
+const AI_PROMPT_VERSION = "hindi-only-v12-1300-1500-words";
 const AI_REWRITE_MODE = String(process.env.AI_REWRITE_MODE || "hindi-only").trim().toLowerCase();
 const AI_REWRITE_MODES = Object.freeze({
   HINDI_ONLY: "hindi-only",
   BILINGUAL_COMPACT: "bilingual-compact",
   HINDI_LEGACY: "hindi-legacy",
 });
-// Word-count anchors are hard floors: short >= 300, medium >= 600, long >= 1100.
+// Word-count anchors are hard floors: short >= 300, medium >= 600, long >= 1300.
 // Overage is fine ("or more"); undershoot is not. Field names (body100/body300/
 // body1000, short_100/medium_300/long_500) are kept for DB/API compatibility
 // even though their actual floors moved.
-const AI_LONG_REWRITE_MIN_WORDS = 1100;
-const AI_LONG_REWRITE_MAX_WORDS = 1350;
+const AI_LONG_REWRITE_MIN_WORDS = 1300;
+const AI_LONG_REWRITE_MAX_WORDS = 1500;
 const AI_LEAD_BODY_MIN_WORDS = 300;
 const AI_LEAD_BODY_MAX_WORDS = 340;
 const AI_EXTENSION_200_MIN_WORDS = 300;
@@ -455,11 +455,11 @@ JSON schema:
 }
 
 Size rules:
-- body is a hard MINIMUM of 1100 Hindi words. Reaching more is fine and encouraged (up to about 1300 words); reaching less is not acceptable.
+- body is a hard MINIMUM of ${AI_LONG_REWRITE_MIN_WORDS} Hindi words. Reaching more is fine and encouraged (up to about ${AI_LONG_REWRITE_MAX_WORDS} words); reaching less is not acceptable.
 - Write body as one continuous, complete, publishable Hindi news article in a single field — not a summary, not bullet points, not multiple segments.
-- Keep sentences complete so the application can trim body at sentence boundaries to derive 300-word, 600-word and 1100-word publishable versions from this SAME text (each shorter version is the opening portion of the longer one).
-- Never stop writing around 300, 600 or 900 words; continue until the article comfortably clears 1100 words when the supplied source has enough verified material.
-- This is a hard output contract: if body is under 1100 words the response will be rejected and you will be asked to add more. When in doubt, write more, not less.
+- Keep sentences complete so the application can trim body at sentence boundaries to derive 300-word, 600-word and ${AI_LONG_REWRITE_MIN_WORDS}-word publishable versions from this SAME text (each shorter version is the opening portion of the longer one).
+- Never stop writing around 300, 600 or 1000 words; continue until the article comfortably clears ${AI_LONG_REWRITE_MIN_WORDS} words when the supplied source has enough verified material.
+- This is a hard output contract: if body is under ${AI_LONG_REWRITE_MIN_WORDS} words the response will be rejected and you will be asked to add more. When in doubt, write more, not less.
 - For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
 - Do not repeat the headline, secondary heading, subheadings or caption inside body.
 - Exactly one main headline, exactly one secondary headline, exactly three subheadings and exactly one photo caption.
@@ -1382,7 +1382,7 @@ function normalizeSingleBodyTiers(bodyText, language) {
     preferredMax: AI_LONG_REWRITE_MAX_WORDS,
     emergencyMin: AI_LONG_REWRITE_MIN_WORDS,
     emergencyMax: AI_LONG_REWRITE_MAX_WORDS,
-    target: 1100,
+    target: AI_LONG_REWRITE_MIN_WORDS,
     requiredPrefix: body600.text,
   });
   if (!body1100.valid) {
@@ -1393,7 +1393,7 @@ function normalizeSingleBodyTiers(bodyText, language) {
       source_words: rawWords,
       min: AI_LONG_REWRITE_MIN_WORDS,
       max: AI_LONG_REWRITE_MAX_WORDS,
-      message: "Body could not produce a valid 1100-word minimum article.",
+      message: `Body could not produce a valid ${AI_LONG_REWRITE_MIN_WORDS}-word minimum article.`,
     };
   }
 

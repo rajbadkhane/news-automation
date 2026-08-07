@@ -58,7 +58,7 @@ function makeCompactPayload(overrides = {}) {
       photo_caption: "प्रशासनिक समीक्षा से जुड़ी प्रतीकात्मक तस्वीर, जिसमें नीति और नागरिक सेवाओं पर ध्यान केंद्रित है।",
       lead_100: repeatSentences(hindiWords, 9, "।"),
       extension_200: repeatSentences(hindiWords, 23, "।"),
-      extension_700: repeatSentences(hindiWords, 88, "।"),
+      extension_700: repeatSentences(hindiWords, 108, "।"),
     },
     english: {
       heading: "Departments Step Up Review Of New Central Administrative Process",
@@ -70,7 +70,7 @@ function makeCompactPayload(overrides = {}) {
       photo_caption: "A representative context image related to policy review and citizen service processes under administrative assessment.",
       lead_100: repeatSentences(englishWords, 9),
       extension_200: repeatSentences(englishWords, 23),
-      extension_700: repeatSentences(englishWords, 88),
+      extension_700: repeatSentences(englishWords, 108),
     },
   };
 
@@ -169,7 +169,7 @@ assert.ok(capturedLogs[0].includes("finish_reason=stop"));
 assert.ok(capturedLogs[0].includes("reasoning_tokens=0"));
 assert.ok(!capturedLogs[0].includes("FULL GENERATED ARTICLE"));
 assert.strictEqual(
-  __test.isCurrentAiRewritePrompt({ prompt_version: "hindi-only-v11-single-shot-newspaper-style" }),
+  __test.isCurrentAiRewritePrompt({ prompt_version: "hindi-only-v12-1300-1500-words" }),
   true
 );
 assert.strictEqual(
@@ -235,11 +235,11 @@ assert.strictEqual(normalized.raw_articles, undefined);
 assert.ok(countWords(compact.hindi.lead_100) < 95, "lead segment count is not an independent hard contract");
 assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 300);
 assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 600);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1100);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1350);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1300);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1500);
 assert.ok(normalized._compact_counts.english.normalized.body100 >= 300);
 assert.ok(normalized._compact_counts.english.normalized.body300 >= 600);
-assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1100);
+assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1300);
 
 const toppedUpLead = makeCompactPayload({
   hindi: {
@@ -260,11 +260,11 @@ assert.ok(progressive.bodies.body300.startsWith(progressive.bodies.body100));
 assert.ok(progressive.bodies.body1000.startsWith(progressive.bodies.body300));
 
 const overlong = __test.buildCompactBilingualPayload(makeCompactPayload({
-  hindi: { extension_700: repeatSentences(hindiWords, 90, "।") },
-  english: { extension_700: repeatSentences(englishWords, 90) },
+  hindi: { extension_700: repeatSentences(hindiWords, 150, "।") },
+  english: { extension_700: repeatSentences(englishWords, 150) },
 }), articleRecord, articleText);
-assert.ok(overlong._compact_counts.english.segment.extension_700 > 800);
-assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1350);
+assert.ok(overlong._compact_counts.english.segment.extension_700 > 1400);
+assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1500);
 
 assert.throws(
   () => __test.buildCompactBilingualPayload(makeCompactPayload({
@@ -274,7 +274,7 @@ assert.throws(
   (error) => {
     assert.ok(error.invalidFields.includes("hindi.long_cumulative"));
     assert.ok(error.invalidFields.includes("english.long_cumulative"));
-    assert.ok(error.validationDetails["english.long_cumulative"].words < 1100);
+    assert.ok(error.validationDetails["english.long_cumulative"].words < 1300);
     return true;
   }
 );
@@ -323,7 +323,7 @@ const repaired = __test.mergeCompactRepairs(makeCompactPayload(), {
   },
 });
 assert.strictEqual(countWords(repaired.english.lead_100), 90);
-assert.strictEqual(countWords(repaired.english.extension_700), 930);
+assert.strictEqual(countWords(repaired.english.extension_700), 1130);
 
 assert.throws(
   () => __test.buildCompactBilingualPayload(makeCompactPayload({

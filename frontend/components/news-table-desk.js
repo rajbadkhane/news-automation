@@ -847,7 +847,7 @@ function PreviewModal({ preview, onClose, setPreview, setMessage, translateLangu
     { key: "caption", label: "Image Caption", text: preview?.item.image_caption },
     { key: "100", label: "300 Words", text: preview?.item.short_100 },
     { key: "300", label: "600 Words", text: preview?.item.medium_300 },
-    { key: "1000", label: "1100 Words", text: preview?.item.long_500 },
+    { key: "1000", label: "1300 Words", text: preview?.item.long_500 },
   ];
   const [copiedKey, setCopiedKey] = useCopyButtonFeedback();
   const translatedTextRef = useRef(null);
@@ -1845,7 +1845,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                   <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
                   <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">300 Words</th>
                   <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">600 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1100 Words</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1300 Words</th>
                 </tr>
               </thead>
               <tbody>
