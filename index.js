@@ -4019,6 +4019,7 @@ function compactDeliveryRecordForTable(record) {
       long_500: uiHindi.long_500 || rawArticles.words_1000 || rawArticles.words_600 || rawArticles.words_500 || "",
       category: record?.category || uiHindi.category,
       state: uiHindi.state || "",
+      place_name: uiHindi.place_name || "",
       district: uiHindi.district || uiHindi.district_name || "",
       image_caption: uiHindi.image_caption || uiHindi.photo_caption || uiHindi.caption || "",
       image_url: media.image_link || uiHindi.image_url || "",

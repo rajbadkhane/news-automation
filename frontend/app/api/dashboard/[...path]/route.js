@@ -167,6 +167,7 @@ function normalizeDashboardJson(pathname, payload, status) {
                 item.raw_articles?.caption ||
                 "",
               image_source: imageLink ? item.media?.image_source || "article-image" : null,
+              place_name: item.ui_hindi?.place_name || "",
               fetched_at: item.source?.fetched_at || item.published_at || item.updated_at,
               feed_source: item.source?.feed_source || item.source?.title || "published",
               feed_url: item.source?.feed_url || "",

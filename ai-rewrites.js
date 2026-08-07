@@ -47,6 +47,12 @@ const AI_SECONDARY_HEADLINE_MIN_WORDS = 10;
 const AI_SECONDARY_HEADLINE_MAX_WORDS = 14;
 const AI_SECONDARY_KEYWORDS_MIN = 2;
 const AI_SECONDARY_KEYWORDS_MAX = 3;
+// The third subheading is a short standalone mini-headline, distinct from the
+// first two longer factual subheadings.
+const AI_STANDALONE_SUBHEADING_MIN_WORDS = 5;
+const AI_STANDALONE_SUBHEADING_MAX_WORDS = 7;
+// place_name is a short dateline-style place, not a sentence.
+const AI_PLACE_NAME_MAX_WORDS = 4;
 // Only rewrite articles that are still recent enough to actually be delivered.
 // The delivery feed hides anything older than NEWS_MAX_AGE_HOURS, so rewriting
 // older backlog burns Gemini quota on articles that can never appear on the site.
@@ -434,6 +440,7 @@ JSON schema:
   "classification": {
     "category": "National",
     "state": "राष्ट्रीय",
+    "place_name": "नई दिल्ली",
     "confidence": 0.98,
     "reason": "The primary event is an Indian national issue outside Madhya Pradesh.",
     "keywords": ["हिंदी कीवर्ड 1", "हिंदी कीवर्ड 2", "हिंदी कीवर्ड 3"]
@@ -441,7 +448,7 @@ JSON schema:
   "hindi": {
     "heading": "",
     "secondary_heading": "",
-    "subheadings": ["", ""],
+    "subheadings": ["", "", ""],
     "photo_caption": "",
     "body": ""
   }
@@ -455,7 +462,7 @@ Size rules:
 - This is a hard output contract: if body is under 1100 words the response will be rejected and you will be asked to add more. When in doubt, write more, not less.
 - For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
 - Do not repeat the headline, secondary heading, subheadings or caption inside body.
-- Exactly one main headline, exactly one secondary headline, exactly two factual subheadings and exactly one photo caption.
+- Exactly one main headline, exactly one secondary headline, exactly three subheadings and exactly one photo caption.
 - Hindi headline: natural newspaper Hindi, 10 to 20 words, factual, restrained, not clickbait.
 - secondary_heading is a STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL. Format: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} short factual keywords or entity names from the story, then a colon ":", then a complete short secondary headline that adds a distinct angle beyond the main headline.
 - The keyword words COUNT TOWARD the ${AI_SECONDARY_HEADLINE_MIN_WORDS}-${AI_SECONDARY_HEADLINE_MAX_WORDS} total; they are not extra. So with 3 keywords, the part after the colon must be about 7 to 11 words. The colon itself is not counted.
@@ -463,8 +470,12 @@ Size rules:
 - Correct example (11 words total): "स्वास्थ्य मंत्रालय, दवा : फर्जी डेटा देने वालों पर होगी सख्त कार्रवाई"
 - Write it as one tight newspaper-style line. Do not write a full sentence explaining the whole story, and do not exceed ${AI_SECONDARY_HEADLINE_MAX_WORDS} words in total. Do not repeat the main headline's wording.
 - Extract subheadings as standalone fields, separate from body. Do not restate them inside body; the application displays them in their own column, not inside the article body.
-- Each subheading must be a supported factual mini-headline. Do not use labels such as Fact 1, Key Point, Main Update or Angle.
+- subheadings is an array of exactly three strings, with two different jobs:
+  - subheadings[0] and subheadings[1]: supported factual mini-headlines (roughly 8 to 18 words each), each covering a distinct angle of the story.
+  - subheadings[2]: a THIRD, DIFFERENT kind of subheading — a STRICT ${AI_STANDALONE_SUBHEADING_MIN_WORDS} to ${AI_STANDALONE_SUBHEADING_MAX_WORDS} words, a complete and grammatically standalone mini-headline that is fully meaningful on its own without needing the rest of the article (not a sentence fragment, not a teaser, not a label). Example (6 words): "मुख्यमंत्री ने राहत राशि की घोषणा की".
+- Do not use labels such as Fact 1, Key Point, Main Update or Angle for any of the three subheadings.
 - Write body in professional Indian newspaper reporting style (the style of Dainik Bhaskar, Jagran, Patrika, Naidunia), not wire-agency style. Begin body itself with a dateline: the most specific verified city or place name for the story, followed by a period, then continue directly into the report in the same paragraph. Example start: "भोपाल. मध्य प्रदेश सरकार ने...". If no specific place is verifiable from the source, use the most relevant state capital or "नई दिल्ली" as a safe fallback dateline. Do not label this as "Agency" or name any agency; it is a plain place-name dateline only.
+- classification.place_name must be the exact same city/town/place used as this dateline — a plain Hindi place name only (e.g., भोपाल, इंदौर, नई दिल्ली), with no state name, district word, honorific or punctuation attached. Use the same state-capital/"नई दिल्ली" fallback here as for the dateline when no specific place is verifiable.
 - Captions should be factual, 20 to 30 words when practical, and must not describe unsupported visual details.
 - Include attributed statements only when supported by the supplied source.
 - Include ground-level details only when supported by the supplied source.
@@ -556,6 +567,7 @@ async function initializeAiRewriteStorage(dbPool) {
         ui_keywords_json TEXT,
         ui_category VARCHAR(100),
         ui_state VARCHAR(150),
+        ui_place_name VARCHAR(150),
         ui_image_url TEXT,
         ui_image_prompt TEXT,
         ui_source TEXT,
@@ -608,6 +620,7 @@ async function initializeAiRewriteStorage(dbPool) {
         ui_keywords_json TEXT,
         ui_category VARCHAR(100),
         ui_state VARCHAR(150),
+        ui_place_name VARCHAR(150),
         ui_image_url TEXT,
         ui_image_prompt TEXT,
         ui_source TEXT,
@@ -648,6 +661,7 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_keywords_json TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_category VARCHAR(100)",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_state VARCHAR(150)",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_place_name VARCHAR(150)",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_url TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
@@ -670,6 +684,7 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_keywords_json TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_category VARCHAR(100)",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_state VARCHAR(150)",
+        "ALTER TABLE ai_news_rewrites ADD COLUMN ui_place_name VARCHAR(150)",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_url TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_image_prompt TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
@@ -997,9 +1012,11 @@ function normalizeUiHindiPayload(payload, options = {}) {
       ? validateAiGeneratedCategory(normalized.category, options)
       : normalizeAiCategoryForDisplay(normalized.category),
     state: removePublisherMentions(normalized.state) || "राष्ट्रीय",
+    place_name: removePublisherMentions(normalized.place_name),
     confidence: normalizeAiConfidence(normalized.confidence),
     reason: normalizeClassificationReason(normalized.reason),
   };
+  cleanedPayload.place_name = cleanedPayload.place_name || cleanedPayload.state;
 
   const uiHindi = {
     title: cleanedPayload.title,
@@ -1009,6 +1026,7 @@ function normalizeUiHindiPayload(payload, options = {}) {
     keywords,
     category: cleanedPayload.category,
     state: cleanedPayload.state,
+    place_name: cleanedPayload.place_name,
     confidence: cleanedPayload.confidence,
     reason: cleanedPayload.reason,
     image_url: "",
@@ -1555,6 +1573,52 @@ function inspectSecondaryHeadline(value) {
   return { valid: true, reason: null, totalWords, keywordWords };
 }
 
+// Hindi-only mode uses three subheadings (two factual + one short standalone
+// one), unlike the legacy bilingual mode's two, so it gets its own normalizer
+// rather than changing the shared slice(0, 2) used by the legacy path.
+function normalizeHindiOnlySubheadingList(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((item) => removePublisherMentions(item).replace(/^\s*(?:Fact|Key Point|Main Update|Angle)\s*\d*\s*[:.-]?\s*/i, "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function inspectStandaloneSubheading(value) {
+  const text = String(value || "").trim();
+  const totalWords = countBodyWords(text);
+  if (!text || !hasHindiText(text)) {
+    return { valid: false, reason: "missing", totalWords };
+  }
+  if (hasBadSubheadingLabel(text)) {
+    return { valid: false, reason: "bad_label", totalWords };
+  }
+  if (totalWords < AI_STANDALONE_SUBHEADING_MIN_WORDS || totalWords > AI_STANDALONE_SUBHEADING_MAX_WORDS) {
+    return { valid: false, reason: "word_count", totalWords };
+  }
+  return { valid: true, reason: null, totalWords };
+}
+
+function inspectPlaceName(value) {
+  const text = String(value || "").trim();
+  const totalWords = countBodyWords(text);
+  if (!text || !hasHindiText(text)) {
+    return { valid: false, reason: "missing", totalWords };
+  }
+  if (totalWords > AI_PLACE_NAME_MAX_WORDS) {
+    return { valid: false, reason: "too_long", totalWords };
+  }
+  return { valid: true, reason: null, totalWords };
+}
+
+// Best-effort fallback only: derives the place from the body's own opening
+// dateline (e.g. "भोपाल. ...") so place_name is never empty even if the model
+// omits classification.place_name. Not used to reject/retry a response.
+function derivePlaceNameFromBody(body) {
+  const text = String(body || "").trim();
+  const match = text.match(/^([ऀ-ॿ][ऀ-ॿ\s]{0,28}?)\s*[.।]\s/);
+  return match ? match[1].trim() : "";
+}
+
 function buildFallbackSecondaryHeading(heading, language) {
   const words = cleanGeneratedText(heading).split(/\s+/).filter(Boolean);
   if (!words.length) {
@@ -1832,7 +1896,7 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
   const heading = removePublisherMentions(hindiRaw.heading);
   const secondaryHeading = normalizeSecondaryHeading(hindiRaw.secondary_heading, removePublisherMentions) ||
     buildFallbackSecondaryHeading(heading, "hindi");
-  const subheadings = normalizeSubheadingList(hindiRaw.subheadings);
+  const subheadings = normalizeHindiOnlySubheadingList(hindiRaw.subheadings);
   const photoCaption = removePublisherMentions(hindiRaw.photo_caption);
   const body = removePublisherMentions(hindiRaw.body);
 
@@ -1868,7 +1932,7 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
   if (!body || !hasHindiText(body)) {
     invalidFields.push("hindi.body");
   }
-  if (subheadings.length !== 2) {
+  if (subheadings.length !== 3) {
     invalidFields.push("hindi.subheadings");
   }
   subheadings.forEach((subheading, index) => {
@@ -1876,6 +1940,24 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
       invalidFields.push(`hindi.subheadings.${index}`);
     }
   });
+  if (subheadings.length === 3) {
+    const standaloneCheck = inspectStandaloneSubheading(subheadings[2]);
+    if (!standaloneCheck.valid) {
+      invalidFields.push("hindi.subheadings.2");
+      validationDetails["hindi.subheadings.2"] = {
+        reason: standaloneCheck.reason,
+        total_words: standaloneCheck.totalWords,
+        min: AI_STANDALONE_SUBHEADING_MIN_WORDS,
+        max: AI_STANDALONE_SUBHEADING_MAX_WORDS,
+      };
+    }
+  }
+
+  const rawPlaceName = removePublisherMentions(classification.place_name);
+  const placeNameCheck = inspectPlaceName(rawPlaceName);
+  const placeName = placeNameCheck.valid
+    ? rawPlaceName
+    : (derivePlaceNameFromBody(body) || removePublisherMentions(classification.state) || "राष्ट्रीय");
 
   const tiers = normalizeSingleBodyTiers(body, "hindi");
   invalidFields.push(...tiers.invalidFields);
@@ -1918,6 +2000,7 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
     keywords,
     category,
     state: removePublisherMentions(classification.state) || "राष्ट्रीय",
+    place_name: placeName,
     confidence,
     reason,
     image_url: "",
@@ -2511,6 +2594,7 @@ async function saveAiRewrite(dbPool, {
             ui_keywords_json = ?,
             ui_category = ?,
             ui_state = ?,
+            ui_place_name = ?,
             ui_image_url = NULL,
             ui_image_prompt = NULL,
             ui_source = ?,
@@ -2544,6 +2628,7 @@ async function saveAiRewrite(dbPool, {
         JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
         uiHindi?.category || null,
         uiHindi?.state || null,
+        uiHindi?.place_name || null,
         uiHindi?.source || null,
         uiHindi?.link || null,
         rawResponse,
@@ -2559,11 +2644,11 @@ async function saveAiRewrite(dbPool, {
               news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
               english_headline, english_secondary_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
               hindi_headline, hindi_secondary_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
-              ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
+              ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state, ui_place_name,
               ui_image_url, ui_image_prompt, ui_source, ui_link,
               raw_response
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (news_id) DO NOTHING
           `
         : `
@@ -2571,11 +2656,11 @@ async function saveAiRewrite(dbPool, {
               news_id, model_name, prompt_version, source_url, source_title, source_excerpt,
               english_headline, english_secondary_headline, english_top_summary, english_short_description, english_long_description, english_what_to_watch_next,
               hindi_headline, hindi_secondary_headline, hindi_top_summary, hindi_short_description, hindi_long_description, hindi_what_to_watch_next,
-              ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state,
+              ui_title, ui_short_100, ui_medium_300, ui_long_500, ui_keywords_json, ui_category, ui_state, ui_place_name,
               ui_image_url, ui_image_prompt, ui_source, ui_link,
               raw_response
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE news_id = news_id
           `,
       [
@@ -2604,6 +2689,7 @@ async function saveAiRewrite(dbPool, {
         JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
         uiHindi?.category || null,
         uiHindi?.state || null,
+        uiHindi?.place_name || null,
         null,
         null,
         uiHindi?.source || null,
@@ -3945,7 +4031,7 @@ function planHindiOnlyRepairs(payload, invalidFields = []) {
     "hindi.heading": "one natural newspaper Hindi headline, 10 to 20 words",
     "hindi.secondary_heading": `STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} factual keywords, then a colon, then a short headline distinct from the main heading. The keywords count toward the total, so with 3 keywords the part after the colon is about 7 to 11 words. Do not write a long explanatory sentence. Example: "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"`,
     "hindi.photo_caption": "one factual Hindi caption, 20 to 30 words",
-    "hindi.subheadings": "exactly two Hindi factual subheadings as an array of two strings, extracted separately from the body",
+    "hindi.subheadings": `exactly three Hindi subheadings as an array of three strings, extracted separately from the body: subheadings[0] and subheadings[1] are supported factual mini-headlines (roughly 8 to 18 words each), and subheadings[2] is a STRICT ${AI_STANDALONE_SUBHEADING_MIN_WORDS} to ${AI_STANDALONE_SUBHEADING_MAX_WORDS} words, a complete standalone mini-headline meaningful on its own`,
   };
 
   let needsBodyExtension = false;
@@ -4259,6 +4345,7 @@ function formatAiRewriteRecord(record) {
         keywords: parseSummary(record.ui_keywords_json),
         category: record.ui_category,
         state: record.ui_state,
+        place_name: record.ui_place_name,
         image_url: record.ui_image_url,
         image_prompt: record.ui_image_prompt,
         source: record.ui_source,
@@ -4295,6 +4382,7 @@ function formatAiRewriteRecord(record) {
       keywords: cleanSummaryList(parseSummary(record.hindi_top_summary || record.english_top_summary)).slice(0, 5),
       category: "राष्ट्रीय",
       state: fallbackState,
+      place_name: fallbackState,
       image_url: "",
       image_prompt: "",
       source: cleanGeneratedText(record.source_title || "समाचार स्रोत"),
@@ -4517,6 +4605,7 @@ const AI_REWRITE_UI_ONLY_COLUMNS = [
   "air.ui_keywords_json",
   "air.ui_category",
   "air.ui_state",
+  "air.ui_place_name",
   "air.ui_image_url",
   "air.ui_image_prompt",
   "air.ui_source",

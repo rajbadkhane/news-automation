@@ -555,6 +555,7 @@ function flattenPayload(payload, section = "news") {
         secondary_headline: record.ui_hindi?.secondary_headline || record.secondary_headline || "",
         subheadings: Array.isArray(record.ui_hindi?.subheadings) ? record.ui_hindi.subheadings : [],
         state: record.ui_hindi?.state || record.state || "राष्ट्रीय",
+        place_name: record.ui_hindi?.place_name || record.place_name || "",
         district:
           record.ui_hindi?.district ||
           record.ui_hindi?.district_name ||
@@ -1830,11 +1831,12 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
           </div>
 
           <div className="overflow-x-auto rounded border border-[#cfd8e3] bg-white">
-            <table className="w-full min-w-[1750px] table-fixed border-collapse text-[13px]">
+            <table className="w-full min-w-[1850px] table-fixed border-collapse text-[13px]">
               <thead>
                 <tr className="sticky top-0 border-b border-[#b9c6d4] bg-[#f5f5f5] text-left text-[11px] uppercase text-[#333]">
                   <th className="w-[68px] border-r border-[#d8e0e8] px-2 py-2">Id</th>
                   <th className="w-[110px] border-r border-[#d8e0e8] px-2 py-2">Category</th>
+                  <th className="w-[110px] border-r border-[#d8e0e8] px-2 py-2">Place</th>
                   <th className="w-[120px] border-r border-[#d8e0e8] px-2 py-2">Uploaded</th>
                   <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title/हैडलाइन</th>
                   <th className="w-[220px] border-r border-[#d8e0e8] px-2 py-2">Secondary Headline</th>
@@ -1857,6 +1859,9 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                       <span className="inline-flex rounded border border-[#d6dde6] bg-white px-2 py-1 text-[11px] font-semibold text-[#334155]">
                         {item.category}
                       </span>
+                    </td>
+                    <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center text-[#4b5b6d]">
+                      {item.place_name || "-"}
                     </td>
                     <td className="overflow-hidden border-r border-[#e5eaf0] px-2 py-2 text-center text-[#4b5b6d]" title={formatDate(item.fetched_at)}>
                       {relativeNow ? formatUploadAge(item.fetched_at, relativeNow) : "-"}
