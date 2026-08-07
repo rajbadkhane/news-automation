@@ -563,7 +563,16 @@ function normalizeStoredSourceUrl(value) {
 
   try {
     const parsed = new URL(raw);
-    parsed.hash = "";
+    // The MP Info district portals publish every story of the day on a single
+    // TodaysNews.aspx page and identify each article only by the URL fragment.
+    // Dropping the hash there collapses an entire district onto one signature, so
+    // only the first article could ever insert and the rest were rejected as
+    // duplicates - which is why each district held 1-2 rows despite daily crawls.
+    // Everywhere else the fragment is still noise (#comments, #main) and is removed.
+    const keepsFragmentAsArticleId = /(^|\.)mpinfo\.org$/i.test(parsed.hostname);
+    if (!keepsFragmentAsArticleId) {
+      parsed.hash = "";
+    }
     for (const key of Array.from(parsed.searchParams.keys())) {
       const normalizedKey = key.toLowerCase();
       if (
@@ -8486,6 +8495,50 @@ function startAiScheduler() {
   void aiSchedulerTick();
 }
 
+async function getLastMpInfoDistrictRunStartedAt() {
+  if (!dbPool) {
+    return null;
+  }
+
+  try {
+    const [rows] = await dbPool.query(
+      `SELECT MAX(started_at) AS last_started_at
+       FROM scheduler_runs
+       WHERE run_type = 'mpinfo-districts'`
+    );
+    const value = rows?.[0]?.last_started_at;
+    if (!value) {
+      return null;
+    }
+
+    const parsed = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  } catch (error) {
+    console.warn(`[mpinfo-district] Could not read last run time: ${error.message}`);
+    return null;
+  }
+}
+
+// The interval timer lives in process memory, so every restart resets it to zero.
+// With a 30-minute period a process that restarts more often than that never fires
+// the crawl at all: during the database outage the app restarted ~500 times and
+// MP Info went from June 15 to August 6 without a single run. Consult the persisted
+// run history instead and start immediately when a full interval has already
+// elapsed, so restarts can no longer starve the crawler. Runs are still rate
+// limited by the recorded start time, so a crash loop cannot hammer the source.
+async function shouldRunMpInfoDistrictOnStartup() {
+  if (MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN) {
+    return true;
+  }
+
+  const lastStartedAt = await getLastMpInfoDistrictRunStartedAt();
+  if (!lastStartedAt) {
+    return true;
+  }
+
+  return Date.now() - lastStartedAt.getTime() >= mpInfoDistrictSchedulerState.intervalMs;
+}
+
 function startMpInfoDistrictScheduler() {
   if (!mpInfoDistrictSchedulerState.enabled || mpInfoDistrictSchedulerInterval) {
     return;
@@ -8498,11 +8551,21 @@ function startMpInfoDistrictScheduler() {
     });
   }, mpInfoDistrictSchedulerState.intervalMs);
 
-  if (MPINFO_DISTRICT_SCHEDULER_STARTUP_RUN) {
-    void runMpInfoDistrictScheduledCycle("startup").catch((error) => {
+  void (async () => {
+    try {
+      if (!(await shouldRunMpInfoDistrictOnStartup())) {
+        return;
+      }
+
+      const lastStartedAt = await getLastMpInfoDistrictRunStartedAt();
+      console.log(
+        `[mpinfo-district] Startup catch-up run; last run ${lastStartedAt ? lastStartedAt.toISOString() : "never"}.`
+      );
+      await runMpInfoDistrictScheduledCycle("startup");
+    } catch (error) {
       console.error("MP Info district scheduler startup run failed:", error.message);
-    });
-  }
+    }
+  })();
 }
 
 function startSchedulerWatchdog() {
