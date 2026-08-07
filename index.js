@@ -1301,11 +1301,26 @@ let schedulerHeartbeatInterval = null;
 let aiSchedulerHeartbeatInterval = null;
 let retentionCleanupInterval = null;
 let retentionCleanupRunning = false;
+let editorialSchedulerInterval = null;
+let editorialSchedulerRunning = false;
 let serverInstance = null;
 const RETENTION_CONFIG = loadRetentionConfig();
 const retentionState = {
   enabled: RETENTION_CONFIG.enabled,
   intervalMs: RETENTION_CONFIG.intervalMs,
+  lastTickAt: null,
+  lastRunAt: null,
+  lastStatus: "Waiting",
+  lastError: null,
+  lastResult: null,
+};
+const EDITORIAL_SCHEDULER_INTERVAL_MS = Math.max(
+  10 * 60 * 1000,
+  Number.parseInt(process.env.EDITORIAL_SCHEDULER_INTERVAL_MS || String(30 * 60 * 1000), 10) || 30 * 60 * 1000
+);
+const editorialSchedulerState = {
+  enabled: String(process.env.EDITORIAL_SCHEDULER_ENABLED || "true").toLowerCase() !== "false",
+  intervalMs: EDITORIAL_SCHEDULER_INTERVAL_MS,
   lastTickAt: null,
   lastRunAt: null,
   lastStatus: "Waiting",
@@ -5081,6 +5096,47 @@ function startRetentionCleanupScheduler() {
   });
 }
 
+async function runEditorialScheduledCycle(triggerSource = "schedule") {
+  if (!editorialSchedulerState.enabled || editorialSchedulerRunning || !dbPool) {
+    return { skipped: true, status: "Skipped", message: "Editorial scheduler is disabled or already running." };
+  }
+
+  editorialSchedulerRunning = true;
+  editorialSchedulerState.lastTickAt = new Date().toISOString();
+
+  try {
+    const result = await syncEditorials(dbPool, {});
+    editorialSchedulerState.lastRunAt = new Date().toISOString();
+    editorialSchedulerState.lastStatus = result.status;
+    editorialSchedulerState.lastError = result.status === "Error" ? result.message : null;
+    editorialSchedulerState.lastResult = { ...result, trigger_source: triggerSource };
+    return result;
+  } catch (error) {
+    editorialSchedulerState.lastStatus = "Error";
+    editorialSchedulerState.lastError = error.message;
+    console.error(`Editorial scheduler cycle (${triggerSource}) failed:`, error.message);
+    throw error;
+  } finally {
+    editorialSchedulerRunning = false;
+  }
+}
+
+function startEditorialScheduler() {
+  if (!editorialSchedulerState.enabled || editorialSchedulerInterval) {
+    return;
+  }
+
+  editorialSchedulerInterval = setInterval(() => {
+    void runEditorialScheduledCycle("schedule").catch((error) => {
+      console.error("Editorial scheduler tick failed:", error.message);
+    });
+  }, editorialSchedulerState.intervalMs);
+
+  void runEditorialScheduledCycle("startup").catch((error) => {
+    console.error("Editorial scheduler startup run failed:", error.message);
+  });
+}
+
 function getCategorySchedule() {
   const categories = Object.keys(RSS_FEEDS);
   return categories.map((category, index) => ({
@@ -8608,6 +8664,11 @@ function startSchedulerWatchdog() {
         startMpInfoDistrictScheduler();
       }
 
+      if (editorialSchedulerState.enabled && !editorialSchedulerInterval) {
+        console.warn("Scheduler watchdog restarted the editorial scheduler interval.");
+        startEditorialScheduler();
+      }
+
       if (schedulerState.enabled && isTimestampStale(schedulerState.lastTickAt, SCHEDULER_HEALTH_THRESHOLD_MS)) {
         console.warn("Scheduler watchdog detected a stale main scheduler tick and triggered a recovery tick.");
         void schedulerTick();
@@ -10384,6 +10445,7 @@ initializeDatabase()
     startAiScheduler();
     startMpInfoDistrictScheduler();
     startRetentionCleanupScheduler();
+    startEditorialScheduler();
     startSchedulerWatchdog();
     serverInstance = app.listen(PORT, () => {
       console.log(`Gautam Tech Studio Bot running at http://localhost:${PORT}`);

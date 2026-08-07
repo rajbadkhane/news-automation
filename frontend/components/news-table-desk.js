@@ -1839,13 +1839,13 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                   <th className="w-[110px] border-r border-[#d8e0e8] px-2 py-2">Place</th>
                   <th className="w-[120px] border-r border-[#d8e0e8] px-2 py-2">Uploaded</th>
                   <th className="w-[245px] border-r border-[#d8e0e8] px-2 py-2">Title/हैडलाइन</th>
-                  <th className="w-[220px] border-r border-[#d8e0e8] px-2 py-2">Secondary Headline</th>
+                  <th className="w-[220px] border-r border-[#d8e0e8] px-2 py-2">{activeSection === "editorial" ? "Sub-Headline" : "Secondary Headline"}</th>
                   <th className="w-[220px] border-r border-[#d8e0e8] px-2 py-2">Subheadings</th>
                   <th className="w-[145px] border-r border-[#d8e0e8] px-2 py-2 text-center">Image</th>
                   <th className="w-[180px] border-r border-[#d8e0e8] px-2 py-2">Image Caption</th>
-                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">300 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">600 Words</th>
-                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">1300 Words</th>
+                  <th className="w-[190px] border-r border-[#d8e0e8] px-2 py-2">{activeSection === "editorial" ? "Executive Summary" : "300 Words"}</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">{activeSection === "editorial" ? "—" : "600 Words"}</th>
+                  <th className="w-[200px] border-r border-[#d8e0e8] px-2 py-2">{activeSection === "editorial" ? "Deep-Dive Article" : "1300 Words"}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1979,7 +1979,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
                 ))}
                 {!visibleRecords.length ? (
                   <tr>
-                    <td colSpan={11} className="px-3 py-8 text-center text-[#555]">
+                    <td colSpan={12} className="px-3 py-8 text-center text-[#555]">
                       {filters.category || filters.state || filters.district
                         ? "No results for selected filters. Try clearing filters or reload data."
                         : "No news found. Reload news button to refresh data."}

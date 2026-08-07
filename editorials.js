@@ -1,84 +1,94 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
-const EDITORIAL_RSS_URL = "https://www.thehindu.com/opinion/editorial/feeder/default.rss";
-const EDITORIAL_DAILY_LIMIT = Math.max(1, Number.parseInt(process.env.EDITORIAL_DAILY_LIMIT || "15", 10) || 15);
+const EDITORIAL_DAILY_LIMIT = Math.max(1, Number.parseInt(process.env.EDITORIAL_DAILY_LIMIT || "10", 10) || 10);
 const EDITORIAL_MIN_SYNC_INTERVAL_MS = Math.max(
   10 * 60 * 1000,
   Number.parseInt(process.env.EDITORIAL_MIN_SYNC_INTERVAL_MS || String(45 * 60 * 1000), 10) || 45 * 60 * 1000
 );
+const EDITORIAL_MAX_REPAIR_ATTEMPTS = 2;
 
-const EDITORIAL_PROMPT = `Act as a senior editorial writer with decades of experience at leading national and international newspapers, possessing deep academic expertise across politics, economics, international relations, public policy, and social issues.
+// Word-count anchors per the editorial desk spec. Headline/sub-headline/summary
+// are exact bands; deep_dive is a hard floor only ("at least 1500 words").
+const EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS = 4;
+const EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS = 6;
+const EDITORIAL_SUB_HEADLINE_MIN_WORDS = 10;
+const EDITORIAL_SUB_HEADLINE_MAX_WORDS = 14;
+const EDITORIAL_SUMMARY_MIN_WORDS = 100;
+const EDITORIAL_SUMMARY_MAX_WORDS = 200;
+const EDITORIAL_DEEP_DIVE_MIN_WORDS = 1500;
 
-Transform the given topic, brief, or raw inputs into a high-impact, publication-ready editorial article that reflects the intellectual depth, analytical rigor, and persuasive clarity of top-tier editorial pages.
+const EDITORIAL_CATEGORIES = [
+  "National Governance & Judiciary",
+  "Economy & Business",
+  "Environment & Climate",
+  "Public Security & Cyber Fraud",
+  "Science & Technology",
+  "Social Security & Labor",
+  "Education & Testing",
+  "Infrastructure",
+  "Agriculture",
+  "International Relations",
+];
 
-STRICT OUTPUT REQUIREMENTS:
-- Write the article in continuous flow without any section labels such as "Introduction", "Section 1", etc.
-- Do NOT use any symbol like "—" anywhere in the article.
-- The structure must feel natural, not visibly segmented by headings.
-- Only the main heading should appear at the top.
-- Everything else must be written as smooth, connected paragraphs.
-- Total word count must be between 1600 and 2100 words, ideal range 1700 to 1900 words.
-- Main heading length must be 10 to 18 words.
-- Begin with a powerful hook, establish the editorial stance early, and explain why the issue is urgent now.
-- Include strong argument development, background, historical context, realistic data, policy references, global comparisons, opposing viewpoints, rebuttal, policy implications, and societal impact.
-- Maintain credibility and factual integrity. Do not fabricate unrealistic claims.
-- Voice must be analytical, persuasive, authoritative, balanced, and intellectually honest.
-- End with a memorable and impactful closing line.
+const EDITORIAL_DISCOVERY_PROMPT = `You are the daily assignment editor for a national Hindi editorial desk.
 
-Return only valid JSON:
+TASK:
+1. Determine today's current date yourself (day, month, year) using your live search results. Do not assume or hardcode a date.
+2. Using real-time web search, identify exactly ${EDITORIAL_DAILY_LIMIT} major, distinct national issues in India that were reported or updated within the last 24 hours.
+3. Scan across these categories (cover as many distinct categories as the day's real news supports; do not force a story into a category it does not fit):
+${EDITORIAL_CATEGORIES.map((category) => `- ${category}`).join("\n")}
+
+For each issue, return:
+- "category": one of the category names above, verbatim.
+- "topic_title": a short English working title for internal use only (not published).
+- "brief": 3 to 5 sentences in English summarizing the verified facts: what happened, who is involved, when, and why it matters. Base this only on what your search actually finds.
+- "key_facts": an array of 3 to 6 short factual bullet strings (names, numbers, dates, institutions) drawn from the search results, used to ground later writing and prevent fabrication.
+
+Rules:
+- All ${EDITORIAL_DAILY_LIMIT} issues must be genuinely distinct stories, not the same story from different angles.
+- Prioritize high-impact, high-public-interest national issues over minor regional items.
+- Do not invent facts. If fewer than ${EDITORIAL_DAILY_LIMIT} sufficiently significant, verifiable stories exist today, return as many as you can verify rather than padding with fabricated ones.
+
+Return ONLY a JSON code block with this exact shape, no other text:
+\`\`\`json
 {
-  "title": "",
-  "article": "",
-  "summary": "",
-  "keywords": []
-}`;
+  "date": "YYYY-MM-DD",
+  "issues": [
+    { "category": "", "topic_title": "", "brief": "", "key_facts": ["", ""] }
+  ]
+}
+\`\`\``;
+
+const EDITORIAL_WRITER_SYSTEM_PROMPT = `You are a senior Hindi editorial writer for a national policy journal, producing analytical editorial packages on India's top current issues.
+
+Permanent rules:
+- Write only in Hindi (Devanagari). Return only valid JSON.
+- Base every fact strictly on the supplied topic brief and key facts. Do not invent names, numbers, dates, quotes, statistics or events beyond what is supplied.
+- You may add well-established general background, historical context, and standard policy/analytical framing that an informed editorial writer would know, provided it does not contradict or fabricate specifics about this particular story.
+- Maintain a neutral, authoritative, analytical editorial voice suitable for a serious policy journal. No clickbait, no sensationalism.
+- Carry proper nouns (people, institutions, places, schemes, laws) through consistently in standard Hindi newspaper spelling.
+
+JSON schema:
+{
+  "primary_headline": "",
+  "sub_headline": "",
+  "executive_summary": "",
+  "deep_dive": ""
+}
+
+Part-by-part requirements:
+- primary_headline: a standalone, meaningful Hindi headline, STRICTLY ${EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS} to ${EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS} words. No clickbait. Must reflect the core policy or event theme.
+- sub_headline: a standalone, meaningful Hindi sub-headline, STRICTLY ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} words, expanding directly on primary_headline with essential context or policy implications. Do not repeat primary_headline's wording.
+- executive_summary: a concise Hindi paragraph, STRICTLY ${EDITORIAL_SUMMARY_MIN_WORDS} to ${EDITORIAL_SUMMARY_MAX_WORDS} words, summarizing the core facts, background, key stakeholders, and immediate developments.
+- deep_dive: an exhaustive analytical Hindi editorial, a hard MINIMUM of ${EDITORIAL_DEEP_DIVE_MIN_WORDS} words (more is fine and encouraged; less is not acceptable). Structure it using markdown subheadings ("### ") covering, in order:
+  ### पृष्ठभूमि और संरचनात्मक संदर्भ
+  ### प्रमुख चुनौतियाँ और खामियाँ
+  ### हितधारकों पर प्रभाव और सामाजिक-आर्थिक निहितार्थ
+  ### नीतिगत सुझाव और आगे की राह
+  Each section must contain substantive analysis, context, stakeholder perspectives and, where relevant, realistic policy references — not filler text.
+- Do not repeat primary_headline, sub_headline or executive_summary verbatim inside deep_dive.`;
 
 let lastEditorialSyncAt = 0;
-
-function decodeXml(value) {
-  return String(value || "")
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, "\"")
-    .replace(/&#39;/gi, "'")
-    .replace(/&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractTag(itemXml, tagName) {
-  const escapedTag = String(tagName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = String(itemXml || "").match(new RegExp(`<${escapedTag}\\b[^>]*>([\\s\\S]*?)<\\/${escapedTag}>`, "i"));
-  return match ? decodeXml(match[1]) : "";
-}
-
-function extractRssItems(xml, limit) {
-  return Array.from(String(xml || "").matchAll(/<item\b[\s\S]*?<\/item>/gi))
-    .map((match) => {
-      const itemXml = match[0];
-      return {
-        title: extractTag(itemXml, "title"),
-        source_url: extractTag(itemXml, "link"),
-        description: extractTag(itemXml, "description"),
-        published_at: extractTag(itemXml, "pubDate"),
-      };
-    })
-    .filter((item) => item.title && item.source_url)
-    .slice(0, limit);
-}
-
-function cleanArticleText(value) {
-  return String(value || "")
-    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 12000);
-}
 
 function parseJsonResponse(rawText) {
   const text = String(rawText || "").trim();
@@ -87,145 +97,274 @@ function parseJsonResponse(rawText) {
 }
 
 function countWords(value) {
-  return String(value || "").split(/\s+/).filter(Boolean).length;
+  return String(value || "").trim().split(/\s+/).filter(Boolean).length;
 }
 
-async function fetchText(url, accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8") {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "GautamNewsBot/1.0 (+responsible RSS fetch; contact site owner if needed)",
-      Accept: accept,
-      "Accept-Language": "en-IN,en;q=0.9",
-      "Cache-Control": "no-cache",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
-  }
-
-  return response.text();
+function hasHindiText(value) {
+  return /[ऀ-ॿ]/.test(String(value || ""));
 }
 
-async function fetchArticleText(url, fallbackText) {
-  try {
-    const html = await fetchText(url);
-    const mainMatch = html.match(/<article\b[\s\S]*?<\/article>/i);
-    return cleanArticleText(mainMatch ? mainMatch[0] : html) || fallbackText;
-  } catch {
-    return fallbackText;
-  }
-}
-
-async function generateEditorialRewrite(item, articleText) {
+async function callGeminiGenerateContent({ prompt, tools = null, responseMimeType = null, temperature = 0.3, maxOutputTokens = 8000 }) {
   if (!GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY is not configured.");
   }
 
-  const prompt = `${EDITORIAL_PROMPT}
+  const generationConfig = { temperature, maxOutputTokens };
+  if (responseMimeType) {
+    generationConfig.responseMimeType = responseMimeType;
+  }
 
-RAW EDITORIAL INPUT
-Title: ${item.title}
-URL: ${item.source_url}
-Brief: ${item.description || ""}
-Raw article text: ${articleText || item.description || item.title}`;
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig,
+  };
+  if (tools) {
+    body.tools = tools;
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+  }
+
+  const rawText = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
+  return { rawText, payload };
+}
+
+// One grounded call per day discovers today's issues; forcing JSON response
+// mode is unreliable together with tool/grounding use, so this asks for a
+// fenced JSON block in plain text instead (parseJsonResponse already handles that).
+async function discoverTodayIssues() {
   let lastError = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const attemptPrompt = attempt === 0
-      ? prompt
-      : `${prompt}
+    try {
+      const prompt = attempt === 0
+        ? EDITORIAL_DISCOVERY_PROMPT
+        : `${EDITORIAL_DISCOVERY_PROMPT}
 
-The previous answer was too short. Rewrite again and ensure the article body alone is between 1600 and 2100 words, ideally 1700 to 1900 words.`;
+The previous attempt returned fewer than ${EDITORIAL_DAILY_LIMIT} usable issues. Try again and make sure to return exactly ${EDITORIAL_DAILY_LIMIT} distinct, verifiable issues if today's news supports it.`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: attemptPrompt }] }],
-          generationConfig: {
-            temperature: attempt === 0 ? 0.35 : 0.25,
-            maxOutputTokens: 12000,
-            responseMimeType: "application/json",
-          },
-        }),
+      const { rawText } = await callGeminiGenerateContent({
+        prompt,
+        tools: [{ google_search: {} }],
+        temperature: 0.4,
+        maxOutputTokens: 8000,
+      });
+
+      const parsed = parseJsonResponse(rawText);
+      const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
+      const usable = issues
+        .map((issue) => ({
+          category: String(issue?.category || "").trim() || "National Governance & Judiciary",
+          topic_title: String(issue?.topic_title || "").trim(),
+          brief: String(issue?.brief || "").trim(),
+          key_facts: Array.isArray(issue?.key_facts)
+            ? issue.key_facts.map((fact) => String(fact || "").trim()).filter(Boolean).slice(0, 6)
+            : [],
+        }))
+        .filter((issue) => issue.topic_title && issue.brief);
+
+      if (usable.length >= EDITORIAL_DAILY_LIMIT) {
+        return { date: String(parsed?.date || "").trim(), issues: usable.slice(0, EDITORIAL_DAILY_LIMIT) };
       }
-    );
-
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+      if (usable.length > 0 && attempt === 1) {
+        return { date: String(parsed?.date || "").trim(), issues: usable };
+      }
+      lastError = new Error(`Editorial discovery returned only ${usable.length} usable issues.`);
+    } catch (error) {
+      lastError = error;
     }
-
-    const rawResponse = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
-    const parsed = parseJsonResponse(rawResponse);
-    const article = String(parsed.article || "").replace(/[—–]/g, "-").trim();
-    const wordCount = countWords(article);
-    if (wordCount >= 1600 && wordCount <= 2100) {
-      return {
-        title: String(parsed.title || item.title).trim(),
-        article,
-        summary: String(parsed.summary || item.description || "").trim(),
-        keywords: Array.isArray(parsed.keywords) ? parsed.keywords.slice(0, 8) : [],
-        raw_response: rawResponse,
-      };
-    }
-
-    lastError = new Error(`Editorial word count ${wordCount} is outside the required 1600-2100 range.`);
   }
 
-  throw lastError || new Error("Editorial generation failed validation.");
+  throw lastError || new Error("Editorial discovery failed.");
+}
+
+function buildEditorialWriterPrompt(issue) {
+  return `${EDITORIAL_WRITER_SYSTEM_PROMPT}
+
+TOPIC
+Category: ${issue.category}
+Working title: ${issue.topic_title}
+Verified brief: ${issue.brief}
+Key facts:
+${issue.key_facts.length ? issue.key_facts.map((fact) => `- ${fact}`).join("\n") : "- (no additional facts supplied; rely on the brief only)"}`;
+}
+
+function inspectPartWordCount(value, minWords, maxWords) {
+  const words = countWords(value);
+  if (!value || !hasHindiText(value)) {
+    return { valid: false, reason: "missing_or_not_hindi", words };
+  }
+  if (words < minWords || words > maxWords) {
+    return { valid: false, reason: "word_count", words };
+  }
+  return { valid: true, reason: null, words };
+}
+
+function inspectDeepDive(value, minWords) {
+  const words = countWords(value);
+  if (!value || !hasHindiText(value)) {
+    return { valid: false, reason: "missing_or_not_hindi", words };
+  }
+  if (words < minWords) {
+    return { valid: false, reason: "too_short", words };
+  }
+  return { valid: true, reason: null, words };
+}
+
+function validateEditorialPackage(parsed) {
+  const invalidFields = [];
+  const details = {};
+  const primaryHeadline = String(parsed?.primary_headline || "").trim();
+  const subHeadline = String(parsed?.sub_headline || "").trim();
+  const executiveSummary = String(parsed?.executive_summary || "").trim();
+  const deepDive = String(parsed?.deep_dive || "").trim();
+
+  const bandChecks = [
+    ["primary_headline", primaryHeadline, EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS, EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS],
+    ["sub_headline", subHeadline, EDITORIAL_SUB_HEADLINE_MIN_WORDS, EDITORIAL_SUB_HEADLINE_MAX_WORDS],
+    ["executive_summary", executiveSummary, EDITORIAL_SUMMARY_MIN_WORDS, EDITORIAL_SUMMARY_MAX_WORDS],
+  ];
+  for (const [field, value, minWords, maxWords] of bandChecks) {
+    const check = inspectPartWordCount(value, minWords, maxWords);
+    if (!check.valid) {
+      invalidFields.push(field);
+      details[field] = { reason: check.reason, words: check.words, min: minWords, max: maxWords };
+    }
+  }
+
+  const deepDiveCheck = inspectDeepDive(deepDive, EDITORIAL_DEEP_DIVE_MIN_WORDS);
+  if (!deepDiveCheck.valid) {
+    invalidFields.push("deep_dive");
+    details.deep_dive = { reason: deepDiveCheck.reason, words: deepDiveCheck.words, min: EDITORIAL_DEEP_DIVE_MIN_WORDS };
+  }
+
+  if (invalidFields.length) {
+    const error = new Error(`Editorial package failed validation: ${invalidFields.join(", ")}.`);
+    error.invalidFields = invalidFields;
+    error.validationDetails = details;
+    throw error;
+  }
+
+  return {
+    primary_headline: primaryHeadline,
+    sub_headline: subHeadline,
+    executive_summary: executiveSummary,
+    deep_dive: deepDive,
+    deep_dive_word_count: deepDiveCheck.words,
+  };
+}
+
+async function repairEditorialPackage(issue, payload, invalidFields) {
+  const fieldSpecs = {
+    primary_headline: `STRICT ${EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS} to ${EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS} Hindi words, standalone and meaningful.`,
+    sub_headline: `STRICT ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} Hindi words, expanding on the primary headline.`,
+    executive_summary: `STRICT ${EDITORIAL_SUMMARY_MIN_WORDS} to ${EDITORIAL_SUMMARY_MAX_WORDS} Hindi words.`,
+    deep_dive: `a hard MINIMUM of ${EDITORIAL_DEEP_DIVE_MIN_WORDS} Hindi words with the same four markdown subheadings as before; more is fine, less is not acceptable.`,
+  };
+
+  const repairPrompt = `${buildEditorialWriterPrompt(issue)}
+
+REPAIR MODE
+The following fields failed validation and must be replaced. Return ONLY a JSON object containing just these keys, with corrected values: ${invalidFields.join(", ")}.
+${invalidFields.map((field) => `- ${field}: ${fieldSpecs[field] || "regenerate this field to meet the schema above."}`).join("\n")}`;
+
+  const { rawText } = await callGeminiGenerateContent({
+    prompt: repairPrompt,
+    responseMimeType: "application/json",
+    temperature: 0.25,
+    maxOutputTokens: 8000,
+  });
+
+  const patch = parseJsonResponse(rawText);
+  return { ...payload, ...patch };
+}
+
+async function generateEditorialPackage(issue) {
+  const { rawText } = await callGeminiGenerateContent({
+    prompt: buildEditorialWriterPrompt(issue),
+    responseMimeType: "application/json",
+    temperature: 0.35,
+    maxOutputTokens: 12000,
+  });
+
+  let workingPayload = parseJsonResponse(rawText);
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= EDITORIAL_MAX_REPAIR_ATTEMPTS; attempt += 1) {
+    try {
+      return validateEditorialPackage(workingPayload);
+    } catch (error) {
+      lastError = error;
+      if (attempt === EDITORIAL_MAX_REPAIR_ATTEMPTS) {
+        break;
+      }
+      workingPayload = await repairEditorialPackage(issue, workingPayload, error.invalidFields);
+    }
+  }
+
+  throw lastError;
 }
 
 async function initializeEditorialStorage(dbPool) {
   if (dbPool.dialect === "postgres") {
     await dbPool.query(`
-      CREATE TABLE IF NOT EXISTS editorial_articles (
+      CREATE TABLE IF NOT EXISTS editorial_packages (
         id BIGSERIAL PRIMARY KEY,
-        source_url TEXT NOT NULL UNIQUE,
-        source_title TEXT,
-        source_excerpt TEXT,
-        title TEXT,
-        article TEXT,
-        summary TEXT,
-        keywords_json TEXT,
+        run_date DATE NOT NULL,
+        category VARCHAR(100),
+        topic_title TEXT,
+        primary_headline TEXT,
+        sub_headline TEXT,
+        executive_summary TEXT,
+        deep_dive TEXT,
+        deep_dive_word_count INT,
         raw_response TEXT,
-        source_name VARCHAR(100) NOT NULL DEFAULT 'the-hindu-editorial',
-        fetched_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await dbPool.query("CREATE INDEX IF NOT EXISTS idx_editorial_packages_run_date ON editorial_packages (run_date)");
   } else {
     await dbPool.query(`
-      CREATE TABLE IF NOT EXISTS editorial_articles (
+      CREATE TABLE IF NOT EXISTS editorial_packages (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        source_url TEXT NOT NULL,
-        source_title TEXT,
-        source_excerpt MEDIUMTEXT,
-        title TEXT,
-        article LONGTEXT,
-        summary MEDIUMTEXT,
-        keywords_json TEXT,
+        run_date DATE NOT NULL,
+        category VARCHAR(100),
+        topic_title TEXT,
+        primary_headline TEXT,
+        sub_headline TEXT,
+        executive_summary MEDIUMTEXT,
+        deep_dive LONGTEXT,
+        deep_dive_word_count INT,
         raw_response LONGTEXT,
-        source_name VARCHAR(100) NOT NULL DEFAULT 'the-hindu-editorial',
-        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY unique_editorial_source_url (source_url(191))
+        INDEX idx_editorial_packages_run_date (run_date)
       )
     `);
   }
 }
 
-async function countEditorialsToday(dbPool) {
-  const [rows] = await dbPool.query(`
-    SELECT COUNT(*) AS total
-    FROM editorial_articles
-    WHERE DATE(created_at) = CURRENT_DATE
-  `);
+function todayDateString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function countEditorialsForDate(dbPool, dateStr) {
+  const [rows] = await dbPool.query(
+    "SELECT COUNT(*) AS total FROM editorial_packages WHERE run_date = ?",
+    [dateStr]
+  );
   return Number(rows[0]?.total || 0);
 }
 
@@ -234,7 +373,7 @@ async function listEditorials(dbPool, { limit = 15 } = {}) {
   const [rows] = await dbPool.query(
     `
       SELECT *
-      FROM editorial_articles
+      FROM editorial_packages
       ORDER BY created_at DESC, id DESC
       LIMIT ?
     `,
@@ -243,21 +382,14 @@ async function listEditorials(dbPool, { limit = 15 } = {}) {
 
   return rows.map((row) => ({
     id: row.id,
-    category: "editorial",
-    title: row.title || row.source_title,
-    source_url: row.source_url,
-    summary: row.summary || row.source_excerpt,
-    article: row.article || "",
-    keywords: (() => {
-      try {
-        const parsed = JSON.parse(row.keywords_json || "[]");
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    })(),
-    source_name: row.source_name,
-    fetched_at: row.fetched_at,
+    category: row.category || "Editorial",
+    title: row.primary_headline,
+    secondary_headline: row.sub_headline,
+    summary: row.executive_summary,
+    article: row.deep_dive,
+    state: row.category || "",
+    subheadings: [],
+    fetched_at: row.created_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }));
@@ -268,117 +400,97 @@ async function syncEditorials(dbPool, { limit = EDITORIAL_DAILY_LIMIT, force = f
   if (!force && now - lastEditorialSyncAt < EDITORIAL_MIN_SYNC_INTERVAL_MS) {
     return {
       status: "Skipped",
-      message: "Editorial RSS sync is throttled to avoid hitting the source too often.",
+      message: "Editorial sync is throttled to avoid excessive Gemini calls.",
       saved_count: 0,
       skipped_count: 0,
       failed_count: 0,
     };
   }
+  lastEditorialSyncAt = now;
 
-  const alreadyToday = await countEditorialsToday(dbPool);
-  const remainingToday = force ? EDITORIAL_DAILY_LIMIT : Math.max(0, EDITORIAL_DAILY_LIMIT - alreadyToday);
-  if (remainingToday <= 0) {
+  const safeLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || EDITORIAL_DAILY_LIMIT, EDITORIAL_DAILY_LIMIT));
+  const runDate = todayDateString();
+  const existingCount = await countEditorialsForDate(dbPool, runDate);
+  if (!force && existingCount >= safeLimit) {
     return {
       status: "Skipped",
-      message: `Daily editorial limit reached (${EDITORIAL_DAILY_LIMIT}).`,
+      message: `Today's editorial packages already exist (${existingCount}).`,
+      run_date: runDate,
+      already_today: existingCount,
       saved_count: 0,
       skipped_count: 0,
       failed_count: 0,
-      daily_limit: EDITORIAL_DAILY_LIMIT,
-      already_today: alreadyToday,
     };
   }
 
-  lastEditorialSyncAt = now;
-  const requested = Math.min(Math.max(1, Number.parseInt(limit, 10) || remainingToday), remainingToday);
-  const xml = await fetchText(EDITORIAL_RSS_URL, "application/rss+xml, application/xml, text/xml;q=0.9,*/*;q=0.8");
-  const items = extractRssItems(xml, Math.max(requested * 10, requested + 10));
+  let discovery;
+  try {
+    discovery = await discoverTodayIssues();
+  } catch (error) {
+    return {
+      status: "Error",
+      message: `Editorial discovery failed: ${error.message}`,
+      run_date: runDate,
+      saved_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+    };
+  }
+
+  const issuesToWrite = discovery.issues.slice(0, safeLimit);
   const results = [];
 
-  for (const item of items) {
-    if (results.filter((result) => result.status === "Success").length >= requested) {
-      break;
-    }
-
+  for (const issue of issuesToWrite) {
     try {
-      const [existingRows] = await dbPool.query("SELECT id FROM editorial_articles WHERE source_url = ? LIMIT 1", [item.source_url]);
-      if (existingRows.length && !force) {
-        results.push({ status: "Skipped", source_url: item.source_url, title: item.title, message: "Already saved." });
-        continue;
-      }
-
-      const articleText = await fetchArticleText(item.source_url, item.description);
-      const rewrite = await generateEditorialRewrite(item, articleText);
-      let insertResult;
-      if (existingRows.length && force) {
-        [insertResult] = await dbPool.execute(
+      const built = await generateEditorialPackage(issue);
+      const [insertResult] = await dbPool.execute(
+        dbPool.dialect === "postgres"
+          ? `
+            INSERT INTO editorial_packages (
+              run_date, category, topic_title, primary_headline, sub_headline, executive_summary, deep_dive, deep_dive_word_count, raw_response
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
           `
-            UPDATE editorial_articles
-            SET source_title = ?, source_excerpt = ?, title = ?, article = ?, summary = ?, keywords_json = ?, raw_response = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE source_url = ?
+          : `
+            INSERT INTO editorial_packages (
+              run_date, category, topic_title, primary_headline, sub_headline, executive_summary, deep_dive, deep_dive_word_count, raw_response
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
-          [
-            item.title,
-            articleText.slice(0, 4000),
-            rewrite.title,
-            rewrite.article,
-            rewrite.summary,
-            JSON.stringify(rewrite.keywords),
-            rewrite.raw_response,
-            item.source_url,
-          ]
-        );
-      } else {
-        [insertResult] = await dbPool.execute(
-          dbPool.dialect === "postgres"
-            ? `
-              INSERT INTO editorial_articles (
-                source_url, source_title, source_excerpt, title, article, summary, keywords_json, raw_response
-              )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT (source_url) DO NOTHING
-              RETURNING id
-            `
-            : `
-              INSERT IGNORE INTO editorial_articles (
-                source_url, source_title, source_excerpt, title, article, summary, keywords_json, raw_response
-              )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `,
-          [
-            item.source_url,
-            item.title,
-            articleText.slice(0, 4000),
-            rewrite.title,
-            rewrite.article,
-            rewrite.summary,
-            JSON.stringify(rewrite.keywords),
-            rewrite.raw_response,
-          ]
-        );
-      }
+        [
+          runDate,
+          issue.category,
+          issue.topic_title,
+          built.primary_headline,
+          built.sub_headline,
+          built.executive_summary,
+          built.deep_dive,
+          built.deep_dive_word_count,
+          JSON.stringify(built),
+        ]
+      );
 
       results.push({
-        status: existingRows.length && force ? "Updated" : "Success",
+        status: "Success",
         id: insertResult.insertId || insertResult.rows?.[0]?.id || null,
-        source_url: item.source_url,
-        title: rewrite.title,
-        word_count: countWords(rewrite.article),
+        category: issue.category,
+        title: built.primary_headline,
+        word_count: built.deep_dive_word_count,
       });
     } catch (error) {
-      results.push({ status: "Error", source_url: item.source_url, title: item.title, message: error.message });
+      results.push({ status: "Error", category: issue.category, title: issue.topic_title, message: error.message });
     }
   }
 
   return {
-    status: results.some((item) => item.status === "Success" || item.status === "Updated") ? "Success" : "Skipped",
-    feed_url: EDITORIAL_RSS_URL,
-    daily_limit: EDITORIAL_DAILY_LIMIT,
-    already_today: alreadyToday,
-    requested,
-    saved_count: results.filter((item) => item.status === "Success" || item.status === "Updated").length,
-    skipped_count: results.filter((item) => item.status === "Skipped").length,
-    failed_count: results.filter((item) => item.status === "Error").length,
+    status: results.some((result) => result.status === "Success") ? "Success" : "Error",
+    run_date: runDate,
+    requested: issuesToWrite.length,
+    already_today: existingCount,
+    saved_count: results.filter((result) => result.status === "Success").length,
+    skipped_count: 0,
+    failed_count: results.filter((result) => result.status === "Error").length,
     results,
   };
 }
@@ -388,4 +500,16 @@ module.exports = {
   initializeEditorialStorage,
   listEditorials,
   syncEditorials,
+  __test: {
+    discoverTodayIssues,
+    generateEditorialPackage,
+    repairEditorialPackage,
+    validateEditorialPackage,
+    inspectPartWordCount,
+    inspectDeepDive,
+    parseJsonResponse,
+    countWords,
+    callGeminiGenerateContent,
+    buildEditorialWriterPrompt,
+  },
 };
