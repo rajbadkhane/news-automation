@@ -4782,7 +4782,7 @@ function getSchedulerPaceBudget(now = new Date()) {
   return Math.max(0, Math.min(DAILY_NEWS_FETCH_LIMIT, Math.floor((DAILY_NEWS_FETCH_LIMIT * elapsedWeight) / totalWeight)));
 }
 
-async function countSavedNewsInSchedulerWindow(now = new Date()) {
+async function countSavedNewsInSchedulerWindow(now = new Date(), { excludeMpInfoDistricts = false } = {}) {
   if (!dbPool) {
     return 0;
   }
@@ -4794,6 +4794,7 @@ async function countSavedNewsInSchedulerWindow(now = new Date()) {
       FROM fetched_news
       WHERE fetched_at >= ?
         AND fetched_at < ?
+        ${excludeMpInfoDistricts ? "AND feed_source NOT LIKE 'mpinfo-%'" : ""}
     `,
     [startAt, endAt]
   );
@@ -4801,7 +4802,18 @@ async function countSavedNewsInSchedulerWindow(now = new Date()) {
 }
 
 async function getDailyNewsQuota(now = new Date()) {
+  // The MP Info district crawler has its own independent rate limit
+  // (MPINFO_DISTRICT_SCHEDULER_LIMIT per MPINFO_DISTRICT_SCHEDULER_INTERVAL_MS) and
+  // does not go through the paced category-fetch path at all, so it should not
+  // consume the pacing budget meant for google-rss/dd. Otherwise, once MP Info is
+  // producing normally, it silently starves the other two sources: it can save up
+  // to 24 articles every 30 minutes, which alone exceeds a pace budget sized for
+  // google-rss/dd's historical throughput, so every subsequent google-rss/dd tick
+  // sees paceRemaining <= 0 and skips even though those two sources are nowhere
+  // near their own share of the budget. The DAILY_NEWS_FETCH_LIMIT hard cap still
+  // counts every source, since that ceiling is a genuine total-volume safety valve.
   const savedCount = await countSavedNewsInSchedulerWindow(now);
+  const paceSavedCount = await countSavedNewsInSchedulerWindow(now, { excludeMpInfoDistricts: true });
   const paceBudget = getSchedulerPaceBudget(now);
   const { startAt, endAt } = getSchedulerDailyWindow(now);
 
@@ -4810,7 +4822,8 @@ async function getDailyNewsQuota(now = new Date()) {
     savedCount,
     remaining: Math.max(0, DAILY_NEWS_FETCH_LIMIT - savedCount),
     paceBudget,
-    paceRemaining: Math.max(0, paceBudget - savedCount),
+    paceSavedCount,
+    paceRemaining: Math.max(0, paceBudget - paceSavedCount),
     windowStart: startAt.toISOString(),
     windowEnd: endAt.toISOString(),
     timezone: INDIA_TIMEZONE,
@@ -7770,7 +7783,7 @@ async function runScheduledCategoryFetchUnlocked(category, options = {}) {
         {
           status: "Skipped",
           category,
-          message: `Scheduler is pacing the daily limit (${quota.savedCount}/${quota.paceBudget} allowed so far).`,
+          message: `Scheduler is pacing the daily limit (${quota.paceSavedCount}/${quota.paceBudget} allowed so far).`,
         },
       ],
       daily_quota: quota,
