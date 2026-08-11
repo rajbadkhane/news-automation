@@ -4990,6 +4990,7 @@ function applyEnglishTranslationCache(rewrite, translation) {
       long_500: english.long_description,
       provider: translation.provider || AI_TRANSLATION_PROVIDER,
       translated_at: translation.updated_at || translation.created_at || null,
+      source: "GE News Hub report",
     },
   };
 }
@@ -5277,6 +5278,28 @@ function formatDeliveredRewrite(record, language = "both") {
   };
 
   if (language === "english" || language === "hindi") {
+    if (language === "english") {
+      const {
+        ui_hindi: _uiHindi,
+        raw_articles_by_language: _rawArticlesByLanguage,
+        ...englishOnlyPayload
+      } = payload;
+      return {
+        ...englishOnlyPayload,
+        source: {
+          ...(englishOnlyPayload.source || {}),
+          title: formatted.english?.headline || englishOnlyPayload.source?.title || null,
+        },
+        ui_english: {
+          ...(englishOnlyPayload.ui_english || {}),
+          state: deliveryCategory,
+          source: englishOnlyPayload.ui_english?.source || "GE News Hub report",
+        },
+        language,
+        article: formatted.english,
+      };
+    }
+
     return {
       ...payload,
       language,
