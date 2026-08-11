@@ -617,6 +617,7 @@ async function initializeAiRewriteStorage(dbPool) {
         language VARCHAR(20) NOT NULL,
         title TEXT,
         secondary_headline TEXT,
+        subheadings_json TEXT,
         place_name TEXT,
         state TEXT,
         district TEXT,
@@ -692,6 +693,7 @@ async function initializeAiRewriteStorage(dbPool) {
         language VARCHAR(20) NOT NULL,
         title TEXT,
         secondary_headline TEXT,
+        subheadings_json TEXT,
         place_name TEXT,
         state TEXT,
         district TEXT,
@@ -729,6 +731,7 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_translation_cache ADD COLUMN place_name TEXT",
         "ALTER TABLE ai_news_translation_cache ADD COLUMN state TEXT",
         "ALTER TABLE ai_news_translation_cache ADD COLUMN district TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN subheadings_json TEXT",
         "CREATE UNIQUE INDEX unique_delivery_slug ON ai_news_rewrites (delivery_slug)",
         "CREATE INDEX IF NOT EXISTS idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
         "CREATE INDEX IF NOT EXISTS idx_rewrites_published_at ON ai_news_rewrites (published_at)",
@@ -756,6 +759,7 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_translation_cache ADD COLUMN place_name TEXT",
         "ALTER TABLE ai_news_translation_cache ADD COLUMN state TEXT",
         "ALTER TABLE ai_news_translation_cache ADD COLUMN district TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN subheadings_json TEXT",
         "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
         "CREATE INDEX idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
         "CREATE INDEX idx_rewrites_published_at ON ai_news_rewrites (published_at)",
@@ -4703,6 +4707,9 @@ function buildHindiTranslationSource(rewrite) {
   return {
     title: uiHindi.title || rewrite?.hindi?.headline || "",
     secondary_headline: uiHindi.secondary_headline || rewrite?.hindi?.secondary_headline || "",
+    subheadings: Array.isArray(uiHindi.subheadings) && uiHindi.subheadings.length
+      ? uiHindi.subheadings
+      : Array.isArray(rewrite?.hindi?.top_summary) ? rewrite.hindi.top_summary : [],
     place_name: uiHindi.place_name || "",
     state: uiHindi.state || "",
     district: uiHindi.district || uiHindi.district_name || "",
@@ -4867,6 +4874,9 @@ async function translateHindiRewriteToEnglish(source) {
   return {
     title: await translateTextToEnglish(source.title),
     secondary_headline: await translateTextToEnglish(source.secondary_headline),
+    subheadings: Array.isArray(source.subheadings)
+      ? await mapWithConcurrency(source.subheadings, 2, (subheading) => translateTextToEnglish(subheading))
+      : [],
     place_name: await translateTextToEnglish(source.place_name),
     state: await translateTextToEnglish(source.state),
     district: await translateTextToEnglish(source.district),
@@ -4900,6 +4910,7 @@ async function saveAiTranslationCache(dbPool, rewriteId, translation, provider =
     "english",
     translation.title || null,
     translation.secondary_headline || null,
+    JSON.stringify(Array.isArray(translation.subheadings) ? translation.subheadings : []),
     translation.place_name || null,
     translation.state || null,
     translation.district || null,
@@ -4914,13 +4925,14 @@ async function saveAiTranslationCache(dbPool, rewriteId, translation, provider =
     await dbPool.execute(
       `
         INSERT INTO ai_news_translation_cache (
-          rewrite_id, language, title, secondary_headline, place_name, state, district, image_caption, short_100, medium_300, long_500, provider
+          rewrite_id, language, title, secondary_headline, subheadings_json, place_name, state, district, image_caption, short_100, medium_300, long_500, provider
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (rewrite_id, language)
         DO UPDATE SET
           title = EXCLUDED.title,
           secondary_headline = EXCLUDED.secondary_headline,
+          subheadings_json = EXCLUDED.subheadings_json,
           place_name = EXCLUDED.place_name,
           state = EXCLUDED.state,
           district = EXCLUDED.district,
@@ -4937,12 +4949,13 @@ async function saveAiTranslationCache(dbPool, rewriteId, translation, provider =
     await dbPool.execute(
       `
         INSERT INTO ai_news_translation_cache (
-          rewrite_id, language, title, secondary_headline, place_name, state, district, image_caption, short_100, medium_300, long_500, provider
+          rewrite_id, language, title, secondary_headline, subheadings_json, place_name, state, district, image_caption, short_100, medium_300, long_500, provider
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
           title = VALUES(title),
           secondary_headline = VALUES(secondary_headline),
+          subheadings_json = VALUES(subheadings_json),
           place_name = VALUES(place_name),
           state = VALUES(state),
           district = VALUES(district),
@@ -4968,6 +4981,7 @@ async function ensureEnglishTranslationForRewrite(dbPool, rewrite) {
   const existing = await findAiTranslationCache(dbPool, rewrite.id, "english");
   if (
     hasUsefulEnglishTranslation(existing) &&
+    (existing.subheadings_json || !Array.isArray(rewrite.ui_hindi?.subheadings) || !rewrite.ui_hindi.subheadings.length) &&
     (existing.place_name || !rewrite.ui_hindi?.place_name) &&
     (existing.state || !rewrite.ui_hindi?.state) &&
     (existing.district || (!rewrite.ui_hindi?.district && !rewrite.ui_hindi?.district_name))
@@ -4984,6 +4998,9 @@ async function ensureEnglishTranslationForRewrite(dbPool, rewrite) {
     const translated = hasUsefulEnglishTranslation(existing)
       ? {
           ...existing,
+          subheadings: Array.isArray(source.subheadings)
+            ? await mapWithConcurrency(source.subheadings, 2, (subheading) => translateTextToEnglish(subheading))
+            : [],
           place_name: await translateTextToEnglish(source.place_name),
           state: await translateTextToEnglish(source.state),
           district: await translateTextToEnglish(source.district),
@@ -5010,7 +5027,17 @@ function applyEnglishTranslationCache(rewrite, translation) {
   const english = {
     headline: cleanGeneratedText(translation.title),
     secondary_headline: cleanGeneratedText(translation.secondary_headline),
-    top_summary: rewrite.english?.top_summary || [],
+    top_summary: (() => {
+      if (Array.isArray(translation.subheadings)) {
+        return translation.subheadings.map(cleanGeneratedText).filter(Boolean);
+      }
+      try {
+        const parsed = JSON.parse(translation.subheadings_json || "[]");
+        return Array.isArray(parsed) ? parsed.map(cleanGeneratedText).filter(Boolean) : [];
+      } catch {
+        return rewrite.english?.top_summary || [];
+      }
+    })(),
     short_description: cleanGeneratedText(translation.short_100),
     long_description: cleanGeneratedText(translation.long_500),
     what_to_watch_next: AI_MEDIUM_REWRITE_ENABLED ? cleanGeneratedText(translation.medium_300) : "",
@@ -5023,6 +5050,7 @@ function applyEnglishTranslationCache(rewrite, translation) {
       ...(rewrite.ui_english || {}),
       title: english.headline,
       secondary_headline: english.secondary_headline,
+      subheadings: english.top_summary,
       image_caption: cleanGeneratedText(translation.image_caption),
       place_name: cleanGeneratedText(translation.place_name),
       state: cleanGeneratedText(translation.state),
@@ -5331,10 +5359,17 @@ function formatDeliveredRewrite(record, language = "both") {
         ...englishOnlyPayload,
         title: uiEnglish.title || formatted.english?.headline || "",
         secondary_headline: uiEnglish.secondary_headline || formatted.english?.secondary_headline || "",
+        subheadings: Array.isArray(uiEnglish.subheadings) ? uiEnglish.subheadings : [],
+        image_link: deliveredImageUrl || "",
+        image_source: deliveredImageUrl ? formatted.news?.image_source || null : null,
         image_caption: uiEnglish.image_caption || "",
         place_name: uiEnglish.place_name || formatted.ui_hindi?.place_name || "",
         state: uiEnglish.state || deliveryCategory,
         district: uiEnglish.district || formatted.ui_hindi?.district || formatted.ui_hindi?.district_name || "",
+        uploaded: formatted.news?.fetched_at || englishOnlyPayload.published_at || englishOnlyPayload.updated_at || null,
+        fetched_at: formatted.news?.fetched_at || null,
+        feed_source: formatted.news?.feed_source || null,
+        feed_url: formatted.news?.feed_url || null,
         short_100: uiEnglish.short_100 || englishRawArticles.words_100 || "",
         medium_300: uiEnglish.medium_300 || englishRawArticles.words_300 || "",
         long_500: uiEnglish.long_500 || englishRawArticles.words_1000 || "",
@@ -5344,6 +5379,7 @@ function formatDeliveredRewrite(record, language = "both") {
         },
         ui_english: {
           ...uiEnglish,
+          subheadings: Array.isArray(uiEnglish.subheadings) ? uiEnglish.subheadings : [],
           state: deliveryCategory,
           place_name: uiEnglish.place_name || formatted.ui_hindi?.place_name || "",
           district: uiEnglish.district || formatted.ui_hindi?.district || formatted.ui_hindi?.district_name || "",
