@@ -5280,7 +5280,7 @@ function formatDeliveredRewrite(record, language = "both") {
 
   const deliveredImageUrl = isLikelyValidImageUrl(formatted.news?.image_link)
     ? formatted.news.image_link
-    : "";
+    : null;
   const deliveryCategory = formatted.ui_hindi?.category
     ? normalizeAiCategoryForDisplay(formatted.ui_hindi.category)
     : chooseSmartNewsCategory({
@@ -5360,7 +5360,7 @@ function formatDeliveredRewrite(record, language = "both") {
         title: uiEnglish.title || formatted.english?.headline || "",
         secondary_headline: uiEnglish.secondary_headline || formatted.english?.secondary_headline || "",
         subheadings: Array.isArray(uiEnglish.subheadings) ? uiEnglish.subheadings : [],
-        image_link: deliveredImageUrl || "",
+        image_link: deliveredImageUrl,
         image_source: deliveredImageUrl ? formatted.news?.image_source || null : null,
         image_caption: uiEnglish.image_caption || "",
         place_name: uiEnglish.place_name || formatted.ui_hindi?.place_name || "",
