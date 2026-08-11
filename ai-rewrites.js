@@ -1,35 +1,37 @@
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_FREE_API_KEY = String(process.env.GEMINI_FREE_API_KEY || "").trim();
+const GEMINI_PAID_API_KEY = String(process.env.GEMINI_PAID_API_KEY || process.env.GEMINI_API_KEY || "").trim();
+const GEMINI_API_KEY = GEMINI_FREE_API_KEY || GEMINI_PAID_API_KEY;
 const GEMINI_MODEL = String(process.env.GEMINI_MODEL || "gemini-flash-lite-latest").trim() || "gemini-flash-lite-latest";
 const GEMINI_API_URL = process.env.GEMINI_API_URL
   || "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 const {
   normalizeCategory: normalizeUnifiedCategory,
 } = require("./config/news-categories");
-const AI_PROMPT_VERSION = "hindi-only-v12-1300-1500-words";
+const AI_PROMPT_VERSION = "hindi-only-v13-1000-1100-words";
 const AI_REWRITE_MODE = String(process.env.AI_REWRITE_MODE || "hindi-only").trim().toLowerCase();
 const AI_REWRITE_MODES = Object.freeze({
   HINDI_ONLY: "hindi-only",
   BILINGUAL_COMPACT: "bilingual-compact",
   HINDI_LEGACY: "hindi-legacy",
 });
-// Word-count anchors are hard floors: short >= 300, medium >= 600, long >= 1300.
+// Word-count anchors are hard floors: short >= 300, medium >= 600, long >= 1000.
 // Overage is fine ("or more"); undershoot is not. Field names (body100/body300/
 // body1000, short_100/medium_300/long_500) are kept for DB/API compatibility
 // even though their actual floors moved.
-const AI_LONG_REWRITE_MIN_WORDS = 1300;
-const AI_LONG_REWRITE_MAX_WORDS = 1500;
+const AI_LONG_REWRITE_MIN_WORDS = 1000;
+const AI_LONG_REWRITE_MAX_WORDS = 1100;
 const AI_LEAD_BODY_MIN_WORDS = 300;
 const AI_LEAD_BODY_MAX_WORDS = 340;
 const AI_EXTENSION_200_MIN_WORDS = 300;
 const AI_EXTENSION_200_MAX_WORDS = 340;
-const AI_EXTENSION_700_MIN_WORDS = 500;
-const AI_EXTENSION_700_MAX_WORDS = 650;
+const AI_EXTENSION_700_MIN_WORDS = 400;
+const AI_EXTENSION_700_MAX_WORDS = 500;
 const AI_LEAD_BODY_ACCEPT_MIN_WORDS = 300;
 const AI_LEAD_BODY_ACCEPT_MAX_WORDS = 420;
 const AI_EXTENSION_200_ACCEPT_MIN_WORDS = 300;
 const AI_EXTENSION_200_ACCEPT_MAX_WORDS = 420;
-const AI_EXTENSION_700_ACCEPT_MIN_WORDS = 450;
-const AI_EXTENSION_700_ACCEPT_MAX_WORDS = 750;
+const AI_EXTENSION_700_ACCEPT_MIN_WORDS = 350;
+const AI_EXTENSION_700_ACCEPT_MAX_WORDS = 550;
 const AI_BODY_100_MIN_WORDS = 300;
 const AI_BODY_100_MAX_WORDS = 340;
 const AI_BODY_300_MIN_WORDS = 600;
@@ -41,6 +43,13 @@ const AI_BODY_300_EMERGENCY_MAX_WORDS = 720;
 const AI_MIN_SOURCE_WORDS_FOR_LONG_REWRITE = 80;
 const AI_MIN_SOURCE_FACT_TOKENS = 4;
 const AI_HINDI_ONLY_MAX_REPAIR_ATTEMPTS = 2;
+const AI_MEDIUM_REWRITE_ENABLED = String(process.env.AI_MEDIUM_REWRITE_ENABLED || "true").toLowerCase() !== "false";
+const AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE = Math.max(
+  1,
+  Number.parseInt(process.env.AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE || "4", 10) || 4
+);
+const geminiCallsByArticleId = new Map();
+let geminiFreeKeyUnavailableUntil = 0;
 // Secondary headline is "<2-3 keywords> : <headline>", counted as a whole:
 // the keywords are part of the 10-14 word budget, not additional to it.
 const AI_SECONDARY_HEADLINE_MIN_WORDS = 10;
@@ -332,10 +341,10 @@ Size rules:
 - Segment names describe editorial progression, not exact independent word-count contracts.
 - lead_100 must be at least 300 body words, ideally 300 to 340. It will become the 300-word version; never write less than 300.
 - extension_200 must add at least 300 more body words, ideally 300 to 340. lead_100 + extension_200 must total at least 600 words; never write a combined total under 600.
-- extension_700 must add at least 500 more supported body words, ideally 500 to 650.
-- lead_100 + extension_200 + extension_700 must total at least 1100 body words in each language, ideally 1100 to 1300. Going over 1100 is good; going under is a failure.
-- Never stop the progressive stream around 300, 600 or 900 words when the supplied source has enough verified material to comfortably clear 1100 words.
-- This is a hard output contract: each language must contain enough body text for the cumulative stream to validate at a minimum of 1100 body words. When in doubt, write more, not less.
+- extension_700 must add at least ${AI_EXTENSION_700_MIN_WORDS} more supported body words, ideally ${AI_EXTENSION_700_MIN_WORDS} to ${AI_EXTENSION_700_MAX_WORDS}.
+- lead_100 + extension_200 + extension_700 must total ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} body words in each language. Going under ${AI_LONG_REWRITE_MIN_WORDS} or over ${AI_LONG_REWRITE_MAX_WORDS} is a failure.
+- Never stop the progressive stream around 300 or 600 words when the supplied source has enough verified material to comfortably reach ${AI_LONG_REWRITE_MIN_WORDS} words.
+- This is a hard output contract: each language must contain enough body text for the cumulative stream to validate at ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} body words.
 - For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
 - Keep sentences complete and reasonably short so the application can trim at sentence boundaries at or just above 300, 600 and 1100 words.
 - The application will assemble the compatibility fields short_100/medium_300/long_500 cumulatively as 300+/600+/1100+-word versions from the progressive stream.
@@ -458,7 +467,7 @@ Size rules:
 - body is a hard MINIMUM of ${AI_LONG_REWRITE_MIN_WORDS} Hindi words. Reaching more is fine and encouraged (up to about ${AI_LONG_REWRITE_MAX_WORDS} words); reaching less is not acceptable.
 - Write body as one continuous, complete, publishable Hindi news article in a single field — not a summary, not bullet points, not multiple segments.
 - Keep sentences complete so the application can trim body at sentence boundaries to derive 300-word, 600-word and ${AI_LONG_REWRITE_MIN_WORDS}-word publishable versions from this SAME text (each shorter version is the opening portion of the longer one).
-- Never stop writing around 300, 600 or 1000 words; continue until the article comfortably clears ${AI_LONG_REWRITE_MIN_WORDS} words when the supplied source has enough verified material.
+- Never stop writing around 300 or 600 words; continue until the article comfortably reaches ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} words when the supplied source has enough verified material.
 - This is a hard output contract: if body is under ${AI_LONG_REWRITE_MIN_WORDS} words the response will be rejected and you will be asked to add more. When in doubt, write more, not less.
 - For long bodies, write a detailed full news article from the verified source material rather than a compact summary.
 - Do not repeat the headline, secondary heading, subheadings or caption inside body.
@@ -536,6 +545,16 @@ const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
 const AI_REWRITE_ENABLED = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_ENABLED || "true").toLowerCase()
 );
+const AI_ENGLISH_TRANSLATION_ENABLED = !["false", "0", "no"].includes(
+  String(process.env.AI_ENGLISH_TRANSLATION_ENABLED || "true").toLowerCase()
+);
+const AI_TRANSLATION_PROVIDER = String(process.env.AI_TRANSLATION_PROVIDER || "google-translate").trim().toLowerCase();
+const LIBRETRANSLATE_URL = String(process.env.LIBRETRANSLATE_URL || "http://127.0.0.1:5000").trim().replace(/\/+$/, "");
+const LIBRETRANSLATE_API_KEY = String(process.env.LIBRETRANSLATE_API_KEY || "").trim();
+const AI_TRANSLATION_TIMEOUT_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.AI_TRANSLATION_TIMEOUT_MS || "45000", 10) || 45000
+);
 
 async function initializeAiRewriteStorage(dbPool) {
   if (dbPool.dialect === "postgres") {
@@ -591,6 +610,23 @@ async function initializeAiRewriteStorage(dbPool) {
         updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS ai_news_translation_cache (
+        id BIGSERIAL PRIMARY KEY,
+        rewrite_id BIGINT NOT NULL,
+        language VARCHAR(20) NOT NULL,
+        title TEXT,
+        secondary_headline TEXT,
+        image_caption TEXT,
+        short_100 TEXT,
+        medium_300 TEXT,
+        long_500 TEXT,
+        provider VARCHAR(50) NOT NULL DEFAULT 'google-translate',
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (rewrite_id, language)
+      )
+    `);
   } else {
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS ai_news_rewrites (
@@ -644,6 +680,23 @@ async function initializeAiRewriteStorage(dbPool) {
         last_error TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS ai_news_translation_cache (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        rewrite_id INT NOT NULL,
+        language VARCHAR(20) NOT NULL,
+        title TEXT,
+        secondary_headline TEXT,
+        image_caption TEXT,
+        short_100 MEDIUMTEXT,
+        medium_300 MEDIUMTEXT,
+        long_500 LONGTEXT,
+        provider VARCHAR(50) NOT NULL DEFAULT 'google-translate',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_rewrite_language (rewrite_id, language)
       )
     `);
   }
@@ -1985,12 +2038,14 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
       photoCaption,
       body: tiers.bodies.body100,
     }),
-    medium_300: assemblePublishableArticle({
-      heading,
-      secondaryHeading,
-      photoCaption,
-      body: tiers.bodies.body300,
-    }),
+    medium_300: AI_MEDIUM_REWRITE_ENABLED
+      ? assemblePublishableArticle({
+          heading,
+          secondaryHeading,
+          photoCaption,
+          body: tiers.bodies.body300,
+        })
+      : "",
     long_500: assemblePublishableArticle({
       heading,
       secondaryHeading,
@@ -2016,7 +2071,7 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
     sourceUrl: articleRecord?.source_url,
   });
 
-  for (const article of [uiHindi.short_100, uiHindi.medium_300, uiHindi.long_500]) {
+  for (const article of [uiHindi.short_100, uiHindi.long_500, AI_MEDIUM_REWRITE_ENABLED ? uiHindi.medium_300 : null].filter(Boolean)) {
     if (!hasExactlyOneLabel(article, "Photo Caption:")) {
       throw createAiValidationError("Assembled Hindi-only article structure is invalid.", ["hindi.photo_caption"]);
     }
@@ -2038,7 +2093,7 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
       top_summary: subheadings,
       short_description: uiHindi.short_100,
       long_description: uiHindi.long_500,
-      what_to_watch_next: uiHindi.medium_300,
+      what_to_watch_next: AI_MEDIUM_REWRITE_ENABLED ? uiHindi.medium_300 : "",
     },
     ui_hindi: {
       ...uiHindi,
@@ -2375,7 +2430,7 @@ function validateAiPayload(payload, options = {}) {
   }
 
   if (hasBuiltHindiOnlyShape(payload)) {
-    if (!payload.ui_hindi.short_100 || !payload.ui_hindi.medium_300 || !payload.ui_hindi.long_500) {
+    if (!payload.ui_hindi.short_100 || !payload.ui_hindi.long_500 || (AI_MEDIUM_REWRITE_ENABLED && !payload.ui_hindi.medium_300)) {
       throw new Error("Gemini Hindi-only payload is missing required body fields.");
     }
     return payload;
@@ -2420,7 +2475,7 @@ function validateAiPayload(payload, options = {}) {
     if (cleanGeneratedText(english.short_description) === cleanGeneratedText(hindi.short_description)) {
       invalidFields.push("english.short_description");
     }
-    if (!uiHindi.short_100 || !uiHindi.medium_300 || !uiHindi.long_500) {
+    if (!uiHindi.short_100 || !uiHindi.long_500 || (AI_MEDIUM_REWRITE_ENABLED && !uiHindi.medium_300)) {
       invalidFields.push("ui_hindi");
     }
 
@@ -2477,14 +2532,17 @@ function validateAiPayload(payload, options = {}) {
       ...options,
       strictCategory: true,
     });
-    const requiredFields = ["title", "short_100", "medium_300", "long_500", "category", "state", "source", "link"];
+    const requiredFields = ["title", "short_100", "long_500", "category", "state", "source", "link"];
+    if (AI_MEDIUM_REWRITE_ENABLED) {
+      requiredFields.splice(2, 0, "medium_300");
+    }
     for (const field of requiredFields) {
       if (!uiHindi[field]) {
         throw new Error(`Gemini response is missing ${field}.`);
       }
     }
 
-    for (const field of ["title", "short_100", "medium_300", "long_500"]) {
+    for (const field of ["title", "short_100", "long_500", AI_MEDIUM_REWRITE_ENABLED ? "medium_300" : null].filter(Boolean)) {
       if (!hasHindiText(uiHindi[field])) {
         throw new Error(`Gemini response field ${field} is not Hindi.`);
       }
@@ -2623,7 +2681,7 @@ async function saveAiRewrite(dbPool, {
         hindi.what_to_watch_next || null,
         uiHindi?.title || null,
         uiHindi?.short_100 || null,
-        uiHindi?.medium_300 || null,
+        AI_MEDIUM_REWRITE_ENABLED ? uiHindi?.medium_300 || null : null,
         uiHindi?.long_500 || null,
         JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
         uiHindi?.category || null,
@@ -2684,7 +2742,7 @@ async function saveAiRewrite(dbPool, {
         hindi.what_to_watch_next || null,
         uiHindi?.title || null,
         uiHindi?.short_100 || null,
-        uiHindi?.medium_300 || null,
+        AI_MEDIUM_REWRITE_ENABLED ? uiHindi?.medium_300 || null : null,
         uiHindi?.long_500 || null,
         JSON.stringify(Array.isArray(uiHindi?.keywords) ? uiHindi.keywords : []),
         uiHindi?.category || null,
@@ -3123,6 +3181,37 @@ function logGeminiResponseInfo(info, { articleId, mode }) {
   );
 }
 
+function resetGeminiCallBudget(articleId) {
+  if (articleId !== undefined && articleId !== null) {
+    geminiCallsByArticleId.delete(String(articleId));
+  }
+}
+
+function claimGeminiCallBudget(articleId, call) {
+  if (articleId === undefined || articleId === null) {
+    return null;
+  }
+
+  const key = String(articleId);
+  const used = geminiCallsByArticleId.get(key) || 0;
+  if (used >= AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE) {
+    const error = new Error(
+      `AI rewrite skipped after ${used} Gemini calls for news_id=${key}; per-article limit is ${AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE}.`
+    );
+    error.code = "AI_REWRITE_GEMINI_CALL_LIMIT";
+    error.skippable = true;
+    throw error;
+  }
+
+  const nextUsed = used + 1;
+  geminiCallsByArticleId.set(key, nextUsed);
+  console.log(
+    `[ai-rewrite-budget] news_id=${key} call=${call || ""}` +
+      ` gemini_calls_used=${nextUsed}/${AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE}`
+  );
+  return nextUsed;
+}
+
 function createGeminiTerminationError(info) {
   if (info.finish_reason === "length") {
     return new Error("Gemini output was truncated because the generation token limit was reached.");
@@ -3138,6 +3227,76 @@ function createGeminiTerminationError(info) {
   return null;
 }
 
+function getNextPacificMidnightTimestamp(now = new Date()) {
+  const pacificFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = pacificFormatter.formatToParts(now).reduce((accumulator, part) => {
+    if (part.type !== "literal") {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+  const pacificNoonUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + 1, 12, 0, 0);
+  const nextParts = pacificFormatter.formatToParts(new Date(pacificNoonUtc)).reduce((accumulator, part) => {
+    if (part.type !== "literal") {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+  const guessUtc = Date.UTC(Number(nextParts.year), Number(nextParts.month) - 1, Number(nextParts.day), 8, 0, 0);
+  const guessPacific = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(guessUtc)).reduce((accumulator, part) => {
+    if (part.type !== "literal") {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+  const offsetMinutes = (Number(guessPacific.hour) * 60 + Number(guessPacific.minute));
+  return guessUtc - offsetMinutes * 60_000;
+}
+
+function getGeminiKeyCandidates() {
+  const candidates = [];
+  if (GEMINI_FREE_API_KEY && Date.now() >= geminiFreeKeyUnavailableUntil) {
+    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
+  }
+  if (GEMINI_PAID_API_KEY && GEMINI_PAID_API_KEY !== GEMINI_FREE_API_KEY) {
+    candidates.push({ label: "paid", apiKey: GEMINI_PAID_API_KEY });
+  }
+  if (!candidates.length && GEMINI_FREE_API_KEY) {
+    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
+  }
+  return candidates;
+}
+
+function isQuotaExhaustedResponse(response, payload) {
+  const message = String(payload?.error?.message || "").toLowerCase();
+  return response.status === 429 && (
+    payload?.error?.status === "RESOURCE_EXHAUSTED" ||
+    message.includes("quota") ||
+    message.includes("rate limit") ||
+    message.includes("spending cap")
+  );
+}
+
+function markFreeGeminiKeyExhausted() {
+  const nextHourlyProbe = Date.now() + 60 * 60_000;
+  const nextPacificReset = getNextPacificMidnightTimestamp(new Date());
+  geminiFreeKeyUnavailableUntil = Math.min(nextHourlyProbe, nextPacificReset);
+  console.warn(
+    `[gemini-key] Free Gemini key exhausted; using paid key until next free-key probe at ` +
+      `${new Date(geminiFreeKeyUnavailableUntil).toISOString()}. Daily quota reset is midnight Pacific.`
+  );
+}
+
 async function requestGeminiJson(messages, {
   articleId,
   mode,
@@ -3148,40 +3307,65 @@ async function requestGeminiJson(messages, {
 } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const response = await fetch(GEMINI_API_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GEMINI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildGeminiRequestBody(messages, { temperature, maxTokens })),
-    });
-
-    const payload = await response.json();
-    logGeminiUsage(payload, { articleId, mode, call });
-    const responseInfo = getGeminiResponseInfo(payload, { maxTokens, call });
-    logGeminiResponseInfo(responseInfo, { articleId, mode });
-
-    if (response.ok) {
-      const terminationError = createGeminiTerminationError(responseInfo);
-      if (terminationError) {
-        lastError = terminationError;
-        if (terminationError.transient && attempt < retries) {
-          await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
-          continue;
-        }
-        throw terminationError;
-      }
-      return responseInfo;
+    const keyCandidates = getGeminiKeyCandidates();
+    if (!keyCandidates.length) {
+      throw new Error("GEMINI_API_KEY is missing in .env.");
     }
 
-    lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
-    if ((response.status === 429 || response.status >= 500) && attempt < retries) {
-      await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    for (const keyCandidate of keyCandidates) {
+      claimGeminiCallBudget(articleId, call);
+      const response = await fetch(GEMINI_API_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${keyCandidate.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildGeminiRequestBody(messages, { temperature, maxTokens })),
+      });
+
+      const payload = await response.json();
+      logGeminiUsage(payload, { articleId, mode, call });
+      const responseInfo = getGeminiResponseInfo(payload, { maxTokens, call });
+      logGeminiResponseInfo(responseInfo, { articleId, mode });
+
+      if (response.ok) {
+        console.log(`[gemini-key] News rewrite used ${keyCandidate.label} key.`);
+        if (keyCandidate.label === "paid" && GEMINI_FREE_API_KEY && Date.now() < geminiFreeKeyUnavailableUntil) {
+          console.warn("[gemini-key] Gemini request used paid fallback because free key is cooling down.");
+        }
+        const terminationError = createGeminiTerminationError(responseInfo);
+        if (terminationError) {
+          lastError = terminationError;
+          if (terminationError.transient && attempt < retries) {
+            await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+            continue;
+          }
+          throw terminationError;
+        }
+        return responseInfo;
+      }
+
+      lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+      if (keyCandidate.label === "free" && GEMINI_PAID_API_KEY && isQuotaExhaustedResponse(response, payload)) {
+        markFreeGeminiKeyExhausted();
+        continue;
+      }
+
+      if ((response.status === 429 || response.status >= 500) && attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+        break;
+      }
+
+      throw lastError;
+    }
+
+    if (attempt < retries) {
       continue;
     }
 
-    throw lastError;
+    if (lastError) {
+      throw lastError;
+    }
   }
 
   throw lastError || new Error("Gemini request failed.");
@@ -3235,9 +3419,9 @@ function getStage1CurrentCounts(stage1Payload = {}) {
     hindiTarget: Math.max(500, 1200 - hindiCurrent),
     englishTarget: Math.max(500, 1200 - englishCurrent),
     hindiMin: Math.max(500, AI_LONG_REWRITE_MIN_WORDS - hindiCurrent),
-    hindiMax: Math.max(Math.max(500, AI_LONG_REWRITE_MIN_WORDS - hindiCurrent) + 150, 1300 - hindiCurrent),
+    hindiMax: Math.max(Math.max(500, AI_LONG_REWRITE_MIN_WORDS - hindiCurrent) + 100, AI_LONG_REWRITE_MAX_WORDS - hindiCurrent),
     englishMin: Math.max(500, AI_LONG_REWRITE_MIN_WORDS - englishCurrent),
-    englishMax: Math.max(Math.max(500, AI_LONG_REWRITE_MIN_WORDS - englishCurrent) + 150, 1300 - englishCurrent),
+    englishMax: Math.max(Math.max(500, AI_LONG_REWRITE_MIN_WORDS - englishCurrent) + 100, AI_LONG_REWRITE_MAX_WORDS - englishCurrent),
   };
 }
 
@@ -4290,19 +4474,24 @@ ${truncateText(response.content, 3000)}`;
 }
 
 async function generateAiRewrite(articleRecord, articleText) {
-  if (AI_REWRITE_MODE === AI_REWRITE_MODES.HINDI_LEGACY) {
-    return generateLegacyHindiRewrite(articleRecord, articleText);
-  }
+  resetGeminiCallBudget(articleRecord?.id);
+  try {
+    if (AI_REWRITE_MODE === AI_REWRITE_MODES.HINDI_LEGACY) {
+      return await generateLegacyHindiRewrite(articleRecord, articleText);
+    }
 
-  if (AI_REWRITE_MODE === AI_REWRITE_MODES.BILINGUAL_COMPACT) {
-    return generateCompactBilingualRewrite(articleRecord, articleText);
-  }
+    if (AI_REWRITE_MODE === AI_REWRITE_MODES.BILINGUAL_COMPACT) {
+      return await generateCompactBilingualRewrite(articleRecord, articleText);
+    }
 
-  if (AI_REWRITE_MODE && AI_REWRITE_MODE !== AI_REWRITE_MODES.HINDI_ONLY) {
-    console.warn(`[ai-rewrite] Unknown AI_REWRITE_MODE="${AI_REWRITE_MODE}". Using hindi-only.`);
-  }
+    if (AI_REWRITE_MODE && AI_REWRITE_MODE !== AI_REWRITE_MODES.HINDI_ONLY) {
+      console.warn(`[ai-rewrite] Unknown AI_REWRITE_MODE="${AI_REWRITE_MODE}". Using hindi-only.`);
+    }
 
-  return generateHindiOnlyRewrite(articleRecord, articleText);
+    return await generateHindiOnlyRewrite(articleRecord, articleText);
+  } finally {
+    resetGeminiCallBudget(articleRecord?.id);
+  }
 }
 
 function formatAiRewriteRecord(record) {
@@ -4428,13 +4617,21 @@ function formatAiRewriteRecord(record) {
   if (formatted.ui_hindi) {
     formatted.ui_hindi.subheadings = formatted.hindi.top_summary;
     formatted.ui_hindi.secondary_headline = formatted.hindi.secondary_headline || formatted.ui_hindi.secondary_headline || "";
+    if (!AI_MEDIUM_REWRITE_ENABLED) {
+      formatted.ui_hindi.medium_300 = "";
+    }
+  }
+
+  if (!AI_MEDIUM_REWRITE_ENABLED) {
+    formatted.hindi.what_to_watch_next = "";
+    formatted.english.what_to_watch_next = "";
   }
 
   formatted.ui_english = {
     title: formatted.english.headline,
     secondary_headline: formatted.english.secondary_headline,
     short_100: formatted.english.short_description,
-    medium_300: formatted.english.what_to_watch_next,
+    medium_300: AI_MEDIUM_REWRITE_ENABLED ? formatted.english.what_to_watch_next : "",
     long_500: formatted.english.long_description,
     subheadings: formatted.english.top_summary,
     category: formatted.ui_hindi?.category,
@@ -4481,6 +4678,336 @@ function formatAiRewriteWithNewsRecord(record) {
       feed_url: record.news_feed_url,
     },
   };
+}
+
+function extractPhotoCaptionFromText(value) {
+  const text = cleanGeneratedText(value);
+  const match = text.match(/(?:Photo Caption|फोटो कैप्शन)\s*:\s*([\s\S]+)$/i);
+  return cleanGeneratedText(match?.[1] || "");
+}
+
+function buildHindiTranslationSource(rewrite) {
+  const uiHindi = rewrite?.ui_hindi || {};
+  return {
+    title: uiHindi.title || rewrite?.hindi?.headline || "",
+    secondary_headline: uiHindi.secondary_headline || rewrite?.hindi?.secondary_headline || "",
+    image_caption:
+      uiHindi.image_caption ||
+      uiHindi.photo_caption ||
+      uiHindi.caption ||
+      extractPhotoCaptionFromText(uiHindi.short_100) ||
+      extractPhotoCaptionFromText(uiHindi.medium_300) ||
+      extractPhotoCaptionFromText(uiHindi.long_500),
+    short_100: uiHindi.short_100 || rewrite?.hindi?.short_description || "",
+    medium_300: AI_MEDIUM_REWRITE_ENABLED ? uiHindi.medium_300 || rewrite?.hindi?.what_to_watch_next || "" : "",
+    long_500: uiHindi.long_500 || rewrite?.hindi?.long_description || "",
+  };
+}
+
+function hasUsefulEnglishTranslation(translation) {
+  return Boolean(
+    translation &&
+      hasEnglishText([
+        translation.title,
+        translation.short_100,
+        translation.long_500,
+      ].filter(Boolean).join(" "))
+  );
+}
+
+function splitTextForTranslation(value, maxLength = 900) {
+  const text = cleanGeneratedText(value);
+  if (!text || text.length <= maxLength) {
+    return text ? [text] : [];
+  }
+
+  const chunks = [];
+  let current = "";
+  const parts = text.split(/(\n{2,}|(?<=[।.!?])\s+)/);
+  for (const part of parts) {
+    if (!part) {
+      continue;
+    }
+
+    if ((current + part).length <= maxLength) {
+      current += part;
+      continue;
+    }
+
+    if (current.trim()) {
+      chunks.push(current.trim());
+      current = "";
+    }
+
+    if (part.length <= maxLength) {
+      current = part;
+      continue;
+    }
+
+    for (let index = 0; index < part.length; index += maxLength) {
+      chunks.push(part.slice(index, index + maxLength).trim());
+    }
+  }
+
+  if (current.trim()) {
+    chunks.push(current.trim());
+  }
+
+  return chunks.filter(Boolean);
+}
+
+async function translateTextWithLibreTranslate(text) {
+  const sourceText = cleanGeneratedText(text);
+  if (!sourceText) {
+    return "";
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_TRANSLATION_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${LIBRETRANSLATE_URL}/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        q: sourceText,
+        source: "hi",
+        target: "en",
+        format: "text",
+        ...(LIBRETRANSLATE_API_KEY ? { api_key: LIBRETRANSLATE_API_KEY } : {}),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || payload?.message || `LibreTranslate returned HTTP ${response.status}.`);
+    }
+
+    return cleanGeneratedText(payload.translatedText || payload.translation || "");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function translateTextWithGoogleTranslate(text) {
+  const sourceText = cleanGeneratedText(text);
+  if (!sourceText) {
+    return "";
+  }
+
+  const chunks = splitTextForTranslation(sourceText);
+  if (chunks.length > 1) {
+    const translatedChunks = [];
+    for (const chunk of chunks) {
+      translatedChunks.push(await translateTextWithGoogleTranslate(chunk));
+    }
+    return cleanGeneratedText(translatedChunks.join("\n\n"));
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_TRANSLATION_TIMEOUT_MS);
+
+  try {
+    const requestUrl = new URL("https://translate.googleapis.com/translate_a/single");
+    requestUrl.searchParams.set("client", "gtx");
+    requestUrl.searchParams.set("sl", "hi");
+    requestUrl.searchParams.set("tl", "en");
+    requestUrl.searchParams.set("dt", "t");
+    requestUrl.searchParams.set("q", sourceText);
+
+    const response = await fetch(requestUrl, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; GE-News-Hub/1.0)",
+      },
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`Google Translate returned HTTP ${response.status}.`);
+    }
+
+    const translatedText = Array.isArray(payload?.[0])
+      ? payload[0].map((segment) => Array.isArray(segment) ? segment[0] || "" : "").join("")
+      : "";
+    return cleanGeneratedText(translatedText);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function translateTextToEnglish(text) {
+  if (AI_TRANSLATION_PROVIDER === "libretranslate") {
+    return translateTextWithLibreTranslate(text);
+  }
+
+  if (AI_TRANSLATION_PROVIDER === "google-translate" || AI_TRANSLATION_PROVIDER === "google") {
+    return translateTextWithGoogleTranslate(text);
+  }
+
+  throw new Error(`Unsupported AI_TRANSLATION_PROVIDER "${AI_TRANSLATION_PROVIDER}".`);
+}
+
+async function translateHindiRewriteToEnglish(source) {
+  return {
+    title: await translateTextToEnglish(source.title),
+    secondary_headline: await translateTextToEnglish(source.secondary_headline),
+    image_caption: await translateTextToEnglish(source.image_caption),
+    short_100: await translateTextToEnglish(source.short_100),
+    medium_300: AI_MEDIUM_REWRITE_ENABLED ? await translateTextToEnglish(source.medium_300) : "",
+    long_500: await translateTextToEnglish(source.long_500),
+  };
+}
+
+async function findAiTranslationCache(dbPool, rewriteId, language = "english") {
+  const [rows] = await dbPool.query(
+    `
+      SELECT *
+      FROM ai_news_translation_cache
+      WHERE rewrite_id = ? AND language = ?
+      LIMIT 1
+    `,
+    [rewriteId, language]
+  );
+  return rows[0] || null;
+}
+
+async function saveAiTranslationCache(dbPool, rewriteId, translation, provider = AI_TRANSLATION_PROVIDER) {
+  if (!rewriteId || !translation) {
+    return null;
+  }
+
+  const params = [
+    rewriteId,
+    "english",
+    translation.title || null,
+    translation.secondary_headline || null,
+    translation.image_caption || null,
+    translation.short_100 || null,
+    AI_MEDIUM_REWRITE_ENABLED ? translation.medium_300 || null : null,
+    translation.long_500 || null,
+    provider || "libretranslate",
+  ];
+
+  if (dbPool.dialect === "postgres") {
+    await dbPool.execute(
+      `
+        INSERT INTO ai_news_translation_cache (
+          rewrite_id, language, title, secondary_headline, image_caption, short_100, medium_300, long_500, provider
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (rewrite_id, language)
+        DO UPDATE SET
+          title = EXCLUDED.title,
+          secondary_headline = EXCLUDED.secondary_headline,
+          image_caption = EXCLUDED.image_caption,
+          short_100 = EXCLUDED.short_100,
+          medium_300 = EXCLUDED.medium_300,
+          long_500 = EXCLUDED.long_500,
+          provider = EXCLUDED.provider,
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      params
+    );
+  } else {
+    await dbPool.execute(
+      `
+        INSERT INTO ai_news_translation_cache (
+          rewrite_id, language, title, secondary_headline, image_caption, short_100, medium_300, long_500, provider
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          title = VALUES(title),
+          secondary_headline = VALUES(secondary_headline),
+          image_caption = VALUES(image_caption),
+          short_100 = VALUES(short_100),
+          medium_300 = VALUES(medium_300),
+          long_500 = VALUES(long_500),
+          provider = VALUES(provider),
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      params
+    );
+  }
+
+  return findAiTranslationCache(dbPool, rewriteId, "english");
+}
+
+async function ensureEnglishTranslationForRewrite(dbPool, rewrite) {
+  if (!AI_ENGLISH_TRANSLATION_ENABLED || !rewrite?.id) {
+    return null;
+  }
+
+  const existing = await findAiTranslationCache(dbPool, rewrite.id, "english");
+  if (hasUsefulEnglishTranslation(existing)) {
+    return existing;
+  }
+
+  try {
+    const source = buildHindiTranslationSource(rewrite);
+    if (!source.title || !source.short_100 || !source.long_500) {
+      return existing || null;
+    }
+
+    const translated = await translateHindiRewriteToEnglish(source);
+    if (!hasUsefulEnglishTranslation(translated)) {
+      throw new Error("Translation did not produce usable English text.");
+    }
+
+    const saved = await saveAiTranslationCache(dbPool, rewrite.id, translated);
+    console.log(`[ai-translation] Saved English cache for rewrite_id=${rewrite.id}.`);
+    return saved;
+  } catch (error) {
+    console.warn(`[ai-translation] English cache skipped for rewrite_id=${rewrite.id}: ${error.message}`);
+    return existing || null;
+  }
+}
+
+function applyEnglishTranslationCache(rewrite, translation) {
+  if (!rewrite || !hasUsefulEnglishTranslation(translation)) {
+    return rewrite;
+  }
+
+  const english = {
+    headline: cleanGeneratedText(translation.title),
+    secondary_headline: cleanGeneratedText(translation.secondary_headline),
+    top_summary: rewrite.english?.top_summary || [],
+    short_description: cleanGeneratedText(translation.short_100),
+    long_description: cleanGeneratedText(translation.long_500),
+    what_to_watch_next: AI_MEDIUM_REWRITE_ENABLED ? cleanGeneratedText(translation.medium_300) : "",
+  };
+
+  return {
+    ...rewrite,
+    english,
+    ui_english: {
+      ...(rewrite.ui_english || {}),
+      title: english.headline,
+      secondary_headline: english.secondary_headline,
+      image_caption: cleanGeneratedText(translation.image_caption),
+      short_100: english.short_description,
+      medium_300: english.what_to_watch_next,
+      long_500: english.long_description,
+      provider: translation.provider || AI_TRANSLATION_PROVIDER,
+      translated_at: translation.updated_at || translation.created_at || null,
+    },
+  };
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }));
+
+  return results;
 }
 
 async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrowserPage, afterSave = null) {
@@ -4566,6 +5093,7 @@ async function createOrUpdateRewriteForRecord(dbPool, articleRecord, createBrows
       status: "published",
       publishedBy: "ai-system",
     });
+    await ensureEnglishTranslationForRewrite(dbPool, publishedRewrite);
 
     if (typeof afterSave === "function") {
       try {
@@ -4693,6 +5221,21 @@ function formatDeliveredRewrite(record, language = "both") {
     category: formatted.ui_hindi?.category,
     state: formatted.ui_hindi?.state,
   });
+  const hindiRawArticles = {
+    words_100: formatted.hindi?.short_description || formatted.ui_hindi?.short_100 || "",
+    words_300: AI_MEDIUM_REWRITE_ENABLED ? formatted.hindi?.what_to_watch_next || formatted.ui_hindi?.medium_300 || "" : "",
+    words_1000: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
+    words_500: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
+    words_600: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
+  };
+  const englishRawArticles = {
+    words_100: formatted.english?.short_description || formatted.ui_english?.short_100 || "",
+    words_300: AI_MEDIUM_REWRITE_ENABLED ? formatted.english?.what_to_watch_next || formatted.ui_english?.medium_300 || "" : "",
+    words_1000: formatted.english?.long_description || formatted.ui_english?.long_500 || "",
+    words_500: formatted.english?.long_description || formatted.ui_english?.long_500 || "",
+    words_600: formatted.english?.long_description || formatted.ui_english?.long_500 || "",
+  };
+  const activeRawArticles = language === "english" ? englishRawArticles : hindiRawArticles;
 
   const payload = {
     id: formatted.id,
@@ -4714,28 +5257,10 @@ function formatDeliveredRewrite(record, language = "both") {
       image_link: deliveredImageUrl || null,
       image_source: deliveredImageUrl ? formatted.news?.image_source || null : null,
     },
-    raw_articles: {
-      words_100: formatted.ui_hindi?.short_100 || formatted.hindi?.short_description || "",
-      words_300: formatted.ui_hindi?.medium_300 || formatted.hindi?.what_to_watch_next || "",
-      words_1000: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
-      words_600: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
-      words_500: formatted.ui_hindi?.long_500 || formatted.hindi?.long_description || "",
-    },
+    raw_articles: activeRawArticles,
     raw_articles_by_language: {
-      hindi: {
-        words_100: formatted.hindi?.short_description || formatted.ui_hindi?.short_100 || "",
-        words_300: formatted.hindi?.what_to_watch_next || formatted.ui_hindi?.medium_300 || "",
-        words_1000: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
-        words_500: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
-        words_600: formatted.hindi?.long_description || formatted.ui_hindi?.long_500 || "",
-      },
-      english: {
-        words_100: formatted.english?.short_description || "",
-        words_300: formatted.english?.what_to_watch_next || "",
-        words_1000: formatted.english?.long_description || "",
-        words_500: formatted.english?.long_description || "",
-        words_600: formatted.english?.long_description || "",
-      },
+      hindi: hindiRawArticles,
+      english: englishRawArticles,
     },
     ui_hindi: {
       ...(formatted.ui_hindi || {}),
@@ -4836,7 +5361,14 @@ async function listDeliveredAiRewrites(dbPool, { category = null, limit = 50, la
     uiOnly,
   });
 
-  return removeRepeatedDeliveryImages(records.map((record) => formatDeliveredRewrite(record, language)));
+  const translatedRecords = await mapWithConcurrency(records, 2, async (record) => {
+    const translation = language === "english" || language === "both"
+      ? await ensureEnglishTranslationForRewrite(dbPool, record)
+      : null;
+    return applyEnglishTranslationCache(record, translation);
+  });
+
+  return removeRepeatedDeliveryImages(translatedRecords.map((record) => formatDeliveredRewrite(record, language)));
 }
 
 async function findDeliveredAiRewrite(dbPool, identifier, { language = "both" } = {}) {
@@ -4876,7 +5408,17 @@ async function findDeliveredAiRewrite(dbPool, identifier, { language = "both" } 
       `;
 
   const [rows] = await dbPool.query(queryText, [identifier]);
-  return rows[0] ? formatDeliveredRewrite(rows[0], language) : null;
+  if (!rows[0]) {
+    return null;
+  }
+
+  let record = formatAiRewriteWithNewsRecord(rows[0]);
+  if (language === "english" || language === "both") {
+    const translation = await ensureEnglishTranslationForRewrite(dbPool, record);
+    record = applyEnglishTranslationCache(record, translation);
+  }
+
+  return formatDeliveredRewrite(record, language);
 }
 
 async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publishedBy = null } = {}) {
