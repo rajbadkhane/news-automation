@@ -72,6 +72,11 @@ const IMAGE_PROXY_TIMEOUT_MS = Math.max(
   3_000,
   Number.parseInt(process.env.IMAGE_PROXY_TIMEOUT_MS || "12000", 10) || 12_000
 );
+const TOI_LEFT_CROP_RATIO = 103 / 1280;
+const PROCESSED_IMAGE_MAX_BYTES = Math.max(
+  250_000,
+  Number.parseInt(process.env.PROCESSED_IMAGE_MAX_BYTES || "2500000", 10) || 2_500_000
+);
 const IMAGE_PROXY_EXTRA_HOSTS = new Set(
   String(
     process.env.IMAGE_PROXY_EXTRA_HOSTS ||
@@ -1759,6 +1764,11 @@ async function initializeDatabase() {
         title_signature VARCHAR(255) NULL,
         image_link TEXT,
         image_source VARCHAR(100),
+        processed_image_data BYTEA,
+        processed_image_mime VARCHAR(100),
+        processed_image_source_url TEXT,
+        processed_image_transform VARCHAR(100),
+        processed_image_updated_at TIMESTAMPTZ NULL,
         source_excerpt TEXT,
         source_content TEXT,
         source_published_at TIMESTAMPTZ NULL,
@@ -1779,6 +1789,11 @@ async function initializeDatabase() {
         title_signature VARCHAR(255) NULL,
         image_link TEXT,
         image_source VARCHAR(100),
+        processed_image_data LONGBLOB,
+        processed_image_mime VARCHAR(100),
+        processed_image_source_url TEXT,
+        processed_image_transform VARCHAR(100),
+        processed_image_updated_at TIMESTAMP NULL DEFAULT NULL,
         source_excerpt MEDIUMTEXT,
         source_content LONGTEXT,
         source_published_at TIMESTAMP NULL DEFAULT NULL,
@@ -1818,6 +1833,11 @@ async function initializeDatabase() {
         "ALTER TABLE fetched_news ADD COLUMN source_published_at TIMESTAMPTZ NULL",
         "ALTER TABLE fetched_news ADD COLUMN source_url_signature TEXT NULL",
         "ALTER TABLE fetched_news ADD COLUMN title_signature VARCHAR(255) NULL",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_data BYTEA",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_mime VARCHAR(100)",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_source_url TEXT",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_transform VARCHAR(100)",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_updated_at TIMESTAMPTZ NULL",
       ]
     : [
         "ALTER TABLE fetched_news ADD COLUMN source_excerpt MEDIUMTEXT",
@@ -1825,6 +1845,11 @@ async function initializeDatabase() {
         "ALTER TABLE fetched_news ADD COLUMN source_published_at TIMESTAMP NULL DEFAULT NULL",
         "ALTER TABLE fetched_news ADD COLUMN source_url_signature TEXT NULL",
         "ALTER TABLE fetched_news ADD COLUMN title_signature VARCHAR(255) NULL",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_data LONGBLOB",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_mime VARCHAR(100)",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_source_url TEXT",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_transform VARCHAR(100)",
+        "ALTER TABLE fetched_news ADD COLUMN processed_image_updated_at TIMESTAMP NULL DEFAULT NULL",
       ];
 
   for (const statement of fetchedNewsSourceColumnStatements) {
@@ -4006,6 +4031,7 @@ function compactDeliveryRecordForTable(record) {
   const media = record?.media || {};
   return {
     id: record?.id,
+    news_id: record?.news_id,
     slug: record?.slug || null,
     category: record?.category,
     source_category: record?.source_category,
@@ -5760,6 +5786,170 @@ async function optimizeImageBuffer(buffer, contentType, acceptHeader, options = 
     }).toBuffer(),
     contentType: "image/jpeg",
   };
+}
+
+function isTimesOfIndiaImageRecord(record = {}) {
+  const sourceText = [
+    record.image_link,
+    record.image_source,
+    record.source_url,
+    record.feed_source,
+    record.feed_url,
+    record.title,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  return /timesofindia\.indiatimes\.com|(?:^|[^\w])toi(?:[^\w]|$)|times\s+of\s+india|toiimg\.com|timescontent\.com/.test(sourceText);
+}
+
+async function cropImageBufferFromLeft(buffer, cropRatio) {
+  const image = sharp(buffer, { failOn: "none" }).rotate();
+  const metadata = await image.metadata();
+  const width = metadata.width || 0;
+  const height = metadata.height || 0;
+  if (width < 2 || height < 1) {
+    return buffer;
+  }
+
+  const cropLeft = Math.max(0, Math.min(width - 1, Math.round(width * cropRatio)));
+  return image
+    .extract({
+      left: cropLeft,
+      top: 0,
+      width: width - cropLeft,
+      height,
+    })
+    .jpeg({
+      quality: IMAGE_PROXY_HIGH_JPEG_QUALITY,
+      mozjpeg: true,
+      progressive: true,
+    })
+    .toBuffer();
+}
+
+function buildApiImageUrl(req, newsId) {
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  return `${baseUrl}${API_BASE_PATH}/media/news-image/${encodeURIComponent(newsId)}`;
+}
+
+function attachApiImageUrls(value, req) {
+  if (Array.isArray(value)) {
+    return value.map((item) => attachApiImageUrls(item, req));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const next = { ...value };
+  const newsId = next.news_id || next.news?.id;
+  if (newsId && next.media?.image_link) {
+    const apiImageUrl = buildApiImageUrl(req, newsId);
+    next.media = {
+      ...next.media,
+      original_image_link: next.media.image_link,
+      image_link: apiImageUrl,
+      image_transform: "server-cache-auto",
+    };
+    next.image_link = apiImageUrl;
+    if (next.ui_hindi) {
+      next.ui_hindi = { ...next.ui_hindi, image_url: apiImageUrl };
+    }
+    if (next.ui_english) {
+      next.ui_english = { ...next.ui_english, image_url: apiImageUrl };
+    }
+  }
+
+  if (Array.isArray(next.records)) {
+    next.records = next.records.map((item) => attachApiImageUrls(item, req));
+  }
+  if (Array.isArray(next.grouped_records)) {
+    next.grouped_records = next.grouped_records.map((item) => attachApiImageUrls(item, req));
+  }
+
+  return next;
+}
+
+async function getOrCreateProcessedNewsImage(newsId) {
+  const [rows] = await dbPool.query(
+    `
+      SELECT id, title, source_url, feed_source, feed_url, image_link, image_source,
+        processed_image_data, processed_image_mime, processed_image_source_url, processed_image_transform
+      FROM fetched_news
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [newsId]
+  );
+  const record = rows[0];
+  if (!record || !record.image_link) {
+    return null;
+  }
+
+  const transform = isTimesOfIndiaImageRecord(record) ? "toi-left-crop" : "original";
+  if (
+    record.processed_image_data &&
+    record.processed_image_source_url === record.image_link &&
+    record.processed_image_transform === transform
+  ) {
+    return {
+      buffer: Buffer.isBuffer(record.processed_image_data)
+        ? record.processed_image_data
+        : Buffer.from(record.processed_image_data),
+      contentType: record.processed_image_mime || "image/jpeg",
+      transform,
+    };
+  }
+
+  if (!isAllowedImageHost(record.image_link)) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), IMAGE_PROXY_TIMEOUT_MS);
+  try {
+    const upstream = await fetch(record.image_link, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Referer: new URL(record.image_link).origin,
+      },
+      signal: controller.signal,
+    });
+    if (!upstream.ok) {
+      return null;
+    }
+
+    const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    const originalBuffer = Buffer.from(await upstream.arrayBuffer());
+    const processedBuffer = transform === "toi-left-crop" && !shouldBypassImageCompression(contentType)
+      ? await cropImageBufferFromLeft(originalBuffer, TOI_LEFT_CROP_RATIO)
+      : originalBuffer;
+    const finalBuffer = processedBuffer.length > PROCESSED_IMAGE_MAX_BYTES
+      ? (await optimizeImageBuffer(processedBuffer, "image/jpeg", "image/jpeg", { highQuality: true })).buffer
+      : processedBuffer;
+    const finalContentType = transform === "toi-left-crop" ? "image/jpeg" : contentType;
+
+    await dbPool.execute(
+      `
+        UPDATE fetched_news
+        SET processed_image_data = ?,
+            processed_image_mime = ?,
+            processed_image_source_url = ?,
+            processed_image_transform = ?,
+            processed_image_updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [finalBuffer, finalContentType, record.image_link, transform, newsId]
+    );
+
+    return {
+      buffer: finalBuffer,
+      contentType: finalContentType,
+      transform,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function decodeHtmlEntities(value) {
@@ -9457,6 +9647,30 @@ apiV1.get("/health", async (req, res) => {
   }
 });
 
+apiV1.get("/media/news-image/:newsId", async (req, res) => {
+  const newsId = Number.parseInt(req.params.newsId, 10);
+  if (!Number.isFinite(newsId) || newsId < 1) {
+    return sendApiError(res, "VALIDATION_ERROR", "A valid newsId is required.", 400);
+  }
+
+  try {
+    const processedImage = await getOrCreateProcessedNewsImage(newsId);
+    if (!processedImage?.buffer) {
+      return sendApiError(res, "NOT_FOUND", "Image not found.", 404);
+    }
+
+    res.setHeader("Content-Type", processedImage.contentType || "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+    res.setHeader("X-Image-Transform", processedImage.transform || "original");
+    return res.send(processedImage.buffer);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return sendApiError(res, "UPSTREAM_TIMEOUT", "Image request timed out.", 504);
+    }
+    return sendApiError(res, "IMAGE_PROCESSING_FAILED", error.message, 500);
+  }
+});
+
 apiV1.post("/analytics/visit", async (req, res) => {
   try {
     const result = await recordVisitorEvent(req);
@@ -9532,7 +9746,7 @@ apiV1.get("/delivery/news", requireApiScope("delivery:read"), async (req, res) =
     const records = (await listDeliveredAiRewrites(dbPool, { category, language, limit: Math.min(limit * 3, 200) }))
       .filter(isFreshDeliveryRecord)
       .slice(0, limit);
-    return sendApiSuccess(res, records, { count: records.length, category, language, limit });
+    return sendApiSuccess(res, attachApiImageUrls(records, req), { count: records.length, category, language, limit });
   } catch (error) {
     return sendApiError(res, "DELIVERY_LIST_FAILED", error.message, 500);
   }
@@ -9547,7 +9761,7 @@ apiV1.get("/delivery/news/grouped", requireApiScope("delivery:read"), async (req
       .filter(isFreshDeliveryRecord)
       .slice(0, limit);
     const grouped = groupDeliveryRecordsByCategory(compact ? records.map(compactDeliveryRecordForTable) : records);
-    return sendApiSuccess(res, grouped, {
+    return sendApiSuccess(res, attachApiImageUrls(grouped, req), {
       category_count: grouped.length,
       count: records.length,
       language,
@@ -9567,7 +9781,7 @@ apiV1.get("/delivery/news/:idOrSlug", requireApiScope("delivery:read"), async (r
       return sendApiError(res, "NOT_FOUND", "Published AI article not found.", 404);
     }
 
-    return sendApiSuccess(res, record, { language });
+    return sendApiSuccess(res, attachApiImageUrls(record, req), { language });
   } catch (error) {
     return sendApiError(res, "DELIVERY_ITEM_FAILED", error.message, 500);
   }
@@ -9580,7 +9794,7 @@ apiV1.get("/delivery/feed", requireApiScope("delivery:read"), async (req, res) =
     const limit = normalizeApiLimit(req.query.limit, 24, 200);
     const grouped = req.query.grouped === undefined ? true : isTruthyQueryValue(req.query.grouped);
     const feed = await buildCronAwareDeliveryFeed({ category, language, limit, grouped });
-    return sendApiSuccess(res, feed, {
+    return sendApiSuccess(res, attachApiImageUrls(feed, req), {
       category,
       language,
       limit,
