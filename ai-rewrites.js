@@ -617,6 +617,9 @@ async function initializeAiRewriteStorage(dbPool) {
         language VARCHAR(20) NOT NULL,
         title TEXT,
         secondary_headline TEXT,
+        place_name TEXT,
+        state TEXT,
+        district TEXT,
         image_caption TEXT,
         short_100 TEXT,
         medium_300 TEXT,
@@ -689,6 +692,9 @@ async function initializeAiRewriteStorage(dbPool) {
         language VARCHAR(20) NOT NULL,
         title TEXT,
         secondary_headline TEXT,
+        place_name TEXT,
+        state TEXT,
+        district TEXT,
         image_caption TEXT,
         short_100 MEDIUMTEXT,
         medium_300 MEDIUMTEXT,
@@ -720,6 +726,9 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_source TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN hindi_secondary_headline TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN english_secondary_headline TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN place_name TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN state TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN district TEXT",
         "CREATE UNIQUE INDEX unique_delivery_slug ON ai_news_rewrites (delivery_slug)",
         "CREATE INDEX IF NOT EXISTS idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
         "CREATE INDEX IF NOT EXISTS idx_rewrites_published_at ON ai_news_rewrites (published_at)",
@@ -744,6 +753,9 @@ async function initializeAiRewriteStorage(dbPool) {
         "ALTER TABLE ai_news_rewrites ADD COLUMN ui_link TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN hindi_secondary_headline TEXT",
         "ALTER TABLE ai_news_rewrites ADD COLUMN english_secondary_headline TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN place_name TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN state TEXT",
+        "ALTER TABLE ai_news_translation_cache ADD COLUMN district TEXT",
         "ALTER TABLE ai_news_rewrites ADD UNIQUE KEY unique_delivery_slug (delivery_slug)",
         "CREATE INDEX idx_rewrites_ui_category ON ai_news_rewrites (ui_category)",
         "CREATE INDEX idx_rewrites_published_at ON ai_news_rewrites (published_at)",
@@ -4691,6 +4703,9 @@ function buildHindiTranslationSource(rewrite) {
   return {
     title: uiHindi.title || rewrite?.hindi?.headline || "",
     secondary_headline: uiHindi.secondary_headline || rewrite?.hindi?.secondary_headline || "",
+    place_name: uiHindi.place_name || "",
+    state: uiHindi.state || "",
+    district: uiHindi.district || uiHindi.district_name || "",
     image_caption:
       uiHindi.image_caption ||
       uiHindi.photo_caption ||
@@ -4852,6 +4867,9 @@ async function translateHindiRewriteToEnglish(source) {
   return {
     title: await translateTextToEnglish(source.title),
     secondary_headline: await translateTextToEnglish(source.secondary_headline),
+    place_name: await translateTextToEnglish(source.place_name),
+    state: await translateTextToEnglish(source.state),
+    district: await translateTextToEnglish(source.district),
     image_caption: await translateTextToEnglish(source.image_caption),
     short_100: await translateTextToEnglish(source.short_100),
     medium_300: AI_MEDIUM_REWRITE_ENABLED ? await translateTextToEnglish(source.medium_300) : "",
@@ -4882,6 +4900,9 @@ async function saveAiTranslationCache(dbPool, rewriteId, translation, provider =
     "english",
     translation.title || null,
     translation.secondary_headline || null,
+    translation.place_name || null,
+    translation.state || null,
+    translation.district || null,
     translation.image_caption || null,
     translation.short_100 || null,
     AI_MEDIUM_REWRITE_ENABLED ? translation.medium_300 || null : null,
@@ -4893,13 +4914,16 @@ async function saveAiTranslationCache(dbPool, rewriteId, translation, provider =
     await dbPool.execute(
       `
         INSERT INTO ai_news_translation_cache (
-          rewrite_id, language, title, secondary_headline, image_caption, short_100, medium_300, long_500, provider
+          rewrite_id, language, title, secondary_headline, place_name, state, district, image_caption, short_100, medium_300, long_500, provider
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (rewrite_id, language)
         DO UPDATE SET
           title = EXCLUDED.title,
           secondary_headline = EXCLUDED.secondary_headline,
+          place_name = EXCLUDED.place_name,
+          state = EXCLUDED.state,
+          district = EXCLUDED.district,
           image_caption = EXCLUDED.image_caption,
           short_100 = EXCLUDED.short_100,
           medium_300 = EXCLUDED.medium_300,
@@ -4913,12 +4937,15 @@ async function saveAiTranslationCache(dbPool, rewriteId, translation, provider =
     await dbPool.execute(
       `
         INSERT INTO ai_news_translation_cache (
-          rewrite_id, language, title, secondary_headline, image_caption, short_100, medium_300, long_500, provider
+          rewrite_id, language, title, secondary_headline, place_name, state, district, image_caption, short_100, medium_300, long_500, provider
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
           title = VALUES(title),
           secondary_headline = VALUES(secondary_headline),
+          place_name = VALUES(place_name),
+          state = VALUES(state),
+          district = VALUES(district),
           image_caption = VALUES(image_caption),
           short_100 = VALUES(short_100),
           medium_300 = VALUES(medium_300),
@@ -4939,7 +4966,12 @@ async function ensureEnglishTranslationForRewrite(dbPool, rewrite) {
   }
 
   const existing = await findAiTranslationCache(dbPool, rewrite.id, "english");
-  if (hasUsefulEnglishTranslation(existing)) {
+  if (
+    hasUsefulEnglishTranslation(existing) &&
+    (existing.place_name || !rewrite.ui_hindi?.place_name) &&
+    (existing.state || !rewrite.ui_hindi?.state) &&
+    (existing.district || (!rewrite.ui_hindi?.district && !rewrite.ui_hindi?.district_name))
+  ) {
     return existing;
   }
 
@@ -4949,7 +4981,14 @@ async function ensureEnglishTranslationForRewrite(dbPool, rewrite) {
       return existing || null;
     }
 
-    const translated = await translateHindiRewriteToEnglish(source);
+    const translated = hasUsefulEnglishTranslation(existing)
+      ? {
+          ...existing,
+          place_name: await translateTextToEnglish(source.place_name),
+          state: await translateTextToEnglish(source.state),
+          district: await translateTextToEnglish(source.district),
+        }
+      : await translateHindiRewriteToEnglish(source);
     if (!hasUsefulEnglishTranslation(translated)) {
       throw new Error("Translation did not produce usable English text.");
     }
@@ -4985,6 +5024,9 @@ function applyEnglishTranslationCache(rewrite, translation) {
       title: english.headline,
       secondary_headline: english.secondary_headline,
       image_caption: cleanGeneratedText(translation.image_caption),
+      place_name: cleanGeneratedText(translation.place_name),
+      state: cleanGeneratedText(translation.state),
+      district: cleanGeneratedText(translation.district),
       short_100: english.short_description,
       medium_300: english.what_to_watch_next,
       long_500: english.long_description,
@@ -5284,16 +5326,28 @@ function formatDeliveredRewrite(record, language = "both") {
         raw_articles_by_language: _rawArticlesByLanguage,
         ...englishOnlyPayload
       } = payload;
+      const uiEnglish = englishOnlyPayload.ui_english || {};
       return {
         ...englishOnlyPayload,
+        title: uiEnglish.title || formatted.english?.headline || "",
+        secondary_headline: uiEnglish.secondary_headline || formatted.english?.secondary_headline || "",
+        image_caption: uiEnglish.image_caption || "",
+        place_name: uiEnglish.place_name || formatted.ui_hindi?.place_name || "",
+        state: uiEnglish.state || deliveryCategory,
+        district: uiEnglish.district || formatted.ui_hindi?.district || formatted.ui_hindi?.district_name || "",
+        short_100: uiEnglish.short_100 || englishRawArticles.words_100 || "",
+        medium_300: uiEnglish.medium_300 || englishRawArticles.words_300 || "",
+        long_500: uiEnglish.long_500 || englishRawArticles.words_1000 || "",
         source: {
           ...(englishOnlyPayload.source || {}),
           title: formatted.english?.headline || englishOnlyPayload.source?.title || null,
         },
         ui_english: {
-          ...(englishOnlyPayload.ui_english || {}),
+          ...uiEnglish,
           state: deliveryCategory,
-          source: englishOnlyPayload.ui_english?.source || "GE News Hub report",
+          place_name: uiEnglish.place_name || formatted.ui_hindi?.place_name || "",
+          district: uiEnglish.district || formatted.ui_hindi?.district || formatted.ui_hindi?.district_name || "",
+          source: uiEnglish.source || "GE News Hub report",
         },
         language,
         article: formatted.english,
