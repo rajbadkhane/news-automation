@@ -42,6 +42,7 @@ const NEWS_CATEGORY_OPTIONS = Object.freeze([
   { value: "Business", label: "Business" },
   { value: "Sports", label: "Sports" },
   { value: "Entertainment", label: "Entertainment" },
+  { value: "Health", label: "Health" },
 ]);
 const HEADER_FEATURES = [
   { label: "FAST", symbol: "◷" },

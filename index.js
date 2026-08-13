@@ -237,6 +237,7 @@ const AI_ALLOWED_CATEGORIES = Object.freeze([
   "Business",
   "Madhya Pradesh",
   "Entertainment",
+  "Health",
 ]);
 const AI_DEFAULT_CATEGORY = "National";
 const MPINFO_DISTRICT_CATEGORY = normalizeUnifiedCategory(
@@ -245,7 +246,12 @@ const MPINFO_DISTRICT_CATEGORY = normalizeUnifiedCategory(
 const INDIA_TIMEZONE = "Asia/Kolkata";
 const EXPENSIVE_NEWS_SOURCES = new Set();
 const GOVERNMENT_NEWS_SOURCES = new Set(["dd", "pib", "mpinfo"]);
-const PRIMARY_RSS_SOURCES = ["dd", "mpinfo"];
+// news18/indiatoday/ndtv are private commercial sources, so they deliberately
+// stay out of GOVERNMENT_NEWS_SOURCES: image-extraction failures should skip
+// the article rather than silently save it without an image. They are
+// primary (not fallback-tier) so they actually get a guaranteed fetch
+// attempt each cycle instead of only running on leftover budget.
+const PRIMARY_RSS_SOURCES = ["dd", "mpinfo", "news18", "indiatoday", "ndtv"];
 const PRIMARY_NEWS_SOURCE_STRATEGY = ["cliff-news", "google-rss", ...PRIMARY_RSS_SOURCES];
 const STATE_GOV_SOURCE_ALLOWLIST = new Set(
   String(process.env.STATE_GOV_SOURCE_ALLOWLIST || "kerala-gov,haryana-gov,cg-gov")

@@ -79,6 +79,7 @@ const AI_ALLOWED_CATEGORIES = Object.freeze([
   "Business",
   "Madhya Pradesh",
   "Entertainment",
+  "Health",
 ]);
 const AI_DEFAULT_CATEGORY = "National";
 const MP_CATEGORY_SIGNALS = Object.freeze([
@@ -500,8 +501,9 @@ Category rules:
 - Priority rule 2: If not Madhya Pradesh and the story is about cricket, football, hockey, tennis, kabaddi, IPL, Olympics, athletics, chess, Formula 1, esports, rankings, transfers, match reports or player interviews, return Sports.
 - Priority rule 3: If not Madhya Pradesh or Sports and the story is about economy, finance, banking, RBI, Sensex, Nifty, stock market, IPO, companies, taxation, cryptocurrency, startups, investments or trade, return Business.
 - Priority rule 4: If not Madhya Pradesh, Sports or Business and the story is about Bollywood, Hollywood, OTT, music, television, web series, movies, celebrities, influencers or awards, return Entertainment.
-- Priority rule 5: If the primary event happened outside India, return International.
-- Priority rule 6: For everything else inside India, return National.`;
+- Priority rule 5: If not Madhya Pradesh, Sports, Business or Entertainment and the story is about disease, illness, hospitals, doctors, nurses, medicines, vaccines, public health, medical research, mental health, epidemics, health insurance or healthcare policy, return Health.
+- Priority rule 6: If the primary event happened outside India, return International.
+- Priority rule 7: For everything else inside India, return National.`;
 
 const HINDI_ONLY_REPAIR_SYSTEM_PROMPT = `${HINDI_ONLY_SYSTEM_PROMPT}
 
@@ -531,15 +533,12 @@ CATEGORY OVERRIDE:
 `;
 
 const { isDuplicateColumnError, isDuplicateKeyError } = require("./db");
+// Rewriting is unconditional: every candidate this query returns gets
+// attempted in the same run (no separate smaller per-run cap on top), so
+// this limit is the only governor on how much one category run can process.
 const AI_REWRITE_CANDIDATE_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "40", 10), 50)
-);
-// With the free/paid Gemini key fallback in place, each category can afford
-// to clear a full 12-article batch per run instead of trickling out 6.
-const AI_REWRITES_PER_CATEGORY_RUN = Math.max(
-  1,
-  Math.min(Number.parseInt(process.env.AI_REWRITES_PER_CATEGORY_RUN || "12", 10) || 12, 15)
+  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "50", 10), 50)
 );
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
@@ -5639,10 +5638,6 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
 
       const savedRewrites = [];
       for (const articleRecord of candidates) {
-        if (savedRewrites.length >= AI_REWRITES_PER_CATEGORY_RUN) {
-          break;
-        }
-
         if (typeof isDuplicateOfPublished === "function") {
           try {
             const duplicate = await isDuplicateOfPublished(articleRecord.title);
@@ -5696,7 +5691,7 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
           news_id: savedRewrites[0].news_id,
           title: savedRewrites[0].title,
           saved_count: savedRewrites.length,
-          requested_limit: AI_REWRITES_PER_CATEGORY_RUN,
+          requested_limit: candidates.length,
           skipped_candidates: skippedCandidates,
           rewrites: savedRewrites,
           rewrite: savedRewrites[0].rewrite,
