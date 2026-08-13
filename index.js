@@ -282,6 +282,23 @@ const RSS_SOURCE_FEEDS = [
   { source: "dd", url: "https://ddnews.gov.in/en/category/international/feed/" },
   { source: "dd", url: "https://ddnews.gov.in/en/category/business-economy/feed/" },
   { source: "dd", url: "https://ddnews.gov.in/en/category/sports/feed/" },
+  // News18/India Today/NDTV RSS feeds are plain HTTP and unblocked, but their
+  // individual article pages can 403 a bare fetch (confirmed for NDTV from
+  // this server's IP). fetchArticlesForCategory already opens every article
+  // through a real Puppeteer page rather than a raw fetch, which bypasses
+  // that basic bot-detection cleanly (verified live: NDTV articles that
+  // return 403 to curl load fine, og:image and all, via headless Chrome) -
+  // so no separate scraper is needed, just registering the feeds here.
+  { source: "news18", url: "https://www.news18.com/commonfeeds/v1/eng/rss/india.xml", source_category: "national" },
+  { source: "news18", url: "https://www.news18.com/commonfeeds/v1/eng/rss/world.xml", source_category: "international" },
+  { source: "news18", url: "https://www.news18.com/commonfeeds/v1/eng/rss/business.xml", source_category: "business" },
+  { source: "news18", url: "https://www.news18.com/commonfeeds/v1/eng/rss/sports.xml", source_category: "sports" },
+  { source: "news18", url: "https://www.news18.com/commonfeeds/v1/eng/rss/entertainment.xml", source_category: "entertainment" },
+  { source: "indiatoday", url: "https://www.indiatoday.in/rss/1206578", source_category: "national" },
+  { source: "indiatoday", url: "https://www.indiatoday.in/rss/home", source_category: "national" },
+  { source: "ndtv", url: "https://feeds.feedburner.com/ndtvnews-top-stories", source_category: "national" },
+  { source: "ndtv", url: "https://feeds.feedburner.com/ndtvnews-world-news", source_category: "international" },
+  { source: "ndtv", url: "https://feeds.feedburner.com/ndtvprofit-latest", source_category: "business" },
   ...STATE_GOV_SOURCES,
 ];
 

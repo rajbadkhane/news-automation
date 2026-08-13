@@ -533,11 +533,13 @@ CATEGORY OVERRIDE:
 const { isDuplicateColumnError, isDuplicateKeyError } = require("./db");
 const AI_REWRITE_CANDIDATE_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "30", 10), 50)
+  Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "40", 10), 50)
 );
+// With the free/paid Gemini key fallback in place, each category can afford
+// to clear a full 12-article batch per run instead of trickling out 6.
 const AI_REWRITES_PER_CATEGORY_RUN = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.AI_REWRITES_PER_CATEGORY_RUN || "6", 10) || 6, 15)
+  Math.min(Number.parseInt(process.env.AI_REWRITES_PER_CATEGORY_RUN || "12", 10) || 12, 15)
 );
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
