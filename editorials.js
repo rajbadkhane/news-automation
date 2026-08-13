@@ -1,4 +1,6 @@
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_FREE_API_KEY = String(process.env.GEMINI_FREE_API_KEY || "").trim();
+const GEMINI_PAID_API_KEY = String(process.env.GEMINI_PAID_API_KEY || process.env.GEMINI_API_KEY || "").trim();
+const GEMINI_API_KEY = GEMINI_FREE_API_KEY || GEMINI_PAID_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
 const EDITORIAL_DAILY_LIMIT = Math.max(1, Number.parseInt(process.env.EDITORIAL_DAILY_LIMIT || "10", 10) || 10);
 const EDITORIAL_MIN_SYNC_INTERVAL_MS = Math.max(
@@ -89,6 +91,7 @@ Part-by-part requirements:
 - Do not repeat primary_headline, sub_headline or executive_summary verbatim inside deep_dive.`;
 
 let lastEditorialSyncAt = 0;
+let geminiFreeKeyUnavailableUntil = 0;
 
 function parseJsonResponse(rawText) {
   const text = String(rawText || "").trim();
@@ -102,6 +105,76 @@ function countWords(value) {
 
 function hasHindiText(value) {
   return /[ऀ-ॿ]/.test(String(value || ""));
+}
+
+function getNextPacificMidnightTimestamp(now = new Date()) {
+  const pacificFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = pacificFormatter.formatToParts(now).reduce((accumulator, part) => {
+    if (part.type !== "literal") {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+  const pacificNoonUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + 1, 12, 0, 0);
+  const nextParts = pacificFormatter.formatToParts(new Date(pacificNoonUtc)).reduce((accumulator, part) => {
+    if (part.type !== "literal") {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+  const guessUtc = Date.UTC(Number(nextParts.year), Number(nextParts.month) - 1, Number(nextParts.day), 8, 0, 0);
+  const guessPacific = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(guessUtc)).reduce((accumulator, part) => {
+    if (part.type !== "literal") {
+      accumulator[part.type] = part.value;
+    }
+    return accumulator;
+  }, {});
+  const offsetMinutes = Number(guessPacific.hour) * 60 + Number(guessPacific.minute);
+  return guessUtc - offsetMinutes * 60_000;
+}
+
+function getGeminiKeyCandidates() {
+  const candidates = [];
+  if (GEMINI_FREE_API_KEY && Date.now() >= geminiFreeKeyUnavailableUntil) {
+    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
+  }
+  if (GEMINI_PAID_API_KEY && GEMINI_PAID_API_KEY !== GEMINI_FREE_API_KEY) {
+    candidates.push({ label: "paid", apiKey: GEMINI_PAID_API_KEY });
+  }
+  if (!candidates.length && GEMINI_FREE_API_KEY) {
+    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
+  }
+  return candidates;
+}
+
+function isQuotaExhaustedResponse(response, payload) {
+  const message = String(payload?.error?.message || "").toLowerCase();
+  return response.status === 429 && (
+    payload?.error?.status === "RESOURCE_EXHAUSTED" ||
+    message.includes("quota") ||
+    message.includes("rate limit") ||
+    message.includes("spending cap")
+  );
+}
+
+function markFreeGeminiKeyExhausted() {
+  const nextHourlyProbe = Date.now() + 60 * 60_000;
+  const nextPacificReset = getNextPacificMidnightTimestamp(new Date());
+  geminiFreeKeyUnavailableUntil = Math.min(nextHourlyProbe, nextPacificReset);
+  console.warn(
+    `[gemini-key] Free Gemini key exhausted for editorials; using paid key until next free-key probe at ` +
+      `${new Date(geminiFreeKeyUnavailableUntil).toISOString()}. Daily quota reset is midnight Pacific.`
+  );
 }
 
 async function callGeminiGenerateContent({ prompt, tools = null, responseMimeType = null, temperature = 0.3, maxOutputTokens = 8000 }) {
@@ -122,22 +195,42 @@ async function callGeminiGenerateContent({ prompt, tools = null, responseMimeTyp
     body.tools = tools;
   }
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+  const keyCandidates = getGeminiKeyCandidates();
+  if (!keyCandidates.length) {
+    throw new Error("GEMINI_API_KEY is not configured.");
   }
 
-  const rawText = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
-  return { rawText, payload };
+  let lastError = null;
+  for (const keyCandidate of keyCandidates) {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(keyCandidate.apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const payload = await response.json();
+    if (!response.ok) {
+      lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+      if (keyCandidate.label === "free" && GEMINI_PAID_API_KEY && isQuotaExhaustedResponse(response, payload)) {
+        markFreeGeminiKeyExhausted();
+        continue;
+      }
+      throw lastError;
+    }
+
+    console.log(`[gemini-key] Editorial used ${keyCandidate.label} key.`);
+    if (keyCandidate.label === "paid" && GEMINI_FREE_API_KEY && Date.now() < geminiFreeKeyUnavailableUntil) {
+      console.warn("[gemini-key] Editorial Gemini request used paid fallback because free key is cooling down.");
+    }
+
+    const rawText = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
+    return { rawText, payload };
+  }
+
+  throw lastError || new Error("Gemini request failed.");
 }
 
 // One grounded call per day discovers today's issues; forcing JSON response

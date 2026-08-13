@@ -1255,6 +1255,10 @@ const SCHEDULER_PRIMARY_SOURCE_LIMIT = Math.max(
   1,
   Math.min(Number.parseInt(process.env.SCHEDULER_PRIMARY_SOURCE_LIMIT, 10) || 8, 20)
 );
+const RASHIFAL_SYNC_START_HOUR = Math.max(
+  0,
+  Math.min(Number.parseInt(process.env.RASHIFAL_SYNC_START_HOUR || "5", 10) || 5, 23)
+);
 const STALE_SCHEDULER_RUN_MS = Math.max(
   5 * 60_000,
   Number.parseInt(process.env.STALE_SCHEDULER_RUN_MS, 10) || 5 * 60 * 1000
@@ -1347,6 +1351,7 @@ const schedulerState = {
   },
   rashifal: {
     dayKey: null,
+    startHour: RASHIFAL_SYNC_START_HOUR,
     lastRunAt: null,
     lastStatus: "Waiting",
     savedCount: 0,
@@ -8582,7 +8587,17 @@ async function schedulerTick() {
 }
 
 async function runScheduledRashifalSync(now = new Date()) {
+  const indiaNow = getIndiaTimeParts(now);
   const dayKey = buildIndiaDayKey(now);
+  if (indiaNow.hour < RASHIFAL_SYNC_START_HOUR) {
+    schedulerState.rashifal = {
+      ...schedulerState.rashifal,
+      lastStatus: "Waiting",
+      lastError: `Waiting until ${String(RASHIFAL_SYNC_START_HOUR).padStart(2, "0")}:00 ${INDIA_TIMEZONE}.`,
+    };
+    return;
+  }
+
   if (schedulerState.rashifal.dayKey === dayKey) {
     return;
   }
