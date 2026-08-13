@@ -253,8 +253,13 @@ const GOVERNMENT_NEWS_SOURCES = new Set(["dd", "pib", "mpinfo"]);
 // attempt each cycle instead of only running on leftover budget.
 const PRIMARY_RSS_SOURCES = ["dd", "mpinfo", "news18", "indiatoday", "ndtv"];
 const PRIMARY_NEWS_SOURCE_STRATEGY = ["cliff-news", "google-rss", ...PRIMARY_RSS_SOURCES];
+// cg-gov (jansampark.cg.gov.in) presents a broken TLS chain (missing
+// intermediate certificate, confirmed live: "unable to get local issuer
+// certificate") - a genuine upstream misconfiguration, not something to work
+// around by weakening TLS verification app-wide. Disabled until they fix it;
+// kerala-gov/haryana-gov both verified working fine.
 const STATE_GOV_SOURCE_ALLOWLIST = new Set(
-  String(process.env.STATE_GOV_SOURCE_ALLOWLIST || "kerala-gov,haryana-gov,cg-gov")
+  String(process.env.STATE_GOV_SOURCE_ALLOWLIST || "kerala-gov,haryana-gov")
     .split(",")
     .map((source) => source.trim())
     .filter(Boolean)
@@ -281,7 +286,12 @@ const STATE_GOV_SOURCES = RAW_STATE_GOV_SOURCES
   .map((item) => ({ ...item, type: "state-gov", source_category: "state", source_state: item.state }));
 
 const RSS_SOURCE_FEEDS = [
-  { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1", source_category: "national" },
+  // Regid=1 is a stale/discontinued PIB edition that now redirects but
+  // returns a channel with zero <item> entries (confirmed live: every other
+  // Regid value 1,2,4,5,6 is also empty). Regid=3 is the only currently
+  // active edition and happens to already be in Hindi, which fits this
+  // Hindi-only pipeline directly.
+  { source: "pib", url: "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3", source_category: "national" },
   { source: "mpinfo", url: "https://mpinfo.org/RSSFeed/RSSFeed_News.xml", source_category: "mpinfo" },
   { source: "dd", url: "https://ddnews.gov.in/en/category/national/feed/" },
   { source: "dd", url: "https://ddnews.gov.in/en/category/top-stories/feed/" },
