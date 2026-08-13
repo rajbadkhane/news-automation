@@ -169,7 +169,7 @@ assert.ok(capturedLogs[0].includes("finish_reason=stop"));
 assert.ok(capturedLogs[0].includes("reasoning_tokens=0"));
 assert.ok(!capturedLogs[0].includes("FULL GENERATED ARTICLE"));
 assert.strictEqual(
-  __test.isCurrentAiRewritePrompt({ prompt_version: "hindi-only-v12-1300-1500-words" }),
+  __test.isCurrentAiRewritePrompt({ prompt_version: "hindi-only-v13-1000-1100-words" }),
   true
 );
 assert.strictEqual(
@@ -235,11 +235,11 @@ assert.strictEqual(normalized.raw_articles, undefined);
 assert.ok(countWords(compact.hindi.lead_100) < 95, "lead segment count is not an independent hard contract");
 assert.ok(normalized._compact_counts.hindi.normalized.body100 >= 300);
 assert.ok(normalized._compact_counts.hindi.normalized.body300 >= 600);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1300);
-assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1500);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 >= 1000);
+assert.ok(normalized._compact_counts.hindi.normalized.body1000 <= 1100);
 assert.ok(normalized._compact_counts.english.normalized.body100 >= 300);
 assert.ok(normalized._compact_counts.english.normalized.body300 >= 600);
-assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1300);
+assert.ok(normalized._compact_counts.english.normalized.body1000 >= 1000);
 
 const toppedUpLead = makeCompactPayload({
   hindi: {
@@ -264,7 +264,7 @@ const overlong = __test.buildCompactBilingualPayload(makeCompactPayload({
   english: { extension_700: repeatSentences(englishWords, 150) },
 }), articleRecord, articleText);
 assert.ok(overlong._compact_counts.english.segment.extension_700 > 1400);
-assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1500);
+assert.ok(overlong._compact_counts.english.normalized.body1000 <= 1100);
 
 assert.throws(
   () => __test.buildCompactBilingualPayload(makeCompactPayload({
@@ -274,7 +274,7 @@ assert.throws(
   (error) => {
     assert.ok(error.invalidFields.includes("hindi.long_cumulative"));
     assert.ok(error.invalidFields.includes("english.long_cumulative"));
-    assert.ok(error.validationDetails["english.long_cumulative"].words < 1300);
+    assert.ok(error.validationDetails["english.long_cumulative"].words < 1000);
     return true;
   }
 );

@@ -1319,7 +1319,6 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
   const [currentPage, setCurrentPage] = useState(1);
   const [lastReloadAt, setLastReloadAt] = useState(initialPayload?.loaded_at || new Date().toISOString());
   const [message, setMessage] = useState("");
-  const [categoryCatalog, setCategoryCatalog] = useState(null);
   const [preview, setPreview] = useState(null);
   const [relativeNow, setRelativeNow] = useState(null);
   const [translateLanguage, setTranslateLanguage] = useState("hi");
@@ -1327,19 +1326,14 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
 
   const records = useMemo(() => flattenPayload(payload, activeSection), [activeSection, payload]);
   const payloadHasRecords = hasPayloadRecords(payload);
-  const dynamicNewsCategories = useMemo(() => {
-    const categories =
-      categoryCatalog?.data?.final_categories ||
-      categoryCatalog?.final_categories ||
-      categoryCatalog?.data?.data?.final_categories ||
-      [];
-    return Array.isArray(categories)
-      ? Array.from(new Set(categories.map(normalizeNewsCategory).filter(Boolean)))
-      : [];
-  }, [categoryCatalog]);
   const categoryOptions = useMemo(() => {
     if (activeSection === "news") {
-      return getNewsCategoryOptions(dynamicNewsCategories);
+      // Only the 6 categories the AI rewrite pipeline actually classifies
+      // articles into (NEWS_CATEGORY_OPTIONS). Raw fetch-time RSS categories
+      // (Science/Health/Technology/National-State/etc.) never appear on a
+      // published article's category field, so offering them here just gave
+      // filter options that always returned zero results.
+      return getNewsCategoryOptions();
     }
 
     return [
@@ -1349,7 +1343,7 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
         label: category,
       })),
     ];
-  }, [activeSection, dynamicNewsCategories, records]);
+  }, [activeSection, records]);
   const states = useMemo(() => uniqueValues(records, (item) => item.state), [records]);
   const districts = useMemo(() => uniqueValues(records, (item) => item.district), [records]);
 
@@ -1608,28 +1602,6 @@ export default function NewsTableDesk({ initialPayload, initialSection = "news" 
       writeSectionCache(activeSection, initialPayload, activeSection === "news" ? normalizeNewsCategory(filters.category) || "all" : "default");
     }
   }, [activeSection, filters.category, initialPayload]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadCategoryCatalog() {
-      try {
-        const response = await fetchWithTimeout(getDashboardProxyPath("/categories"), { cache: "no-store" });
-        const nextPayload = await response.json();
-        if (!cancelled && response.ok) {
-          setCategoryCatalog(nextPayload);
-        }
-      } catch {
-        // Fall back to categories present in the article payload.
-      }
-    }
-
-    void loadCategoryCatalog();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     startTransition(() => {

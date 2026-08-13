@@ -2315,6 +2315,58 @@ async function findSimilarRecentNewsRecord({ category, title }) {
   return null;
 }
 
+// Fetch-time dedup (findSimilarRecentNewsRecord) only compares within a
+// 100-row recent window per category, which a busy MP Info crawl cycle can
+// blow through before a true duplicate posting comes back around. This is a
+// second, independent check applied right before spending an AI rewrite call:
+// even if the same real story slipped through as two different fetched_news
+// rows, it should still only ever get published once.
+const AI_REWRITE_DUPLICATE_LOOKBACK_HOURS = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.AI_REWRITE_DUPLICATE_LOOKBACK_HOURS, 10) || 168, 336)
+);
+
+async function findRecentPublishedDuplicateTitle(title) {
+  if (!dbPool || !title) {
+    return null;
+  }
+
+  const candidateTokens = buildNewsEventTokenSet(title);
+  if (candidateTokens.size < 4) {
+    return null;
+  }
+
+  const since = new Date(Date.now() - AI_REWRITE_DUPLICATE_LOOKBACK_HOURS * 60 * 60 * 1000);
+  const [rows] = await dbPool.execute(
+    `
+      SELECT air.news_id, fn.title AS source_title
+      FROM ai_news_rewrites air
+      INNER JOIN fetched_news fn ON fn.id = air.news_id
+      WHERE air.publication_status = 'published'
+        AND air.published_at >= ?
+      ORDER BY air.id DESC
+      LIMIT 300
+    `,
+    [since]
+  );
+
+  for (const row of rows) {
+    // Compare against the original source title (same language as the
+    // candidate), not the AI-generated Hindi headline: most source articles
+    // are in English, so comparing against a Hindi ui_title would never
+    // token-overlap even for a genuine duplicate.
+    const similarity = getNewsTitleEventSimilarity(title, row.source_title);
+    if (similarity.sameEvent) {
+      return {
+        news_id: row.news_id,
+        matching_tokens: similarity.matchingTokens,
+      };
+    }
+  }
+
+  return null;
+}
+
 async function findNewsRecordDuplicate({ articleUrl, sourceUrlSignature, titleSignature }) {
   if (!dbPool) {
     throw new Error("Database pool is not initialized.");
@@ -8127,6 +8179,7 @@ async function runAiScheduledCycle(triggerSource = "schedule") {
       categories,
       createBrowserPage,
       afterRewriteSaved: () => afterAiRewriteSaved("ai-rewrite-save"),
+      isDuplicateOfPublished: findRecentPublishedDuplicateTitle,
     });
 
     const nowIso = new Date().toISOString();

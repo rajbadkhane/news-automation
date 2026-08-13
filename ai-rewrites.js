@@ -969,7 +969,11 @@ function findMpCategorySignal(values) {
 }
 
 function enforceMpCategoryOverride(uiHindi, context = {}) {
-  const signal = findMpCategorySignal([
+  // MP Info's own feed is a deterministic signal on its own: every article it
+  // publishes is a Madhya Pradesh government portal story by definition, so
+  // this does not depend on the AI correctly detecting a place-name mention.
+  const isMpInfoSource = /^mpinfo/i.test(String(context.feedSource || "").trim());
+  const signal = isMpInfoSource ? "" : findMpCategorySignal([
     context.articleTitle,
     context.articleText,
     context.sourceTitle,
@@ -982,12 +986,17 @@ function enforceMpCategoryOverride(uiHindi, context = {}) {
     uiHindi?.state,
   ]);
 
-  if (!signal || uiHindi.category === "Madhya Pradesh") {
+  if (uiHindi.category === "Madhya Pradesh") {
+    return uiHindi;
+  }
+  if (!isMpInfoSource && !signal) {
     return uiHindi;
   }
 
   const previousCategory = uiHindi.category || AI_DEFAULT_CATEGORY;
-  const reason = `Madhya Pradesh signal detected: ${signal}.`;
+  const reason = isMpInfoSource
+    ? "Article sourced from the MP Info government portal feed."
+    : `Madhya Pradesh signal detected: ${signal}.`;
   const logger = context.logger || console;
   if (typeof logger?.warn === "function") {
     const articleId = context.articleId ? ` for news_id=${context.articleId}` : "";
@@ -1029,6 +1038,7 @@ function buildFallbackAiPayload(articleRecord, articleText, reason) {
     sourceTitle: articleText?.title,
     sourceExcerpt: articleRecord?.source_excerpt,
     sourceUrl: articleRecord?.source_url,
+    feedSource: articleRecord?.feed_source,
   });
 
   return {
@@ -2085,6 +2095,7 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
     sourceTitle: articleText?.title,
     sourceExcerpt: articleRecord?.source_excerpt,
     sourceUrl: articleRecord?.source_url,
+    feedSource: articleRecord?.feed_source,
   });
 
   for (const article of [uiHindi.short_100, uiHindi.long_500, AI_MEDIUM_REWRITE_ENABLED ? uiHindi.medium_300 : null].filter(Boolean)) {
@@ -5598,7 +5609,7 @@ async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publis
   return formatAiRewriteWithNewsRecord(rows[0]);
 }
 
-async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowserPage, afterRewriteSaved = null }) {
+async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowserPage, afterRewriteSaved = null, isDuplicateOfPublished = null }) {
   if (!AI_REWRITE_ENABLED) {
     return (categories || []).map((category) => ({
       status: "Skipped",
@@ -5628,6 +5639,26 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
       for (const articleRecord of candidates) {
         if (savedRewrites.length >= AI_REWRITES_PER_CATEGORY_RUN) {
           break;
+        }
+
+        if (typeof isDuplicateOfPublished === "function") {
+          try {
+            const duplicate = await isDuplicateOfPublished(articleRecord.title);
+            if (duplicate) {
+              const duplicateError = new Error(
+                `Skipped: already published as news_id=${duplicate.news_id} (matching_tokens=${(duplicate.matching_tokens || []).join(",")}).`
+              );
+              skippedCandidates.push({
+                news_id: articleRecord.id,
+                title: articleRecord.title,
+                message: duplicateError.message,
+              });
+              await recordAiRewriteSkip(dbPool, articleRecord, duplicateError, "duplicate_of_published");
+              continue;
+            }
+          } catch (error) {
+            console.warn(`[ai-rewrite] Duplicate-of-published check failed for news_id=${articleRecord.id}: ${error.message}`);
+          }
         }
 
         try {
