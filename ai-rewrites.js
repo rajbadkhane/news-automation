@@ -555,9 +555,15 @@ const SECONDARY_PRIORITY_WINDOW_HOURS = Math.max(
   1,
   Number.parseInt(process.env.SECONDARY_PRIORITY_WINDOW_HOURS || "24", 10)
 );
+// Kept small on purpose: this batch runs before the normal per-category loop
+// and every article in it holds the shared main-scheduler/AI coordination
+// lock (see withIngestionWorkerLock in index.js) for the length of a full
+// browser fetch + Gemini rewrite. A large batch here starves the main fetch
+// scheduler for the whole cycle. Small batches spread the 24h catch-up
+// across many cycles instead of blocking one cycle for a long time.
 const SECONDARY_PRIORITY_BATCH_LIMIT = Math.max(
   1,
-  Math.min(Number.parseInt(process.env.SECONDARY_PRIORITY_BATCH_LIMIT || "20", 10), 50)
+  Math.min(Number.parseInt(process.env.SECONDARY_PRIORITY_BATCH_LIMIT || "5", 10), 50)
 );
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
