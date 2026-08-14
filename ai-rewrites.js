@@ -540,6 +540,25 @@ const AI_REWRITE_CANDIDATE_LIMIT = Math.max(
   1,
   Math.min(Number.parseInt(process.env.AI_REWRITE_CANDIDATE_LIMIT || "50", 10), 50)
 );
+// News18/India Today/NDTV are "secondary priority": the normal per-category
+// loop below already picks up their articles like any other source, but this
+// guarantees a rolling floor of rewritten output from them specifically,
+// spread across whatever categories those stories actually belong to (the
+// AI still classifies each one independently — this only guarantees volume,
+// not category placement).
+const SECONDARY_PRIORITY_SOURCES = ["news18", "indiatoday", "ndtv"];
+const SECONDARY_PRIORITY_MIN_REWRITES = Math.max(
+  0,
+  Number.parseInt(process.env.SECONDARY_PRIORITY_MIN_REWRITES || "70", 10)
+);
+const SECONDARY_PRIORITY_WINDOW_HOURS = Math.max(
+  1,
+  Number.parseInt(process.env.SECONDARY_PRIORITY_WINDOW_HOURS || "24", 10)
+);
+const SECONDARY_PRIORITY_BATCH_LIMIT = Math.max(
+  1,
+  Math.min(Number.parseInt(process.env.SECONDARY_PRIORITY_BATCH_LIMIT || "20", 10), 50)
+);
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
 );
@@ -2827,6 +2846,48 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
       LIMIT ?
     `,
     [category, AI_REWRITE_MAX_SOURCE_AGE_HOURS, limit]
+  );
+
+  return rows;
+}
+
+async function countSecondaryPriorityRewrites(dbPool, hours) {
+  const placeholders = SECONDARY_PRIORITY_SOURCES.map(() => "?").join(", ");
+  const [rows] = await dbPool.query(
+    `
+      SELECT COUNT(*) AS total
+      FROM ai_news_rewrites air
+      JOIN fetched_news fn ON fn.id = air.news_id
+      WHERE fn.feed_source IN (${placeholders})
+        AND air.created_at >= (NOW() - INTERVAL ? HOUR)
+    `,
+    [...SECONDARY_PRIORITY_SOURCES, hours]
+  );
+  return Number(rows[0]?.total || 0);
+}
+
+async function findSecondaryPriorityCandidates(dbPool, limit) {
+  if (limit <= 0) {
+    return [];
+  }
+
+  const placeholders = SECONDARY_PRIORITY_SOURCES.map(() => "?").join(", ");
+  const [rows] = await dbPool.query(
+    `
+      SELECT
+        fn.id, fn.category, fn.feed_source, fn.feed_url, fn.search_query, fn.title, fn.source_url,
+        fn.image_link, fn.image_source, fn.source_excerpt, fn.source_content, fn.source_published_at, fn.fetched_at
+      FROM fetched_news fn
+      LEFT JOIN ai_news_rewrites air ON air.news_id = fn.id
+      LEFT JOIN ai_rewrite_skips ars ON ars.news_id = fn.id
+      WHERE fn.feed_source IN (${placeholders})
+        AND air.news_id IS NULL
+        AND ars.news_id IS NULL
+        AND fn.fetched_at >= (NOW() - INTERVAL ? HOUR)
+      ORDER BY fn.id DESC
+      LIMIT ?
+    `,
+    [...SECONDARY_PRIORITY_SOURCES, AI_REWRITE_MAX_SOURCE_AGE_HOURS, limit]
   );
 
   return rows;
@@ -5625,6 +5686,105 @@ async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publis
   return formatAiRewriteWithNewsRecord(rows[0]);
 }
 
+async function processRewriteCandidates(dbPool, candidates, createBrowserPage, afterRewriteSaved, isDuplicateOfPublished) {
+  const savedRewrites = [];
+  const skippedCandidates = [];
+
+  for (const articleRecord of candidates) {
+    if (typeof isDuplicateOfPublished === "function") {
+      try {
+        const duplicate = await isDuplicateOfPublished(articleRecord.title);
+        if (duplicate) {
+          const duplicateError = new Error(
+            `Skipped: already published as news_id=${duplicate.news_id} (matching_tokens=${(duplicate.matching_tokens || []).join(",")}).`
+          );
+          skippedCandidates.push({
+            news_id: articleRecord.id,
+            title: articleRecord.title,
+            message: duplicateError.message,
+          });
+          await recordAiRewriteSkip(dbPool, articleRecord, duplicateError, "duplicate_of_published");
+          continue;
+        }
+      } catch (error) {
+        console.warn(`[ai-rewrite] Duplicate-of-published check failed for news_id=${articleRecord.id}: ${error.message}`);
+      }
+    }
+
+    try {
+      const savedRewrite = await createOrUpdateRewriteForRecord(
+        dbPool,
+        articleRecord,
+        createBrowserPage,
+        afterRewriteSaved
+      );
+      savedRewrites.push({
+        news_id: articleRecord.id,
+        title: articleRecord.title,
+        rewrite: formatAiRewriteRecord(savedRewrite),
+      });
+    } catch (error) {
+      if (!isSkippableRewriteInputError(error)) {
+        throw error;
+      }
+
+      skippedCandidates.push({
+        news_id: articleRecord.id,
+        title: articleRecord.title,
+        message: error.message,
+      });
+      await recordAiRewriteSkip(dbPool, articleRecord, error);
+    }
+  }
+
+  return { savedRewrites, skippedCandidates };
+}
+
+async function runSecondaryPriorityTopUp({ dbPool, createBrowserPage, afterRewriteSaved, isDuplicateOfPublished }) {
+  const currentCount = await countSecondaryPriorityRewrites(dbPool, SECONDARY_PRIORITY_WINDOW_HOURS);
+  const deficit = SECONDARY_PRIORITY_MIN_REWRITES - currentCount;
+
+  if (deficit <= 0) {
+    return {
+      status: "Skipped",
+      category: "SecondaryPriority",
+      message: `Secondary priority sources (${SECONDARY_PRIORITY_SOURCES.join(", ")}) already have ${currentCount}/${SECONDARY_PRIORITY_MIN_REWRITES} rewrites in the last ${SECONDARY_PRIORITY_WINDOW_HOURS}h.`,
+    };
+  }
+
+  const batchSize = Math.min(deficit, SECONDARY_PRIORITY_BATCH_LIMIT);
+  const candidates = await findSecondaryPriorityCandidates(dbPool, batchSize);
+
+  if (!candidates.length) {
+    return {
+      status: "Skipped",
+      category: "SecondaryPriority",
+      message: `Secondary priority sources at ${currentCount}/${SECONDARY_PRIORITY_MIN_REWRITES} (need ${deficit} more) but no unrewritten candidates are available right now.`,
+    };
+  }
+
+  const { savedRewrites, skippedCandidates } = await processRewriteCandidates(
+    dbPool,
+    candidates,
+    createBrowserPage,
+    afterRewriteSaved,
+    isDuplicateOfPublished
+  );
+
+  return {
+    status: savedRewrites.length > 0 ? "Success" : "Skipped",
+    category: "SecondaryPriority",
+    news_id: savedRewrites[0]?.news_id,
+    title: savedRewrites[0]?.title,
+    saved_count: savedRewrites.length,
+    requested_limit: candidates.length,
+    skipped_candidates: skippedCandidates,
+    rewrites: savedRewrites,
+    rewrite: savedRewrites[0]?.rewrite,
+    message: `Secondary priority top-up: was ${currentCount}/${SECONDARY_PRIORITY_MIN_REWRITES} in the last ${SECONDARY_PRIORITY_WINDOW_HOURS}h, saved ${savedRewrites.length} more.`,
+  };
+}
+
 async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowserPage, afterRewriteSaved = null, isDuplicateOfPublished = null }) {
   if (!AI_REWRITE_ENABLED) {
     return (categories || []).map((category) => ({
@@ -5636,9 +5796,23 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
 
   const results = [];
 
-  for (const category of categories) {
-    const skippedCandidates = [];
+  try {
+    const secondaryPriorityResult = await runSecondaryPriorityTopUp({
+      dbPool,
+      createBrowserPage,
+      afterRewriteSaved,
+      isDuplicateOfPublished,
+    });
+    results.push(secondaryPriorityResult);
+  } catch (error) {
+    results.push({
+      status: "Error",
+      category: "SecondaryPriority",
+      message: error.message,
+    });
+  }
 
+  for (const category of categories) {
     try {
       const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, AI_REWRITE_CANDIDATE_LIMIT);
 
@@ -5651,53 +5825,13 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
         continue;
       }
 
-      const savedRewrites = [];
-      for (const articleRecord of candidates) {
-        if (typeof isDuplicateOfPublished === "function") {
-          try {
-            const duplicate = await isDuplicateOfPublished(articleRecord.title);
-            if (duplicate) {
-              const duplicateError = new Error(
-                `Skipped: already published as news_id=${duplicate.news_id} (matching_tokens=${(duplicate.matching_tokens || []).join(",")}).`
-              );
-              skippedCandidates.push({
-                news_id: articleRecord.id,
-                title: articleRecord.title,
-                message: duplicateError.message,
-              });
-              await recordAiRewriteSkip(dbPool, articleRecord, duplicateError, "duplicate_of_published");
-              continue;
-            }
-          } catch (error) {
-            console.warn(`[ai-rewrite] Duplicate-of-published check failed for news_id=${articleRecord.id}: ${error.message}`);
-          }
-        }
-
-        try {
-          const savedRewrite = await createOrUpdateRewriteForRecord(
-            dbPool,
-            articleRecord,
-            createBrowserPage,
-            afterRewriteSaved
-          );
-          savedRewrites.push({
-            news_id: articleRecord.id,
-            title: articleRecord.title,
-            rewrite: formatAiRewriteRecord(savedRewrite),
-          });
-        } catch (error) {
-          if (!isSkippableRewriteInputError(error)) {
-            throw error;
-          }
-
-          skippedCandidates.push({
-            news_id: articleRecord.id,
-            title: articleRecord.title,
-            message: error.message,
-          });
-          await recordAiRewriteSkip(dbPool, articleRecord, error);
-        }
-      }
+      const { savedRewrites, skippedCandidates } = await processRewriteCandidates(
+        dbPool,
+        candidates,
+        createBrowserPage,
+        afterRewriteSaved,
+        isDuplicateOfPublished
+      );
 
       if (savedRewrites.length > 0) {
         results.push({
@@ -5725,7 +5859,6 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
         status: "Error",
         category,
         message: error.message,
-        skipped_candidates: skippedCandidates,
       });
     }
   }
