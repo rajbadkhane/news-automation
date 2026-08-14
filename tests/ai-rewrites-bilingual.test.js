@@ -381,9 +381,13 @@ const formattedDelivery = __test.formatDeliveredRewrite({
   category: "National",
 }, "both");
 
-assert.strictEqual(formattedDelivery.raw_articles.words_100, normalized.hindi.short_description);
-assert.strictEqual(formattedDelivery.raw_articles_by_language.hindi.words_100, normalized.hindi.short_description);
-assert.strictEqual(formattedDelivery.raw_articles_by_language.english.words_100, normalized.english.short_description);
+// Delivery payloads intentionally omit raw_articles / raw_articles_by_language / the
+// top-level article blob — they duplicated ui_hindi/ui_english content several times
+// over and were bloating the public delivery API response for no benefit.
+assert.strictEqual(formattedDelivery.raw_articles, undefined);
+assert.strictEqual(formattedDelivery.raw_articles_by_language, undefined);
+assert.strictEqual(formattedDelivery.article, undefined);
+assert.strictEqual(formattedDelivery.ui_hindi.short_100, normalized.ui_hindi.short_100);
 assert.strictEqual(formattedDelivery.ui_english.image_url, "https://example.com/image.jpg");
 assert.strictEqual(formattedDelivery.ui_hindi.image_url, "https://example.com/image.jpg");
 assert.strictEqual(typeof __test.generateLegacyHindiRewrite, "function");

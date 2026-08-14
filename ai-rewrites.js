@@ -5460,8 +5460,6 @@ function formatDeliveredRewrite(record, language = "both") {
     words_500: formatted.english?.long_description || formatted.ui_english?.long_500 || "",
     words_600: formatted.english?.long_description || formatted.ui_english?.long_500 || "",
   };
-  const activeRawArticles = language === "english" ? englishRawArticles : hindiRawArticles;
-
   const payload = {
     id: formatted.id,
     slug: formatted.publication?.slug || null,
@@ -5482,11 +5480,6 @@ function formatDeliveredRewrite(record, language = "both") {
       image_link: deliveredImageUrl || null,
       image_source: deliveredImageUrl ? formatted.news?.image_source || null : null,
     },
-    raw_articles: activeRawArticles,
-    raw_articles_by_language: {
-      hindi: hindiRawArticles,
-      english: englishRawArticles,
-    },
     ui_hindi: {
       ...(formatted.ui_hindi || {}),
       category: deliveryCategory,
@@ -5503,11 +5496,7 @@ function formatDeliveredRewrite(record, language = "both") {
 
   if (language === "english" || language === "hindi") {
     if (language === "english") {
-      const {
-        ui_hindi: _uiHindi,
-        raw_articles_by_language: _rawArticlesByLanguage,
-        ...englishOnlyPayload
-      } = payload;
+      const { ui_hindi: _uiHindi, ...englishOnlyPayload } = payload;
       const uiEnglish = englishOnlyPayload.ui_english || {};
       return {
         ...englishOnlyPayload,
@@ -5540,24 +5529,18 @@ function formatDeliveredRewrite(record, language = "both") {
           source: uiEnglish.source || "GE News Hub report",
         },
         language,
-        article: formatted.english,
       };
     }
 
     return {
       ...payload,
       language,
-      article: formatted[language],
     };
   }
 
   return {
     ...payload,
     language: "both",
-    article: {
-      english: formatted.english,
-      hindi: formatted.hindi,
-    },
   };
 }
 
