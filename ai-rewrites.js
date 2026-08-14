@@ -579,6 +579,23 @@ const AI_CYCLE_TIME_BUDGET_MS = Math.max(
   30_000,
   Number.parseInt(process.env.AI_CYCLE_TIME_BUDGET_MS || String(4 * 60 * 1000), 10) || 4 * 60 * 1000
 );
+// Per-category rolling-24h output caps, keyed by the fetch-side category
+// (the same "Madhyapradesh"/"National/State"/"Business"/etc. buckets the
+// per-category loop already iterates — see RSS_FEEDS in index.js). National
+// and Madhya Pradesh are priority categories and stay uncapped; Business
+// gets a tighter cap than the rest because it was outpacing every other
+// category in practice.
+const CATEGORY_DAILY_CAP_WINDOW_HOURS = 24;
+const CATEGORY_DAILY_CAP_PRIORITY_CATEGORIES = ["Madhyapradesh", "National/State"];
+const CATEGORY_DAILY_CAP_OVERRIDES = { Business: 10 };
+const CATEGORY_DAILY_CAP_DEFAULT = 12;
+
+function getCategoryDailyCap(category) {
+  if (CATEGORY_DAILY_CAP_PRIORITY_CATEGORIES.includes(category)) {
+    return Infinity;
+  }
+  return CATEGORY_DAILY_CAP_OVERRIDES[category] ?? CATEGORY_DAILY_CAP_DEFAULT;
+}
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
 );
@@ -996,6 +1013,10 @@ function normalizeDetectionText(value) {
     .trim();
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function findMpCategorySignal(values) {
   const haystack = normalizeDetectionText(values.filter(Boolean).join(" "));
   if (!haystack) {
@@ -1004,7 +1025,15 @@ function findMpCategorySignal(values) {
 
   return MP_CATEGORY_SIGNALS.find((signal) => {
     const normalizedSignal = normalizeDetectionText(signal);
-    return normalizedSignal && haystack.includes(normalizedSignal);
+    if (!normalizedSignal) {
+      return false;
+    }
+    // Word-boundary match, not a bare substring: short district names like
+    // "rewa" or "guna" otherwise false-positive-match inside unrelated
+    // English words (e.g. "reward" contains "rewa"), forcing completely
+    // unrelated stories into Madhya Pradesh.
+    const pattern = new RegExp(`\\b${escapeRegExp(normalizedSignal)}\\b`);
+    return pattern.test(haystack);
   }) || "";
 }
 
@@ -2869,6 +2898,20 @@ async function findLatestRewriteCandidatesByCategory(dbPool, category, limit = 1
   );
 
   return rows;
+}
+
+async function countCategoryRewrites(dbPool, category, hours) {
+  const [rows] = await dbPool.query(
+    `
+      SELECT COUNT(*) AS total
+      FROM ai_news_rewrites air
+      JOIN fetched_news fn ON fn.id = air.news_id
+      WHERE fn.category = ?
+        AND air.created_at >= (NOW() - INTERVAL ? HOUR)
+    `,
+    [category, hours]
+  );
+  return Number(rows[0]?.total || 0);
 }
 
 async function countSecondaryPriorityRewrites(dbPool, hours) {
@@ -5850,7 +5893,26 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
     }
 
     try {
-      const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, AI_REWRITE_CANDIDATE_LIMIT);
+      const dailyCap = getCategoryDailyCap(category);
+      let candidateLimit = AI_REWRITE_CANDIDATE_LIMIT;
+
+      if (Number.isFinite(dailyCap)) {
+        const dailyCount = await countCategoryRewrites(dbPool, category, CATEGORY_DAILY_CAP_WINDOW_HOURS);
+        const remainingToday = dailyCap - dailyCount;
+
+        if (remainingToday <= 0) {
+          results.push({
+            status: "Skipped",
+            category,
+            message: `Daily cap reached: ${dailyCount}/${dailyCap} rewrites in the last ${CATEGORY_DAILY_CAP_WINDOW_HOURS}h.`,
+          });
+          continue;
+        }
+
+        candidateLimit = Math.min(candidateLimit, remainingToday);
+      }
+
+      const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, candidateLimit);
 
       if (!candidates.length) {
         results.push({
@@ -6167,6 +6229,7 @@ module.exports = {
     countArticleWords,
     extractGeminiErrorBody,
     isQuotaExhaustedResponse,
+    findMpCategorySignal,
     generateAiRewrite,
     generateCompactBilingualRewrite,
     generateHindiOnlyRewrite,
