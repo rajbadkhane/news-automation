@@ -565,6 +565,20 @@ const SECONDARY_PRIORITY_BATCH_LIMIT = Math.max(
   1,
   Math.min(Number.parseInt(process.env.SECONDARY_PRIORITY_BATCH_LIMIT || "5", 10), 50)
 );
+// Per-category candidate counts are intentionally uncapped (every available
+// candidate gets attempted, not just the first N), which means one cycle can
+// have hundreds of candidates queued across all categories combined. Since
+// the whole cycle holds the shared main-scheduler/AI coordination lock (see
+// withIngestionWorkerLock in index.js) until it returns, an uncapped cycle
+// can starve the main fetch scheduler indefinitely. This is a wall-clock
+// budget, not an article-count cap: once it elapses, the cycle stops
+// starting new rewrites and returns, releasing the lock; anything left
+// unprocessed simply gets picked up by the next tick. Kept comfortably under
+// the 6-minute scheduler-run-log watchdog so a cycle finishes cleanly.
+const AI_CYCLE_TIME_BUDGET_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.AI_CYCLE_TIME_BUDGET_MS || String(4 * 60 * 1000), 10) || 4 * 60 * 1000
+);
 const AI_REWRITE_AUTO_PUBLISH = !["false", "0", "no"].includes(
   String(process.env.AI_REWRITE_AUTO_PUBLISH || "true").toLowerCase()
 );
@@ -5692,11 +5706,15 @@ async function setAiRewritePublicationStatus(dbPool, rewriteId, { status, publis
   return formatAiRewriteWithNewsRecord(rows[0]);
 }
 
-async function processRewriteCandidates(dbPool, candidates, createBrowserPage, afterRewriteSaved, isDuplicateOfPublished) {
+async function processRewriteCandidates(dbPool, candidates, createBrowserPage, afterRewriteSaved, isDuplicateOfPublished, deadline = Infinity) {
   const savedRewrites = [];
   const skippedCandidates = [];
 
   for (const articleRecord of candidates) {
+    if (Date.now() >= deadline) {
+      break;
+    }
+
     if (typeof isDuplicateOfPublished === "function") {
       try {
         const duplicate = await isDuplicateOfPublished(articleRecord.title);
@@ -5746,7 +5764,7 @@ async function processRewriteCandidates(dbPool, candidates, createBrowserPage, a
   return { savedRewrites, skippedCandidates };
 }
 
-async function runSecondaryPriorityTopUp({ dbPool, createBrowserPage, afterRewriteSaved, isDuplicateOfPublished }) {
+async function runSecondaryPriorityTopUp({ dbPool, createBrowserPage, afterRewriteSaved, isDuplicateOfPublished, deadline = Infinity }) {
   const currentCount = await countSecondaryPriorityRewrites(dbPool, SECONDARY_PRIORITY_WINDOW_HOURS);
   const deficit = SECONDARY_PRIORITY_MIN_REWRITES - currentCount;
 
@@ -5774,7 +5792,8 @@ async function runSecondaryPriorityTopUp({ dbPool, createBrowserPage, afterRewri
     candidates,
     createBrowserPage,
     afterRewriteSaved,
-    isDuplicateOfPublished
+    isDuplicateOfPublished,
+    deadline
   );
 
   return {
@@ -5801,6 +5820,7 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
   }
 
   const results = [];
+  const deadline = Date.now() + AI_CYCLE_TIME_BUDGET_MS;
 
   try {
     const secondaryPriorityResult = await runSecondaryPriorityTopUp({
@@ -5808,6 +5828,7 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
       createBrowserPage,
       afterRewriteSaved,
       isDuplicateOfPublished,
+      deadline,
     });
     results.push(secondaryPriorityResult);
   } catch (error) {
@@ -5819,6 +5840,15 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
   }
 
   for (const category of categories) {
+    if (Date.now() >= deadline) {
+      results.push({
+        status: "Skipped",
+        category,
+        message: "Cycle time budget reached; will resume on the next scheduler tick.",
+      });
+      continue;
+    }
+
     try {
       const candidates = await findLatestRewriteCandidatesByCategory(dbPool, category, AI_REWRITE_CANDIDATE_LIMIT);
 
@@ -5836,7 +5866,8 @@ async function runAiRewriteCycleForCategories({ dbPool, categories, createBrowse
         candidates,
         createBrowserPage,
         afterRewriteSaved,
-        isDuplicateOfPublished
+        isDuplicateOfPublished,
+        deadline
       );
 
       if (savedRewrites.length > 0) {
