@@ -62,13 +62,16 @@ const AI_STANDALONE_SUBHEADING_MIN_WORDS = 5;
 const AI_STANDALONE_SUBHEADING_MAX_WORDS = 7;
 // place_name is a short dateline-style place, not a sentence.
 const AI_PLACE_NAME_MAX_WORDS = 4;
-// Only rewrite articles that are still recent enough to actually be delivered.
-// The delivery feed hides anything older than NEWS_MAX_AGE_HOURS, so rewriting
-// older backlog burns Gemini quota on articles that can never appear on the site.
+// Only rewrite articles that are still recent enough to actually be delivered,
+// and give up on anything that has sat unrewritten this long regardless of
+// why (skipped, errored, stuck behind a fuller category, etc.) — a 12+ hour
+// old article is stale enough that it's not worth spending a Gemini call on.
+// Deliberately independent of NEWS_MAX_AGE_HOURS, which controls delivery
+// visibility, a separate concern from this rewrite-candidate cutoff.
 const AI_REWRITE_MAX_SOURCE_AGE_HOURS = Math.max(
   1,
   Math.min(
-    Number.parseInt(process.env.AI_REWRITE_MAX_SOURCE_AGE_HOURS || process.env.NEWS_MAX_AGE_HOURS || "24", 10) || 24,
+    Number.parseInt(process.env.AI_REWRITE_MAX_SOURCE_AGE_HOURS || "12", 10) || 12,
     168
   )
 );
