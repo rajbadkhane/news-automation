@@ -3305,10 +3305,25 @@ function getGeminiKeyCandidates() {
   return candidates;
 }
 
+// The OpenAI-compatible endpoint (used here) wraps error bodies in an array,
+// e.g. [{ "error": { "code": 429, "status": "RESOURCE_EXHAUSTED", ... } }],
+// unlike the native generateContent endpoint's bare { "error": {...} }. Only
+// checking payload?.error directly silently missed every array-wrapped
+// error, so the free-key-exhausted detection never fired and the paid-key
+// fallback never triggered - every request just kept retrying the same
+// exhausted free key until it ran out of retries.
+function extractGeminiErrorBody(payload) {
+  if (Array.isArray(payload)) {
+    return payload[0]?.error || null;
+  }
+  return payload?.error || null;
+}
+
 function isQuotaExhaustedResponse(response, payload) {
-  const message = String(payload?.error?.message || "").toLowerCase();
+  const error = extractGeminiErrorBody(payload);
+  const message = String(error?.message || "").toLowerCase();
   return response.status === 429 && (
-    payload?.error?.status === "RESOURCE_EXHAUSTED" ||
+    error?.status === "RESOURCE_EXHAUSTED" ||
     message.includes("quota") ||
     message.includes("rate limit") ||
     message.includes("spending cap")
@@ -3373,7 +3388,7 @@ async function requestGeminiJson(messages, {
         return responseInfo;
       }
 
-      lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
+      lastError = new Error(extractGeminiErrorBody(payload)?.message || `Gemini request failed with status ${response.status}.`);
       if (keyCandidate.label === "free" && GEMINI_PAID_API_KEY && isQuotaExhaustedResponse(response, payload)) {
         markFreeGeminiKeyExhausted();
         continue;
@@ -5980,6 +5995,8 @@ module.exports = {
     createGeminiTerminationError,
     countBodyWords,
     countArticleWords,
+    extractGeminiErrorBody,
+    isQuotaExhaustedResponse,
     generateAiRewrite,
     generateCompactBilingualRewrite,
     generateHindiOnlyRewrite,
