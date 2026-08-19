@@ -25,7 +25,7 @@ const EDITORIAL_MAX_REPAIR_ATTEMPTS = 2;
 const EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS = 4;
 const EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS = 6;
 const EDITORIAL_SUB_HEADLINE_MIN_WORDS = 10;
-const EDITORIAL_SUB_HEADLINE_MAX_WORDS = 14;
+const EDITORIAL_SUB_HEADLINE_MAX_WORDS = 15;
 const EDITORIAL_SUMMARY_MIN_WORDS = 100;
 const EDITORIAL_SUMMARY_MAX_WORDS = 200;
 const EDITORIAL_DEEP_DIVE_MIN_WORDS = 1000;
@@ -130,12 +130,12 @@ Part-by-part requirements:
 - primary_headline: a standalone, meaningful Hindi headline, STRICTLY ${EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS} to ${EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS} words. No clickbait. Must reflect the core policy or event theme.
 - sub_headline: a standalone, meaningful Hindi sub-headline, STRICTLY ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} words, expanding directly on primary_headline with essential context or policy implications. Do not repeat primary_headline's wording.
 - executive_summary: a concise Hindi paragraph, STRICTLY ${EDITORIAL_SUMMARY_MIN_WORDS} to ${EDITORIAL_SUMMARY_MAX_WORDS} words, summarizing the core facts, background, key stakeholders, and immediate developments.
-- deep_dive: an exhaustive analytical Hindi editorial, STRICTLY ${EDITORIAL_DEEP_DIVE_MIN_WORDS} to ${EDITORIAL_DEEP_DIVE_MAX_WORDS} words. Structure it using markdown subheadings ("### ") covering, in order:
+- deep_dive: an exhaustive analytical Hindi editorial, STRICTLY ${EDITORIAL_DEEP_DIVE_MIN_WORDS} to ${EDITORIAL_DEEP_DIVE_MAX_WORDS} words — this is a hard output contract, not a suggestion. A response under ${EDITORIAL_DEEP_DIVE_MIN_WORDS} words will be rejected. Plan roughly ${Math.round(EDITORIAL_DEEP_DIVE_MIN_WORDS / 4)}-${Math.round(EDITORIAL_DEEP_DIVE_MAX_WORDS / 4)} words for EACH of the four sections below before writing, so the total naturally lands in range — do not write a short paragraph per section and stop. Structure it using markdown subheadings ("### ") covering, in order:
   ### पृष्ठभूमि और संरचनात्मक संदर्भ
   ### प्रमुख चुनौतियाँ और खामियाँ
   ### हितधारकों पर प्रभाव और सामाजिक-आर्थिक निहितार्थ
   ### नीतिगत सुझाव और आगे की राह
-  Each section must contain substantive analysis, context, stakeholder perspectives and, where relevant, realistic policy references — not filler text.
+  Each section must contain substantive analysis, context, stakeholder perspectives and, where relevant, realistic policy references — not filler text, and not a brief summary of the section topic.
 - Do not repeat primary_headline, sub_headline or executive_summary verbatim inside deep_dive.`;
 
 let lastEditorialSyncAt = 0;
@@ -438,11 +438,13 @@ function validateEditorialPackage(parsed) {
 }
 
 async function repairEditorialPackage(issue, payload, invalidFields) {
+  const currentDeepDiveWords = countWords(payload?.deep_dive);
+  const currentSubHeadlineWords = countWords(payload?.sub_headline);
   const fieldSpecs = {
     primary_headline: `STRICT ${EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS} to ${EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS} Hindi words, standalone and meaningful.`,
-    sub_headline: `STRICT ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} Hindi words, expanding on the primary headline.`,
+    sub_headline: `STRICT ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} Hindi words, expanding on the primary headline. The previous attempt was ${currentSubHeadlineWords} words — ${currentSubHeadlineWords > EDITORIAL_SUB_HEADLINE_MAX_WORDS ? "trim it down" : "expand it slightly"} to land inside the range.`,
     executive_summary: `STRICT ${EDITORIAL_SUMMARY_MIN_WORDS} to ${EDITORIAL_SUMMARY_MAX_WORDS} Hindi words.`,
-    deep_dive: `STRICT ${EDITORIAL_DEEP_DIVE_MIN_WORDS} to ${EDITORIAL_DEEP_DIVE_MAX_WORDS} Hindi words, with the same four markdown subheadings as before.`,
+    deep_dive: `STRICT ${EDITORIAL_DEEP_DIVE_MIN_WORDS} to ${EDITORIAL_DEEP_DIVE_MAX_WORDS} Hindi words, with the same four markdown subheadings as before. The previous attempt was only ${currentDeepDiveWords} words, ${Math.max(0, EDITORIAL_DEEP_DIVE_MIN_WORDS - currentDeepDiveWords)} short of the minimum — this time write noticeably more under each subheading (more analysis, more concrete stakeholder detail, more policy specifics) rather than summarizing briefly. Do not stop until you have clearly passed ${EDITORIAL_DEEP_DIVE_MIN_WORDS} words.`,
   };
 
   const repairPrompt = `${buildEditorialWriterPrompt(issue)}
