@@ -70,6 +70,42 @@ Return ONLY a JSON code block with this exact shape, no other text:
 }
 \`\`\``;
 
+// Grounding-with-Google-Search quota is billed/limited at the account or
+// project level, not per API key — adding more free keys does not add more
+// grounding capacity, so once it's exhausted every grounded call fails the
+// same way regardless of which key tries it. Rather than stop generating
+// editorials entirely until that quota resets, fall back to a non-grounded
+// prompt that draws on the model's own knowledge of major ongoing,
+// well-established India policy themes instead of requiring live search for
+// last-24h freshness. This trades some freshness for availability.
+const EDITORIAL_DISCOVERY_FALLBACK_PROMPT = `You are the daily assignment editor for a national Hindi editorial desk. Live web search is unavailable right now, so work from your own well-established knowledge instead.
+
+TASK:
+Identify exactly ${EDITORIAL_DAILY_LIMIT} major, distinct, ONGOING national issues in India — structural policy debates, long-running reforms, recurring administrative or economic themes — that a serious editorial desk would credibly analyze on any given week, even without today's breaking headlines.
+Scan across these categories (cover as many distinct categories as you credibly can; do not force a story into a category it does not fit):
+${EDITORIAL_CATEGORIES.map((category) => `- ${category}`).join("\n")}
+
+For each issue, return:
+- "category": one of the category names above, verbatim.
+- "topic_title": a short English working title for internal use only (not published).
+- "brief": 3 to 5 sentences in English summarizing what is well-established and widely known about this ongoing issue: the core policy question, key institutions involved, and why it matters. Do not claim anything happened "today" or "this week" — describe it as an ongoing/structural matter.
+- "key_facts": an array of 3 to 6 short factual bullet strings (institutions, laws, established figures, well-known numbers) that are genuinely well-established, not fabricated specifics.
+
+Rules:
+- All ${EDITORIAL_DAILY_LIMIT} issues must be genuinely distinct topics.
+- Prioritize high-impact, high-public-interest national issues over minor regional items.
+- Do not invent a specific recent event, date, casualty figure, or named incident. Stick to structural/ongoing framing that does not depend on knowing today's news.
+
+Return ONLY a JSON code block with this exact shape, no other text:
+\`\`\`json
+{
+  "date": "YYYY-MM-DD",
+  "issues": [
+    { "category": "", "topic_title": "", "brief": "", "key_facts": ["", ""] }
+  ]
+}
+\`\`\``;
+
 const EDITORIAL_WRITER_SYSTEM_PROMPT = `You are a senior Hindi editorial writer for a national policy journal, producing analytical editorial packages on India's top current issues.
 
 Permanent rules:
@@ -259,6 +295,24 @@ async function callGeminiGenerateContent({ prompt, tools = null, responseMimeTyp
 // One grounded call per day discovers today's issues; forcing JSON response
 // mode is unreliable together with tool/grounding use, so this asks for a
 // fenced JSON block in plain text instead (parseJsonResponse already handles that).
+function extractUsableIssues(parsed) {
+  const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
+  return issues
+    .map((issue) => ({
+      category: String(issue?.category || "").trim() || "National Governance & Judiciary",
+      topic_title: String(issue?.topic_title || "").trim(),
+      brief: String(issue?.brief || "").trim(),
+      key_facts: Array.isArray(issue?.key_facts)
+        ? issue.key_facts.map((fact) => String(fact || "").trim()).filter(Boolean).slice(0, 6)
+        : [],
+    }))
+    .filter((issue) => issue.topic_title && issue.brief);
+}
+
+function isGroundingQuotaError(error) {
+  return /quota|rate limit|billing|resource_exhausted/i.test(String(error?.message || ""));
+}
+
 async function discoverTodayIssues() {
   let lastError = null;
 
@@ -278,17 +332,7 @@ The previous attempt returned fewer than ${EDITORIAL_DAILY_LIMIT} usable issues.
       });
 
       const parsed = parseJsonResponse(rawText);
-      const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
-      const usable = issues
-        .map((issue) => ({
-          category: String(issue?.category || "").trim() || "National Governance & Judiciary",
-          topic_title: String(issue?.topic_title || "").trim(),
-          brief: String(issue?.brief || "").trim(),
-          key_facts: Array.isArray(issue?.key_facts)
-            ? issue.key_facts.map((fact) => String(fact || "").trim()).filter(Boolean).slice(0, 6)
-            : [],
-        }))
-        .filter((issue) => issue.topic_title && issue.brief);
+      const usable = extractUsableIssues(parsed);
 
       if (usable.length >= EDITORIAL_DAILY_LIMIT) {
         return { date: String(parsed?.date || "").trim(), issues: usable.slice(0, EDITORIAL_DAILY_LIMIT) };
@@ -299,7 +343,31 @@ The previous attempt returned fewer than ${EDITORIAL_DAILY_LIMIT} usable issues.
       lastError = new Error(`Editorial discovery returned only ${usable.length} usable issues.`);
     } catch (error) {
       lastError = error;
+      if (!isGroundingQuotaError(error)) {
+        continue;
+      }
+      // Grounding is billed/quota-limited at the account level, not per API
+      // key, so retrying the grounded call again won't help once it's hit —
+      // go straight to the non-grounded fallback instead of burning a
+      // second grounded attempt that will fail the same way.
+      break;
     }
+  }
+
+  try {
+    const { rawText } = await callGeminiGenerateContent({
+      prompt: EDITORIAL_DISCOVERY_FALLBACK_PROMPT,
+      temperature: 0.5,
+      maxOutputTokens: 8000,
+    });
+    const parsed = parseJsonResponse(rawText);
+    const usable = extractUsableIssues(parsed);
+    if (usable.length > 0) {
+      console.warn(`[editorial] Grounded discovery unavailable (${lastError?.message}); used non-grounded fallback, ${usable.length} issues.`);
+      return { date: String(parsed?.date || "").trim(), issues: usable.slice(0, EDITORIAL_DAILY_LIMIT) };
+    }
+  } catch (error) {
+    lastError = error;
   }
 
   throw lastError || new Error("Editorial discovery failed.");
