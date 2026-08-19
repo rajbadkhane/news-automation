@@ -494,10 +494,16 @@ Size rules:
 - Do not repeat the headline, secondary heading, subheadings or caption inside body.
 - Exactly one main headline, exactly one secondary headline, exactly three subheadings and exactly one photo caption.
 - Hindi headline: natural newspaper Hindi, 10 to 20 words, factual, restrained, not clickbait.
-- secondary_heading is a STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL. Format: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} short factual keywords or entity names from the story, then a colon ":", then a complete short secondary headline that adds a distinct angle beyond the main headline.
+- secondary_heading is a STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL. Format: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} short factual keywords, then a colon ":", then a complete short secondary headline that adds a distinct angle beyond the main headline, summarizing what the body actually says.
 - The keyword words COUNT TOWARD the ${AI_SECONDARY_HEADLINE_MIN_WORDS}-${AI_SECONDARY_HEADLINE_MAX_WORDS} total; they are not extra. So with 3 keywords, the part after the colon must be about 7 to 11 words. The colon itself is not counted.
-- Correct example (14 words total): "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"
-- Correct example (11 words total): "स्वास्थ्य मंत्रालय, दवा : फर्जी डेटा देने वालों पर होगी सख्त कार्रवाई"
+- The ${AI_SECONDARY_KEYWORDS_MIN}-${AI_SECONDARY_KEYWORDS_MAX} keyword budget is a HARD WORD COUNT, not "2-3 entities/names". A full institution, company or place-plus-institution name (e.g. "मध्य प्रदेश उच्च न्यायालय", "उत्कर्ष स्मॉल फाइनेंस बैंक") is frequently 4+ words on its own and will NOT fit — this is the most common reason this field gets rejected, so handle it deliberately:
+  - Pick only ONE short anchor for the keyword slot: either a short place/institution reference OR a short topic word, never a full multi-word formal name plus a second phrase.
+  - When the natural name is long, shorten it to how a newspaper kicker would: "मध्य प्रदेश उच्च न्यायालय" -> "हाई कोर्ट" or "एमपी कोर्ट" (pick whichever is still factually unambiguous from the body); "उत्कर्ष स्मॉल फाइनेंस बैंक" -> "उत्कर्ष बैंक" or just "बैंक" if the specific bank name alone would need more than 2-3 words.
+  - It is correct and expected for the keyword slot to be shorter than the full formal name used inside body — the keyword slot is a kicker label, not a citation.
+- Correct example (14 words total, 3 keyword words): "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"
+- Correct example (11 words total, 2 keyword words): "स्वास्थ्य मंत्रालय, दवा : फर्जी डेटा देने वालों पर होगी सख्त कार्रवाई"
+- Correct example for a long bank name (12 words total, 2 keyword words): "उत्कर्ष बैंक, सेवाएं : सिस्टम माइग्रेशन के कारण चार दिन बैंकिंग सेवाएं प्रभावित"
+- Wrong (6 keyword words, rejected): "उत्कर्ष स्मॉल फाइनेंस बैंक, बैंकिंग सेवाएं : ..." — the full bank name alone already used 4 words before the second keyword phrase even started.
 - Write it as one tight newspaper-style line. Do not write a full sentence explaining the whole story, and do not exceed ${AI_SECONDARY_HEADLINE_MAX_WORDS} words in total. Do not repeat the main headline's wording.
 - Extract subheadings as standalone fields, separate from body. Do not restate them inside body; the application displays them in their own column, not inside the article body.
 - subheadings is an array of exactly three strings, with two different jobs:
@@ -4399,7 +4405,7 @@ function planHindiOnlyRepairs(payload, invalidFields = []) {
   const bodyWords = countBodyWords(getPathValue(payload, "hindi.body"));
   const replaceSpecs = {
     "hindi.heading": "one natural newspaper Hindi headline, 10 to 20 words",
-    "hindi.secondary_heading": `STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} factual keywords, then a colon, then a short headline distinct from the main heading. The keywords count toward the total, so with 3 keywords the part after the colon is about 7 to 11 words. Do not write a long explanatory sentence. Example: "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"`,
+    "hindi.secondary_heading": `STRICT ${AI_SECONDARY_HEADLINE_MIN_WORDS} to ${AI_SECONDARY_HEADLINE_MAX_WORDS} words IN TOTAL: ${AI_SECONDARY_KEYWORDS_MIN} to ${AI_SECONDARY_KEYWORDS_MAX} factual keywords, then a colon, then a short headline distinct from the main heading. The keywords count toward the total, so with 3 keywords the part after the colon is about 7 to 11 words. Do not write a long explanatory sentence. If the previous attempt's keyword segment was too long, it is almost always because it used a full multi-word institution/company/place name — shorten it to a newspaper-kicker-style short form (e.g. "मध्य प्रदेश उच्च न्यायालय" -> "हाई कोर्ट", "उत्कर्ष स्मॉल फाइनेंस बैंक" -> "उत्कर्ष बैंक") and use only ONE such short anchor, not a full name plus a second phrase. Example: "मध्य प्रदेश, पुलिस : भोपाल में तस्करी गिरोह के तीन सदस्य हिरासत में लिए गए"`,
     "hindi.photo_caption": "one factual Hindi caption, 20 to 30 words",
     "hindi.subheadings": `exactly three Hindi subheadings as an array of three strings, extracted separately from the body: subheadings[0] and subheadings[1] are supported factual mini-headlines (roughly 8 to 18 words each), and subheadings[2] is a STRICT ${AI_STANDALONE_SUBHEADING_MIN_WORDS} to ${AI_STANDALONE_SUBHEADING_MAX_WORDS} words, a complete standalone mini-headline meaningful on its own`,
   };
