@@ -227,8 +227,11 @@ assert.strictEqual(normalized.hindi.top_summary.length, 2);
 assert.strictEqual(normalized.english.top_summary.length, 2);
 assert.strictEqual(normalized.ui_hindi.subheadings.length, 2);
 assert.strictEqual(normalized.ui_english.subheadings.length, 2);
-assert.ok(normalized.hindi.short_description.includes(normalized.ui_hindi.secondary_headline));
-assert.ok(normalized.english.short_description.includes(normalized.ui_english.secondary_headline));
+// Body tiers deliberately do NOT repeat the title/secondary headline anymore
+// (they're already separate fields) — this was pure duplication for a
+// consumer rendering title, sub-headline and body as distinct elements.
+assert.ok(!normalized.hindi.short_description.includes(normalized.ui_hindi.secondary_headline));
+assert.ok(!normalized.english.short_description.includes(normalized.ui_english.secondary_headline));
 assert.strictEqual(normalized.ui_hindi.long_500, normalized.hindi.long_description);
 assert.strictEqual(normalized.ui_english.long_500, normalized.english.long_description);
 assert.strictEqual(normalized.raw_articles, undefined);

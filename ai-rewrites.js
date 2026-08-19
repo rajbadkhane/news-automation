@@ -1,4 +1,15 @@
-const GEMINI_FREE_API_KEY = String(process.env.GEMINI_FREE_API_KEY || "").trim();
+// Supports multiple free keys so quota exhaustion on one doesn't immediately
+// fall back to the paid key: GEMINI_FREE_API_KEYS is a comma-separated list;
+// GEMINI_FREE_API_KEY / GEMINI_FREE_API_KEY_2 are also folded in for
+// convenience so a single extra key can be added without reformatting .env.
+const GEMINI_FREE_API_KEYS = Array.from(new Set(
+  [
+    ...String(process.env.GEMINI_FREE_API_KEYS || "").split(",").map((key) => key.trim()),
+    String(process.env.GEMINI_FREE_API_KEY || "").trim(),
+    String(process.env.GEMINI_FREE_API_KEY_2 || "").trim(),
+  ].filter(Boolean)
+));
+const GEMINI_FREE_API_KEY = GEMINI_FREE_API_KEYS[0] || "";
 const GEMINI_PAID_API_KEY = String(process.env.GEMINI_PAID_API_KEY || process.env.GEMINI_API_KEY || "").trim();
 const GEMINI_API_KEY = GEMINI_FREE_API_KEY || GEMINI_PAID_API_KEY;
 const GEMINI_MODEL = String(process.env.GEMINI_MODEL || "gemini-flash-lite-latest").trim() || "gemini-flash-lite-latest";
@@ -49,7 +60,8 @@ const AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE = Math.max(
   Number.parseInt(process.env.AI_REWRITE_MAX_GEMINI_CALLS_PER_ARTICLE || "4", 10) || 4
 );
 const geminiCallsByArticleId = new Map();
-let geminiFreeKeyUnavailableUntil = 0;
+// Per-key cooldown so one exhausted free key doesn't block the others.
+const geminiFreeKeyUnavailableUntil = new Map();
 // Secondary headline is "<2-3 keywords> : <headline>", counted as a whole:
 // the keywords are part of the 10-14 word budget, not additional to it.
 const AI_SECONDARY_HEADLINE_MIN_WORDS = 10;
@@ -62,6 +74,10 @@ const AI_STANDALONE_SUBHEADING_MIN_WORDS = 5;
 const AI_STANDALONE_SUBHEADING_MAX_WORDS = 7;
 // place_name is a short dateline-style place, not a sentence.
 const AI_PLACE_NAME_MAX_WORDS = 4;
+// Body sentences are kept short enough to fit the newspaper layout tool's
+// column width — long run-on sentences don't wrap cleanly there.
+const AI_BODY_SENTENCE_MIN_WORDS = 15;
+const AI_BODY_SENTENCE_MAX_WORDS = 25;
 // Only rewrite articles that are still recent enough to actually be delivered,
 // and give up on anything that has sat unrewritten this long regardless of
 // why (skipped, errored, stuck behind a fuller category, etc.) — a 12+ hour
@@ -470,6 +486,7 @@ JSON schema:
 Size rules:
 - body is a hard MINIMUM of ${AI_LONG_REWRITE_MIN_WORDS} Hindi words. Reaching more is fine and encouraged (up to about ${AI_LONG_REWRITE_MAX_WORDS} words); reaching less is not acceptable.
 - Write body as one continuous, complete, publishable Hindi news article in a single field — not a summary, not bullet points, not multiple segments.
+- Keep every sentence in body roughly ${AI_BODY_SENTENCE_MIN_WORDS} to ${AI_BODY_SENTENCE_MAX_WORDS} words. This is a print-layout requirement: long run-on sentences with many clauses do not fit the newspaper column layout. If a fact needs more than ${AI_BODY_SENTENCE_MAX_WORDS} words, split it into two complete sentences instead of joining them with commas or "और"/"जबकि"/"क्योंकि" into one long sentence.
 - Keep sentences complete so the application can trim body at sentence boundaries to derive 300-word, 600-word and ${AI_LONG_REWRITE_MIN_WORDS}-word publishable versions from this SAME text (each shorter version is the opening portion of the longer one).
 - Never stop writing around 300 or 600 words; continue until the article comfortably reaches ${AI_LONG_REWRITE_MIN_WORDS} to ${AI_LONG_REWRITE_MAX_WORDS} words when the supplied source has enough verified material.
 - This is a hard output contract: if body is under ${AI_LONG_REWRITE_MIN_WORDS} words the response will be rejected and you will be asked to add more. When in doubt, write more, not less.
@@ -1567,16 +1584,16 @@ function normalizeSingleBodyTiers(bodyText, language) {
   };
 }
 
+// Deliberately does NOT prepend heading/secondaryHeading: those are already
+// separate fields (ui_hindi.title / ui_hindi.secondary_headline), so
+// repeating them at the start of every body tier just duplicated content for
+// consumers that render title, sub-headline and body as distinct elements
+// (e.g. the newspaper layout tool pulling this field straight into a body slot).
 function assemblePublishableArticle({
-  heading,
-  secondaryHeading,
   photoCaption,
   body,
 }) {
   return [
-    cleanGeneratedText(heading),
-    cleanGeneratedText(secondaryHeading),
-    "",
     cleanGeneratedText(body),
     "",
     `Photo Caption: ${cleanGeneratedText(photoCaption)}`,
@@ -1909,20 +1926,14 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
     secondary_headline: hindi.secondary_heading,
     subheadings: hindi.subheadings,
     short_100: assemblePublishableArticle({
-      heading: hindi.heading,
-      secondaryHeading: hindi.secondary_heading,
       photoCaption: hindi.photo_caption,
       body: hindiProgressive.bodies.body100,
     }),
     medium_300: assemblePublishableArticle({
-      heading: hindi.heading,
-      secondaryHeading: hindi.secondary_heading,
       photoCaption: hindi.photo_caption,
       body: hindiProgressive.bodies.body300,
     }),
     long_500: assemblePublishableArticle({
-      heading: hindi.heading,
-      secondaryHeading: hindi.secondary_heading,
       photoCaption: hindi.photo_caption,
       body: hindiProgressive.bodies.body1000,
     }),
@@ -1945,20 +1956,14 @@ function buildCompactBilingualPayload(compactPayload, articleRecord, articleText
   });
 
   const englishShort100 = assemblePublishableArticle({
-    heading: english.heading,
-    secondaryHeading: english.secondary_heading,
     photoCaption: english.photo_caption,
     body: englishProgressive.bodies.body100,
   });
   const englishMedium300 = assemblePublishableArticle({
-    heading: english.heading,
-    secondaryHeading: english.secondary_heading,
     photoCaption: english.photo_caption,
     body: englishProgressive.bodies.body300,
   });
   const englishLong1000 = assemblePublishableArticle({
-    heading: english.heading,
-    secondaryHeading: english.secondary_heading,
     photoCaption: english.photo_caption,
     body: englishProgressive.bodies.body1000,
   });
@@ -2131,22 +2136,16 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
     secondary_headline: secondaryHeading,
     subheadings,
     short_100: assemblePublishableArticle({
-      heading,
-      secondaryHeading,
       photoCaption,
       body: tiers.bodies.body100,
     }),
     medium_300: AI_MEDIUM_REWRITE_ENABLED
       ? assemblePublishableArticle({
-          heading,
-          secondaryHeading,
           photoCaption,
           body: tiers.bodies.body300,
         })
       : "",
     long_500: assemblePublishableArticle({
-      heading,
-      secondaryHeading,
       photoCaption,
       body: tiers.bodies.body1000,
     }),
@@ -3420,16 +3419,28 @@ function getNextPacificMidnightTimestamp(now = new Date()) {
 
 function getGeminiKeyCandidates() {
   const candidates = [];
-  if (GEMINI_FREE_API_KEY && Date.now() >= geminiFreeKeyUnavailableUntil) {
-    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
-  }
-  if (GEMINI_PAID_API_KEY && GEMINI_PAID_API_KEY !== GEMINI_FREE_API_KEY) {
+  const now = Date.now();
+  GEMINI_FREE_API_KEYS.forEach((apiKey, index) => {
+    const unavailableUntil = geminiFreeKeyUnavailableUntil.get(apiKey) || 0;
+    if (now >= unavailableUntil) {
+      candidates.push({ label: `free-${index + 1}`, apiKey });
+    }
+  });
+  if (GEMINI_PAID_API_KEY && !GEMINI_FREE_API_KEYS.includes(GEMINI_PAID_API_KEY)) {
     candidates.push({ label: "paid", apiKey: GEMINI_PAID_API_KEY });
   }
-  if (!candidates.length && GEMINI_FREE_API_KEY) {
-    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
+  if (!candidates.length && GEMINI_FREE_API_KEYS.length) {
+    candidates.push({ label: "free-1", apiKey: GEMINI_FREE_API_KEYS[0] });
   }
   return candidates;
+}
+
+function areAllFreeGeminiKeysCoolingDown() {
+  if (!GEMINI_FREE_API_KEYS.length) {
+    return false;
+  }
+  const now = Date.now();
+  return GEMINI_FREE_API_KEYS.every((apiKey) => now < (geminiFreeKeyUnavailableUntil.get(apiKey) || 0));
 }
 
 // The OpenAI-compatible endpoint (used here) wraps error bodies in an array,
@@ -3457,13 +3468,14 @@ function isQuotaExhaustedResponse(response, payload) {
   );
 }
 
-function markFreeGeminiKeyExhausted() {
+function markFreeGeminiKeyExhausted(apiKey) {
   const nextHourlyProbe = Date.now() + 60 * 60_000;
   const nextPacificReset = getNextPacificMidnightTimestamp(new Date());
-  geminiFreeKeyUnavailableUntil = Math.min(nextHourlyProbe, nextPacificReset);
+  const unavailableUntil = Math.min(nextHourlyProbe, nextPacificReset);
+  geminiFreeKeyUnavailableUntil.set(apiKey, unavailableUntil);
   console.warn(
-    `[gemini-key] Free Gemini key exhausted; using paid key until next free-key probe at ` +
-      `${new Date(geminiFreeKeyUnavailableUntil).toISOString()}. Daily quota reset is midnight Pacific.`
+    `[gemini-key] Free Gemini key (...${apiKey.slice(-6)}) exhausted; cooling down until ` +
+      `${new Date(unavailableUntil).toISOString()}. Daily quota reset is midnight Pacific.`
   );
 }
 
@@ -3500,8 +3512,8 @@ async function requestGeminiJson(messages, {
 
       if (response.ok) {
         console.log(`[gemini-key] News rewrite used ${keyCandidate.label} key.`);
-        if (keyCandidate.label === "paid" && GEMINI_FREE_API_KEY && Date.now() < geminiFreeKeyUnavailableUntil) {
-          console.warn("[gemini-key] Gemini request used paid fallback because free key is cooling down.");
+        if (keyCandidate.label === "paid" && areAllFreeGeminiKeysCoolingDown()) {
+          console.warn("[gemini-key] Gemini request used paid fallback because all free keys are cooling down.");
         }
         const terminationError = createGeminiTerminationError(responseInfo);
         if (terminationError) {
@@ -3516,8 +3528,8 @@ async function requestGeminiJson(messages, {
       }
 
       lastError = new Error(extractGeminiErrorBody(payload)?.message || `Gemini request failed with status ${response.status}.`);
-      if (keyCandidate.label === "free" && GEMINI_PAID_API_KEY && isQuotaExhaustedResponse(response, payload)) {
-        markFreeGeminiKeyExhausted();
+      if (keyCandidate.label.startsWith("free") && isQuotaExhaustedResponse(response, payload)) {
+        markFreeGeminiKeyExhausted(keyCandidate.apiKey);
         continue;
       }
 

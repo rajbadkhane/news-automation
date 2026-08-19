@@ -1,4 +1,13 @@
-const GEMINI_FREE_API_KEY = String(process.env.GEMINI_FREE_API_KEY || "").trim();
+// Supports multiple free keys so quota exhaustion on one doesn't immediately
+// fall back to the paid key; see ai-rewrites.js for the same pattern.
+const GEMINI_FREE_API_KEYS = Array.from(new Set(
+  [
+    ...String(process.env.GEMINI_FREE_API_KEYS || "").split(",").map((key) => key.trim()),
+    String(process.env.GEMINI_FREE_API_KEY || "").trim(),
+    String(process.env.GEMINI_FREE_API_KEY_2 || "").trim(),
+  ].filter(Boolean)
+));
+const GEMINI_FREE_API_KEY = GEMINI_FREE_API_KEYS[0] || "";
 const GEMINI_PAID_API_KEY = String(process.env.GEMINI_PAID_API_KEY || process.env.GEMINI_API_KEY || "").trim();
 const GEMINI_API_KEY = GEMINI_FREE_API_KEY || GEMINI_PAID_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
@@ -91,7 +100,8 @@ Part-by-part requirements:
 - Do not repeat primary_headline, sub_headline or executive_summary verbatim inside deep_dive.`;
 
 let lastEditorialSyncAt = 0;
-let geminiFreeKeyUnavailableUntil = 0;
+// Per-key cooldown so one exhausted free key doesn't block the others.
+const geminiFreeKeyUnavailableUntil = new Map();
 
 function parseJsonResponse(rawText) {
   const text = String(rawText || "").trim();
@@ -145,16 +155,28 @@ function getNextPacificMidnightTimestamp(now = new Date()) {
 
 function getGeminiKeyCandidates() {
   const candidates = [];
-  if (GEMINI_FREE_API_KEY && Date.now() >= geminiFreeKeyUnavailableUntil) {
-    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
-  }
-  if (GEMINI_PAID_API_KEY && GEMINI_PAID_API_KEY !== GEMINI_FREE_API_KEY) {
+  const now = Date.now();
+  GEMINI_FREE_API_KEYS.forEach((apiKey, index) => {
+    const unavailableUntil = geminiFreeKeyUnavailableUntil.get(apiKey) || 0;
+    if (now >= unavailableUntil) {
+      candidates.push({ label: `free-${index + 1}`, apiKey });
+    }
+  });
+  if (GEMINI_PAID_API_KEY && !GEMINI_FREE_API_KEYS.includes(GEMINI_PAID_API_KEY)) {
     candidates.push({ label: "paid", apiKey: GEMINI_PAID_API_KEY });
   }
-  if (!candidates.length && GEMINI_FREE_API_KEY) {
-    candidates.push({ label: "free", apiKey: GEMINI_FREE_API_KEY });
+  if (!candidates.length && GEMINI_FREE_API_KEYS.length) {
+    candidates.push({ label: "free-1", apiKey: GEMINI_FREE_API_KEYS[0] });
   }
   return candidates;
+}
+
+function areAllFreeGeminiKeysCoolingDown() {
+  if (!GEMINI_FREE_API_KEYS.length) {
+    return false;
+  }
+  const now = Date.now();
+  return GEMINI_FREE_API_KEYS.every((apiKey) => now < (geminiFreeKeyUnavailableUntil.get(apiKey) || 0));
 }
 
 function isQuotaExhaustedResponse(response, payload) {
@@ -167,13 +189,14 @@ function isQuotaExhaustedResponse(response, payload) {
   );
 }
 
-function markFreeGeminiKeyExhausted() {
+function markFreeGeminiKeyExhausted(apiKey) {
   const nextHourlyProbe = Date.now() + 60 * 60_000;
   const nextPacificReset = getNextPacificMidnightTimestamp(new Date());
-  geminiFreeKeyUnavailableUntil = Math.min(nextHourlyProbe, nextPacificReset);
+  const unavailableUntil = Math.min(nextHourlyProbe, nextPacificReset);
+  geminiFreeKeyUnavailableUntil.set(apiKey, unavailableUntil);
   console.warn(
-    `[gemini-key] Free Gemini key exhausted for editorials; using paid key until next free-key probe at ` +
-      `${new Date(geminiFreeKeyUnavailableUntil).toISOString()}. Daily quota reset is midnight Pacific.`
+    `[gemini-key] Free Gemini key (...${apiKey.slice(-6)}) exhausted for editorials; cooling down until ` +
+      `${new Date(unavailableUntil).toISOString()}. Daily quota reset is midnight Pacific.`
   );
 }
 
@@ -214,16 +237,16 @@ async function callGeminiGenerateContent({ prompt, tools = null, responseMimeTyp
     const payload = await response.json();
     if (!response.ok) {
       lastError = new Error(payload?.error?.message || `Gemini request failed with status ${response.status}.`);
-      if (keyCandidate.label === "free" && GEMINI_PAID_API_KEY && isQuotaExhaustedResponse(response, payload)) {
-        markFreeGeminiKeyExhausted();
+      if (keyCandidate.label.startsWith("free") && isQuotaExhaustedResponse(response, payload)) {
+        markFreeGeminiKeyExhausted(keyCandidate.apiKey);
         continue;
       }
       throw lastError;
     }
 
     console.log(`[gemini-key] Editorial used ${keyCandidate.label} key.`);
-    if (keyCandidate.label === "paid" && GEMINI_FREE_API_KEY && Date.now() < geminiFreeKeyUnavailableUntil) {
-      console.warn("[gemini-key] Editorial Gemini request used paid fallback because free key is cooling down.");
+    if (keyCandidate.label === "paid" && areAllFreeGeminiKeysCoolingDown()) {
+      console.warn("[gemini-key] Editorial Gemini request used paid fallback because all free keys are cooling down.");
     }
 
     const rawText = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
