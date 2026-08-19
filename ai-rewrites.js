@@ -2081,6 +2081,10 @@ function buildHindiOnlyPayload(rawPayload, articleRecord, articleText, options =
       min: AI_SECONDARY_HEADLINE_MIN_WORDS,
       max: AI_SECONDARY_HEADLINE_MAX_WORDS,
     };
+    console.warn(
+      `[ai-secondary-heading] news_id=${articleRecord?.id} rejected value=${JSON.stringify(secondaryHeading)} ` +
+        `reason=${secondaryCheck.reason || "missing"} total_words=${secondaryCheck.totalWords} keyword_words=${secondaryCheck.keywordWords}`
+    );
   }
   if (!photoCaption || !hasHindiText(photoCaption)) {
     invalidFields.push("hindi.photo_caption");
