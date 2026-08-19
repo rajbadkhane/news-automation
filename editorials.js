@@ -417,6 +417,7 @@ function validateEditorialPackage(parsed) {
     if (!check.valid) {
       invalidFields.push(field);
       details[field] = { reason: check.reason, words: check.words, min: minWords, max: maxWords };
+      console.warn(`[editorial-validation] ${field} rejected: reason=${check.reason} words=${check.words} min=${minWords} max=${maxWords}`);
     }
   }
 
