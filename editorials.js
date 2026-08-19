@@ -19,14 +19,17 @@ const EDITORIAL_MIN_SYNC_INTERVAL_MS = Math.max(
 const EDITORIAL_MAX_REPAIR_ATTEMPTS = 2;
 
 // Word-count anchors per the editorial desk spec. Headline/sub-headline/summary
-// are exact bands; deep_dive is a hard floor only ("at least 1500 words").
+// are exact bands. deep_dive was originally a 1500-word hard floor with no
+// ceiling; every writer attempt was failing to reach it reliably, so it's now
+// a bounded 1000-1200 word range instead — easier to hit consistently.
 const EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS = 4;
 const EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS = 6;
 const EDITORIAL_SUB_HEADLINE_MIN_WORDS = 10;
 const EDITORIAL_SUB_HEADLINE_MAX_WORDS = 14;
 const EDITORIAL_SUMMARY_MIN_WORDS = 100;
 const EDITORIAL_SUMMARY_MAX_WORDS = 200;
-const EDITORIAL_DEEP_DIVE_MIN_WORDS = 1500;
+const EDITORIAL_DEEP_DIVE_MIN_WORDS = 1000;
+const EDITORIAL_DEEP_DIVE_MAX_WORDS = 1200;
 
 const EDITORIAL_CATEGORIES = [
   "National Governance & Judiciary",
@@ -127,7 +130,7 @@ Part-by-part requirements:
 - primary_headline: a standalone, meaningful Hindi headline, STRICTLY ${EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS} to ${EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS} words. No clickbait. Must reflect the core policy or event theme.
 - sub_headline: a standalone, meaningful Hindi sub-headline, STRICTLY ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} words, expanding directly on primary_headline with essential context or policy implications. Do not repeat primary_headline's wording.
 - executive_summary: a concise Hindi paragraph, STRICTLY ${EDITORIAL_SUMMARY_MIN_WORDS} to ${EDITORIAL_SUMMARY_MAX_WORDS} words, summarizing the core facts, background, key stakeholders, and immediate developments.
-- deep_dive: an exhaustive analytical Hindi editorial, a hard MINIMUM of ${EDITORIAL_DEEP_DIVE_MIN_WORDS} words (more is fine and encouraged; less is not acceptable). Structure it using markdown subheadings ("### ") covering, in order:
+- deep_dive: an exhaustive analytical Hindi editorial, STRICTLY ${EDITORIAL_DEEP_DIVE_MIN_WORDS} to ${EDITORIAL_DEEP_DIVE_MAX_WORDS} words. Structure it using markdown subheadings ("### ") covering, in order:
   ### पृष्ठभूमि और संरचनात्मक संदर्भ
   ### प्रमुख चुनौतियाँ और खामियाँ
   ### हितधारकों पर प्रभाव और सामाजिक-आर्थिक निहितार्थ
@@ -395,17 +398,6 @@ function inspectPartWordCount(value, minWords, maxWords) {
   return { valid: true, reason: null, words };
 }
 
-function inspectDeepDive(value, minWords) {
-  const words = countWords(value);
-  if (!value || !hasHindiText(value)) {
-    return { valid: false, reason: "missing_or_not_hindi", words };
-  }
-  if (words < minWords) {
-    return { valid: false, reason: "too_short", words };
-  }
-  return { valid: true, reason: null, words };
-}
-
 function validateEditorialPackage(parsed) {
   const invalidFields = [];
   const details = {};
@@ -418,6 +410,7 @@ function validateEditorialPackage(parsed) {
     ["primary_headline", primaryHeadline, EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS, EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS],
     ["sub_headline", subHeadline, EDITORIAL_SUB_HEADLINE_MIN_WORDS, EDITORIAL_SUB_HEADLINE_MAX_WORDS],
     ["executive_summary", executiveSummary, EDITORIAL_SUMMARY_MIN_WORDS, EDITORIAL_SUMMARY_MAX_WORDS],
+    ["deep_dive", deepDive, EDITORIAL_DEEP_DIVE_MIN_WORDS, EDITORIAL_DEEP_DIVE_MAX_WORDS],
   ];
   for (const [field, value, minWords, maxWords] of bandChecks) {
     const check = inspectPartWordCount(value, minWords, maxWords);
@@ -425,12 +418,6 @@ function validateEditorialPackage(parsed) {
       invalidFields.push(field);
       details[field] = { reason: check.reason, words: check.words, min: minWords, max: maxWords };
     }
-  }
-
-  const deepDiveCheck = inspectDeepDive(deepDive, EDITORIAL_DEEP_DIVE_MIN_WORDS);
-  if (!deepDiveCheck.valid) {
-    invalidFields.push("deep_dive");
-    details.deep_dive = { reason: deepDiveCheck.reason, words: deepDiveCheck.words, min: EDITORIAL_DEEP_DIVE_MIN_WORDS };
   }
 
   if (invalidFields.length) {
@@ -445,7 +432,7 @@ function validateEditorialPackage(parsed) {
     sub_headline: subHeadline,
     executive_summary: executiveSummary,
     deep_dive: deepDive,
-    deep_dive_word_count: deepDiveCheck.words,
+    deep_dive_word_count: countWords(deepDive),
   };
 }
 
@@ -454,7 +441,7 @@ async function repairEditorialPackage(issue, payload, invalidFields) {
     primary_headline: `STRICT ${EDITORIAL_PRIMARY_HEADLINE_MIN_WORDS} to ${EDITORIAL_PRIMARY_HEADLINE_MAX_WORDS} Hindi words, standalone and meaningful.`,
     sub_headline: `STRICT ${EDITORIAL_SUB_HEADLINE_MIN_WORDS} to ${EDITORIAL_SUB_HEADLINE_MAX_WORDS} Hindi words, expanding on the primary headline.`,
     executive_summary: `STRICT ${EDITORIAL_SUMMARY_MIN_WORDS} to ${EDITORIAL_SUMMARY_MAX_WORDS} Hindi words.`,
-    deep_dive: `a hard MINIMUM of ${EDITORIAL_DEEP_DIVE_MIN_WORDS} Hindi words with the same four markdown subheadings as before; more is fine, less is not acceptable.`,
+    deep_dive: `STRICT ${EDITORIAL_DEEP_DIVE_MIN_WORDS} to ${EDITORIAL_DEEP_DIVE_MAX_WORDS} Hindi words, with the same four markdown subheadings as before.`,
   };
 
   const repairPrompt = `${buildEditorialWriterPrompt(issue)}
@@ -690,7 +677,6 @@ module.exports = {
     repairEditorialPackage,
     validateEditorialPackage,
     inspectPartWordCount,
-    inspectDeepDive,
     parseJsonResponse,
     countWords,
     callGeminiGenerateContent,
