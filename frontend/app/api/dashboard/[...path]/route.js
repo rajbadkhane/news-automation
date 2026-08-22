@@ -36,7 +36,7 @@ function getCacheSeconds(pathname) {
     return 0;
   }
 
-  if (normalized.startsWith("/editorial/grouped") || normalized.startsWith("/rashifal/grouped")) {
+  if (normalized.startsWith("/editorial") || normalized.startsWith("/rashifal/grouped")) {
     return 60;
   }
 
@@ -182,6 +182,17 @@ function normalizeDashboardJson(pathname, payload, status) {
       };
     }
 
+    if (normalized === "/editorial") {
+      return {
+        status: "Success",
+        database: payload.database || payload.meta?.database || null,
+        records: payload.data || [],
+        count: payload.meta?.count || 0,
+        category: payload.meta?.category || "Editorial",
+        daily_limit: payload.meta?.daily_limit || null,
+      };
+    }
+
     if (normalized === "/editorial/grouped" || normalized === "/rashifal/grouped") {
       return {
         status: "Success",
@@ -210,6 +221,7 @@ function resolveBackendPath(pathname) {
     "/ai/cron/status",
     "/delivery/news/grouped",
     "/delivery/news",
+    "/editorial",
     "/editorial/grouped",
     "/rashifal/grouped",
     "/sync/cliff-news",

@@ -3955,6 +3955,30 @@ function requireApiScope(scope) {
   };
 }
 
+function requireAnyApiScope(...scopes) {
+  return (req, res, next) => {
+    const auth = req.apiAuth;
+    if (!auth) {
+      return sendApiError(res, "UNAUTHORIZED", "API authentication context is missing.", 401);
+    }
+
+    if (auth.type === "master" || auth.type === "legacy") {
+      return next();
+    }
+
+    if (!scopes.some((scope) => auth.scopes.includes(scope))) {
+      return sendApiError(
+        res,
+        "FORBIDDEN",
+        `This client does not have any of the required scopes: ${scopes.join(", ")}`,
+        403
+      );
+    }
+
+    return next();
+  };
+}
+
 function requireMasterApiKey(req, res, next) {
   if (req.apiAuth?.type === "master") {
     return next();
@@ -10183,13 +10207,28 @@ apiV1.post("/sync/primary-sources", requireApiScope("sync:write"), async (req, r
   }
 });
 
-apiV1.get("/editorial/grouped", requireApiScope("news:read"), async (req, res) => {
+apiV1.get("/editorial", requireAnyApiScope("news:read", "delivery:read"), async (req, res) => {
+  try {
+    const limit = normalizeApiLimit(req.query.limit, 15, 50);
+    const records = await listEditorials(dbPool, { limit });
+    return sendApiSuccess(res, records, {
+      count: records.length,
+      category: "Editorial",
+      limit,
+      daily_limit: EDITORIAL_DAILY_LIMIT,
+    });
+  } catch (error) {
+    return sendApiError(res, "EDITORIAL_LIST_FAILED", error.message, 500);
+  }
+});
+
+apiV1.get("/editorial/grouped", requireAnyApiScope("news:read", "delivery:read"), async (req, res) => {
   try {
     const limit = normalizeApiLimit(req.query.limit, 15, 50);
     const records = await listEditorials(dbPool, { limit });
     return sendApiSuccess(res, [
       {
-        category: "editorial",
+        category: "Editorial",
         count: records.length,
         daily_limit: EDITORIAL_DAILY_LIMIT,
         records,

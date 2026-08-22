@@ -554,19 +554,96 @@ async function listEditorials(dbPool, { limit = 15 } = {}) {
     [safeLimit]
   );
 
-  return rows.map((row) => ({
+  return rows.map(mapEditorialRow);
+}
+
+function slugifyEditorial(value, fallback) {
+  const slug = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0900-\u097f]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90);
+
+  return slug || `editorial-${fallback}`;
+}
+
+function mapEditorialRow(row) {
+  const category = row.category || "Editorial";
+  const title = row.primary_headline || row.topic_title || "Untitled editorial";
+  const secondaryHeadline = row.sub_headline || "";
+  const summary = row.executive_summary || "";
+  const article = row.deep_dive || "";
+  const createdAt = row.created_at || row.run_date || null;
+  const updatedAt = row.updated_at || createdAt;
+  const slug = slugifyEditorial(`${row.run_date || ""}-${title}`, row.id);
+
+  return {
     id: row.id,
-    category: row.category || "Editorial",
-    title: row.primary_headline,
-    secondary_headline: row.sub_headline,
-    summary: row.executive_summary,
-    article: row.deep_dive,
-    state: row.category || "",
+    rewrite_id: row.id,
+    news_id: null,
+    slug,
+    category,
+    source_category: "Editorial",
+    publication_status: "published",
+    published_at: createdAt,
+    run_date: row.run_date,
+    topic_title: row.topic_title || "",
+    title,
+    secondary_headline: secondaryHeadline,
+    summary,
+    article,
+    state: category,
+    place_name: "नई दिल्ली",
+    district: "",
     subheadings: [],
-    fetched_at: row.created_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  }));
+    image_link: "",
+    image_caption: "",
+    image_source: null,
+    fetched_at: createdAt,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    source: {
+      title: row.topic_title || title,
+      url: "",
+      feed_source: "editorial",
+      feed_url: "",
+      fetched_at: createdAt,
+    },
+    media: {
+      image_link: null,
+      image_source: null,
+      image_caption: null,
+    },
+    ui_hindi: {
+      title,
+      secondary_headline: secondaryHeadline,
+      subheadings: [],
+      short_100: summary,
+      medium_300: summary,
+      long_500: article,
+      category,
+      state: category,
+      place_name: "नई दिल्ली",
+      district: "",
+      image_caption: "",
+      image_url: "",
+    },
+    raw_articles: {
+      words_100: summary,
+      words_300: summary,
+      words_600: article,
+      words_1000: article,
+      image_caption: "",
+    },
+    article_package: {
+      headline: title,
+      sub_headline: secondaryHeadline,
+      executive_summary: summary,
+      deep_dive: article,
+      deep_dive_word_count: row.deep_dive_word_count || null,
+    },
+  };
 }
 
 async function syncEditorials(dbPool, { limit = EDITORIAL_DAILY_LIMIT, force = false } = {}) {
